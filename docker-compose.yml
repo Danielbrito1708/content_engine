@@ -86,12 +86,14 @@ services:
     environment:
       ROOT_DIR: /app
 
-  # tiktok_poster:
-  #   build: ./tiktok_poster
-  #   ports:
-  #     - "8004:8000"
-  #   env_file:
-  #     - .env
+  tiktok_poster:
+    build: ./tiktok_poster
+    ports:
+      - "8004:8000"
+    env_file:
+      - .env
+    environment:
+      ROOT_DIR: /app
 
 volumes:
   postgres_data:

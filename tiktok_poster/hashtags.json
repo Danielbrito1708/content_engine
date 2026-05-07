@@ -1,0 +1,14 @@
+{
+  "mandatory": ["#tiktokbrasil", "#fyp"],
+  "pool": [
+    "#viral", "#foryou", "#foryoupage",
+    "#drama", "#historia", "#historias",
+    "#relacionamento", "#relacionamentos", "#amor", "#traicao",
+    "#familia", "#amizade", "#vida",
+    "#motivacao", "#inspiracao", "#superacao",
+    "#suspense", "#misterio", "#chocante",
+    "#comedia", "#humor", "#engraçado",
+    "#curiosidades", "#sabiavocesque", "#aprendendo",
+    "#casamento", "#divorcio", "#namorado", "#namorada"
+  ]
+}
