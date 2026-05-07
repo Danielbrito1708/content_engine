@@ -16,12 +16,9 @@ def _get_s3_client():
 
 
 async def generate_presigned_url(bucket: str, key: str, ttl_seconds: int) -> str:
-    """Generates a pre-signed GET URL valid for ttl_seconds.
-
-    In production (R2), this URL is publicly accessible by Buffer.
-    In development (local MinIO), Buffer cannot reach it — for local testing
-    mock this function or use ngrok to expose MinIO.
-    """
+    public_base = os.environ.get("R2_PUBLIC_URL", "").rstrip("/")
+    if public_base:
+        return f"{public_base}/{key}"
     s3 = _get_s3_client()
     url: str = await asyncio.to_thread(
         s3.generate_presigned_url,

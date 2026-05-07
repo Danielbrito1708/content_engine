@@ -3,54 +3,105 @@ from datetime import datetime
 
 import httpx
 
-_BASE = "https://api.bufferapp.com/1"
+_BASE = "https://api.buffer.com"
 
 
 class BufferClient:
     def __init__(self):
         self._token = os.environ["BUFFER_ACCESS_TOKEN"]
-        self._profile_id = os.environ["BUFFER_PROFILE_ID"]
+        self._channel_id = os.environ["BUFFER_PROFILE_ID"]
+        self._org_id: str | None = os.environ.get("BUFFER_ORG_ID")
 
-    def _params(self, extra: dict | None = None) -> dict:
-        p = {"access_token": self._token}
-        if extra:
-            p.update(extra)
-        return p
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+        }
 
-    async def get_pending_posts(self) -> list[dict]:
-        """Returns all pending (scheduled) posts for the configured profile."""
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{_BASE}/profiles/{self._profile_id}/updates/pending.json",
-                params={"access_token": self._token},
-            )
-            resp.raise_for_status()
-        return resp.json().get("updates", [])
-
-    async def create_post(self, video_url: str, caption: str, scheduled_at: datetime) -> dict:
-        """Schedules a video post on TikTok via Buffer."""
+    async def _graphql(self, query: str, variables: dict | None = None) -> dict:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                f"{_BASE}/updates/create.json",
-                data={
-                    "profile_ids[]": self._profile_id,
-                    "text": caption,
-                    "media[link]": video_url,
-                    "scheduled_at": scheduled_at.isoformat(),
-                    "access_token": self._token,
-                },
+                _BASE,
+                headers=self._headers(),
+                json={"query": query, "variables": variables or {}},
             )
             resp.raise_for_status()
         return resp.json()
 
+    async def _get_org_id(self) -> str:
+        if self._org_id:
+            return self._org_id
+        data = await self._graphql("query { account { organizations { id } } }")
+        orgs = data["data"]["account"]["organizations"]
+        self._org_id = orgs[0]["id"]
+        return self._org_id
+
+    async def get_pending_posts(self) -> list[dict]:
+        org_id = await self._get_org_id()
+        data = await self._graphql(
+            """
+            query GetScheduledPosts($orgId: OrganizationId!, $channelId: ChannelId!) {
+                posts(
+                    first: 100,
+                    input: {
+                        organizationId: $orgId,
+                        filter: { status: [scheduled], channelIds: [$channelId] }
+                    }
+                ) {
+                    edges { node { id dueAt } }
+                }
+            }
+            """,
+            {"orgId": org_id, "channelId": self._channel_id},
+        )
+        edges = data.get("data", {}).get("posts", {}).get("edges", [])
+        posts = []
+        for edge in edges:
+            node = edge["node"]
+            due_at = node.get("dueAt") or ""
+            try:
+                ts = int(datetime.fromisoformat(due_at.replace("Z", "+00:00")).timestamp())
+            except (ValueError, TypeError):
+                ts = 0
+            posts.append({"id": node["id"], "due_at": ts})
+        return posts
+
+    async def create_post(self, video_url: str, caption: str, scheduled_at: datetime) -> dict:
+        data = await self._graphql(
+            """
+            mutation CreatePost(
+                $channelId: ChannelId!, $text: String!, $dueAt: DateTime!, $videoUrl: String!
+            ) {
+                createPost(input: {
+                    channelId: $channelId,
+                    text: $text,
+                    schedulingType: automatic,
+                    mode: customScheduled,
+                    dueAt: $dueAt,
+                    assets: { videos: [{ url: $videoUrl }] }
+                }) {
+                    ... on PostActionSuccess { post { id dueAt } }
+                    ... on MutationError { message }
+                }
+            }
+            """,
+            {
+                "channelId": self._channel_id,
+                "text": caption,
+                "dueAt": scheduled_at.isoformat(),
+                "videoUrl": video_url,
+            },
+        )
+        result = data.get("data", {}).get("createPost", {})
+        post_id = result.get("post", {}).get("id", "")
+        return {"updates": [{"id": post_id}]}
+
     async def verify_connection(self) -> bool:
-        """Checks if the Buffer token and profile are valid."""
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    f"{_BASE}/profiles/{self._profile_id}.json",
-                    params={"access_token": self._token},
-                )
-            return resp.status_code == 200
+            data = await self._graphql(
+                "query VerifyChannel($id: ChannelId!) { channel(input: { id: $id }) { id name } }",
+                {"id": self._channel_id},
+            )
+            return bool(data.get("data", {}).get("channel"))
         except Exception:
             return False

@@ -45,7 +45,6 @@ services:
     environment:
       ROOT_DIR: /app
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/blender_worker
-      MINIO_ENDPOINT: http://minio:9000
     depends_on:
       db:
         condition: service_healthy
@@ -61,7 +60,6 @@ services:
     environment:
       ROOT_DIR: /app
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/orchestrator
-      MINIO_ENDPOINT: http://minio:9000
     depends_on:
       db:
         condition: service_healthy

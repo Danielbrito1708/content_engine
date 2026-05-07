@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter
 from sqlalchemy import text
 
@@ -19,7 +21,8 @@ async def health():
         checks["db"] = f"error: {exc}"
 
     try:
-        get_s3_client().list_buckets()
+        bucket = os.environ.get("MINIO_BUCKET", "blender-jobs")
+        get_s3_client().list_objects_v2(Bucket=bucket, MaxKeys=1)
         checks["minio"] = "ok"
     except Exception as exc:
         checks["minio"] = f"error: {exc}"
