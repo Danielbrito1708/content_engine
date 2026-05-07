@@ -15,6 +15,7 @@ services:
       retries: 5
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-dbs.sql:/docker-entrypoint-initdb.d/init-dbs.sql
 
   minio:
     image: minio/minio:latest
@@ -51,26 +52,40 @@ services:
       minio:
         condition: service_healthy
 
-  # orchestrator:
-  #   build: ./orchestrator
-  #   ports:
-  #     - "8000:8000"
-  #   env_file:
-  #     - .env
-  #   depends_on:
-  #     - blender_worker
+  orchestrator:
+    build: ./orchestrator
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      ROOT_DIR: /app
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/orchestrator
+      MINIO_ENDPOINT: http://minio:9000
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   # tts_service:
   #   build: ./tts_service
   #   ports:
-  #     - "8002:8000"
+  #     - "8003:8000"
   #   env_file:
   #     - .env
 
   # llm_service:
   #   build: ./llm_service
   #   ports:
-  #     - "8003:8000"
+  #     - "8002:8000"
+  #   env_file:
+  #     - .env
+
+  # tiktok_poster:
+  #   build: ./tiktok_poster
+  #   ports:
+  #     - "8004:8000"
   #   env_file:
   #     - .env
 
