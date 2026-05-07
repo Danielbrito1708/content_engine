@@ -68,17 +68,19 @@ services:
       minio:
         condition: service_healthy
 
+  llm_service:
+    build: ./llm_service
+    ports:
+      - "8002:8000"
+    env_file:
+      - .env
+    environment:
+      ROOT_DIR: /app
+
   # tts_service:
   #   build: ./tts_service
   #   ports:
   #     - "8003:8000"
-  #   env_file:
-  #     - .env
-
-  # llm_service:
-  #   build: ./llm_service
-  #   ports:
-  #     - "8002:8000"
   #   env_file:
   #     - .env
 
