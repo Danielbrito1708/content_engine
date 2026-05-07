@@ -77,12 +77,14 @@ services:
     environment:
       ROOT_DIR: /app
 
-  # tts_service:
-  #   build: ./tts_service
-  #   ports:
-  #     - "8003:8000"
-  #   env_file:
-  #     - .env
+  tts_service:
+    build: ./tts_service
+    ports:
+      - "8003:8000"
+    env_file:
+      - .env
+    environment:
+      ROOT_DIR: /app
 
   # tiktok_poster:
   #   build: ./tiktok_poster
