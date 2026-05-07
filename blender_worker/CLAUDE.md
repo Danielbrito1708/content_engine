@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-MVP in progress. `src/core/` (config, logger, bootstrap) is the infrastructure foundation. `src/blender_worker/` contains the worker implementation: FastAPI API, SQLAlchemy models, MinIO storage client, Blender render stub, and image compositor (comment card generator).
+MVP in progress. `src/core/` (config, logger, bootstrap) is the infrastructure foundation. `src/blender_worker/` contains the worker implementation: FastAPI API, SQLAlchemy models, MinIO storage client, Blender render pipeline, and image compositor (comment card generator).
 
 ## Git rules
 
@@ -62,7 +62,8 @@ The app requires a `.env` file at the project root. Copy from `.env.example` and
 - `schemas/job.py` — `JobCreate` (request) and `JobResponse` (response) Pydantic models.
 - `schemas/image.py` — `ImageRenderRequest` and `ImageRenderResponse` Pydantic models.
 - `storage/client.py` — `get_s3_client()` returns a boto3 S3 client pointed at MinIO via env vars. Also has `download_file` and `upload_file` async helpers.
-- `worker.py` — `render_job(job_id)` async function: updates status to running, runs Blender CLI (stub with TODOs for download/render/upload), updates to completed/failed. Called via FastAPI `BackgroundTasks`.
+- `worker.py` — `render_job(job_id)` async function: downloads all assets + template from MinIO into a tmpdir, runs Blender twice (assembly via `scripts/edit_video.py`, then render with `-a`), uploads the MP4 output, updates status to completed/failed. Called via FastAPI `BackgroundTasks`.
+- `scripts/edit_video.py` — Python script that runs **inside** Blender's interpreter (`blender -b template.blend -P edit_video.py -- job_config.json`). Sets up the VSE: movie strip (ch1), music strip at volume 0.2 with fade-out keyframes (ch2), voice strip at volume 1.0 (ch3), animated text subtitles from `.srt` (ch4). Saves `.blend` and sets render output to the MP4 path.
 - `image/text.py` — word wrap + text block height calculation. See `## Features`.
 - `image/composer.py` — comment card compositor (rounded rect + assets + text → PNG bytes). Includes guide schema models. See `## Features`.
 
@@ -73,6 +74,32 @@ The app requires a `.env` file at the project root. Copy from `.env.example` and
 - Keep entries concise — enough for a future session to understand what exists without reading the source.
 
 ## Features
+
+### Blender render pipeline (`src/blender_worker/worker.py` + `scripts/edit_video.py`)
+
+Assembles video assets in Blender VSE and renders to MP4. Triggered by `POST /jobs` → `BackgroundTasks`.
+
+**`render_job(job_id)` flow:**
+1. Sets job status → `running`
+2. Creates a tmpdir and downloads all assets from MinIO: `template.blend`, `template.json`, video, music, voice, subtitles (`.srt`)
+3. Writes `job_config.json` with paths and timing
+4. Runs `blender -b template.blend -P scripts/edit_video.py -- job_config.json` → saves `output.blend`
+5. Runs `blender -b output.blend -a` → renders `final.mp4`
+6. Uploads `final.mp4` to MinIO as `outputs/{job_id}.mp4`
+7. Sets job status → `completed` (or `failed` + error message on any exception)
+8. Cleans up tmpdir
+
+**`scripts/edit_video.py` VSE layout:**
+- Ch1 — movie strip (video file), starts at `intro_start + 1`
+- Ch2 — music strip, volume 0.2; if `music_fade_out` in timing: keyframed fade from 0.2 → 0.0 between `music_fade_out` and `frame_end`
+- Ch3 — voice strip, volume 1.0, starts at `speech_start + 1`
+- Ch4 — animated text subtitles from `.srt`; each entry has 3-frame opacity fade in/out
+
+**`template.json` format:** see `docs/vision.md` — `frame_rate`, `frame_end`, `channels` (ch numbers), `timing` (frame offsets including optional `music_fade_out`).
+
+**Blender binary:** configured in `config.ini [blender] bin` → `/usr/local/bin/blender` (symlink to Blender 4.2 LTS in Docker).
+
+- Tests: `tests/test_worker.py` (3 tests; Blender not required — subprocess and I/O are fully mocked).
 
 ### Image text rendering (`src/blender_worker/image/text.py`)
 
@@ -130,8 +157,6 @@ Composes a comment card image (rounded rect background + positioned assets + wra
 
 - `logger.py` reads `config.ini` directly instead of reusing the `Settings` system — causes duplicate config parsing on startup.
 - `worker.py` uses FastAPI `BackgroundTasks` — jobs are lost if the container restarts mid-render. For production, replace with a proper queue (Celery + Redis, or similar).
-- Blender version is installed from the Debian apt repo (3.x). If templates require Blender 4.x, the Dockerfile needs updating to fetch the binary directly from the official download.
-- `render_job()` in `worker.py` has three TODOs: download template from MinIO, run Blender subprocess, upload rendered output.
 - MinIO bucket is not auto-created on startup — if the bucket configured in `config.ini [storage] bucket` doesn't exist, `POST /images/render` returns 500. Create manually: `mc mb local/<bucket>` or via the MinIO console (localhost:9001).
 
 ## graphify

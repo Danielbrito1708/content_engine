@@ -51,7 +51,7 @@ def setup_vse(scene):
 
 
 def add_movie_strip(vse, path, channel, frame_start):
-    vse.sequences.new_movie(
+    return vse.sequences.new_movie(
         name=os.path.basename(path),
         filepath=path,
         channel=channel,
@@ -60,12 +60,22 @@ def add_movie_strip(vse, path, channel, frame_start):
 
 
 def add_sound_strip(vse, path, channel, frame_start):
-    vse.sequences.new_sound(
+    return vse.sequences.new_sound(
         name=os.path.basename(path),
         filepath=path,
         channel=channel,
         frame_start=frame_start,
     )
+
+
+def apply_volume_fade(strip, start_frame, fade_start_frame, end_frame, start_volume):
+    """Hold start_volume until fade_start_frame, then ramp to 0 at end_frame."""
+    strip.volume = start_volume
+    strip.keyframe_insert("volume", frame=start_frame)
+    strip.volume = start_volume
+    strip.keyframe_insert("volume", frame=fade_start_frame)
+    strip.volume = 0.0
+    strip.keyframe_insert("volume", frame=end_frame)
 
 
 def import_subtitles(scene, vse, srt_path, channel, frame_rate, fade_frames=3):
@@ -125,8 +135,21 @@ def main():
         strip.select = False
 
     add_movie_strip(vse, assets["video"], channels["video"], t["intro_start"] + 1)
-    add_sound_strip(vse, assets["music"], channels["music"], t["intro_start"] + 1)
-    add_sound_strip(vse, assets["voice"], channels["voice"], t["speech_start"] + 1)
+
+    music_strip = add_sound_strip(vse, assets["music"], channels["music"], t["intro_start"] + 1)
+    music_strip.volume = 0.2
+    if "music_fade_out" in t:
+        apply_volume_fade(
+            music_strip,
+            start_frame=t["intro_start"] + 1,
+            fade_start_frame=t["music_fade_out"],
+            end_frame=timing["frame_end"],
+            start_volume=0.2,
+        )
+
+    voice_strip = add_sound_strip(vse, assets["voice"], channels["voice"], t["speech_start"] + 1)
+    voice_strip.volume = 1.0
+
     import_subtitles(scene, vse, assets["subtitles"], channels["subtitles"], frame_rate)
 
     # Render output format: MP4/H264/AAC
