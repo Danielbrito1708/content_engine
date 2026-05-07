@@ -1,16 +1,17 @@
 import asyncio
-import os
 
 import boto3
 from botocore.client import Config
+
+from src.core import settings
 
 
 def get_s3_client():
     return boto3.client(
         "s3",
-        endpoint_url=os.environ["MINIO_ENDPOINT"],
-        aws_access_key_id=os.environ["MINIO_ACCESS_KEY"],
-        aws_secret_access_key=os.environ["MINIO_SECRET_KEY"],
+        endpoint_url=settings.env.minio_endpoint,
+        aws_access_key_id=settings.env.minio_access_key,
+        aws_secret_access_key=settings.env.minio_secret_key,
         config=Config(signature_version="s3v4"),
     )
 

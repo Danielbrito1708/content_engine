@@ -1,4 +1,3 @@
-import os
 import uuid
 from datetime import datetime, timezone
 
@@ -106,7 +105,7 @@ async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
         subtitle_key=subtitle_key,
     )
 
-    template_id = uuid.UUID(os.environ["BLENDER_TEMPLATE_ID"])
+    template_id = uuid.UUID(settings.env.blender_template_id)
     job_id = await blender.create_job(video_id=video_id, template_id=template_id)
 
     part.blender_job_id = job_id

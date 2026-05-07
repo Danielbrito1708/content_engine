@@ -1,16 +1,17 @@
-import os
 from datetime import datetime
 
 import httpx
+
+from src.core import settings
 
 _BASE = "https://api.buffer.com"
 
 
 class BufferClient:
     def __init__(self):
-        self._token = os.environ["BUFFER_ACCESS_TOKEN"]
-        self._channel_id = os.environ["BUFFER_PROFILE_ID"]
-        self._org_id: str | None = os.environ.get("BUFFER_ORG_ID")
+        self._token = settings.env.buffer_access_token
+        self._channel_id = settings.env.buffer_profile_id
+        self._org_id: str | None = settings.env.buffer_org_id
 
     def _headers(self) -> dict:
         return {

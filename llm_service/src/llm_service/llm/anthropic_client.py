@@ -1,15 +1,15 @@
 import json
-import os
 
 import anthropic
 
+from src.core import settings
 from src.llm_service.llm.base import BaseLLMClient
 from src.llm_service.schemas.refine import RefineResponse
 
 
 class AnthropicClient(BaseLLMClient):
     def __init__(self, model: str):
-        self._client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        self._client = anthropic.AsyncAnthropic(api_key=settings.env.anthropic_api_key)
         self._model = model
 
     async def complete(self, system: str, user: str) -> str:

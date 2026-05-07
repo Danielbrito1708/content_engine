@@ -1,10 +1,9 @@
-import os
-
+from src.core import settings
 from src.tts_service.tts.base import BaseTTSClient
 
 
 def get_tts_client() -> BaseTTSClient:
-    provider = os.environ.get("TTS_PROVIDER", "edge").lower()
+    provider = settings.env.tts_provider
 
     if provider == "edge":
         from src.tts_service.tts.edge import EdgeTTSClient

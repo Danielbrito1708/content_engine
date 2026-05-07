@@ -1,11 +1,10 @@
-import os
-
+from src.core import settings
 from src.llm_service.llm.base import BaseLLMClient
 
 
 def get_llm_client() -> BaseLLMClient:
-    provider = os.environ.get("LLM_PROVIDER", "openrouter").lower()
-    model = os.environ.get("LLM_MODEL", "anthropic/claude-3.5-sonnet")
+    provider = settings.env.llm_provider
+    model = settings.env.llm_model
 
     if provider == "openrouter":
         from src.llm_service.llm.openai_compat import make_openrouter

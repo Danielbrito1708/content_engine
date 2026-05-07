@@ -1,10 +1,9 @@
-import os
-
 from fastapi import APIRouter
 from sqlalchemy import text
 
 from src.blender_worker.db.engine import engine
 from src.blender_worker.storage.client import get_s3_client
+from src.core import settings
 
 router = APIRouter()
 
@@ -21,8 +20,7 @@ async def health():
         checks["db"] = f"error: {exc}"
 
     try:
-        bucket = os.environ.get("MINIO_BUCKET", "blender-jobs")
-        get_s3_client().list_objects_v2(Bucket=bucket, MaxKeys=1)
+        get_s3_client().list_objects_v2(Bucket=settings.env.minio_bucket, MaxKeys=1)
         checks["minio"] = "ok"
     except Exception as exc:
         checks["minio"] = f"error: {exc}"

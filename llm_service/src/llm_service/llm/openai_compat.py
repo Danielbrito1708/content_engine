@@ -1,7 +1,6 @@
-import os
-
 from openai import AsyncOpenAI
 
+from src.core import settings
 from src.llm_service.llm.base import BaseLLMClient
 
 
@@ -27,7 +26,7 @@ class OpenAICompatClient(BaseLLMClient):
 
 def make_openrouter(model: str) -> OpenAICompatClient:
     return OpenAICompatClient(
-        api_key=os.environ["OPENROUTER_API_KEY"],
+        api_key=settings.env.openrouter_api_key,
         base_url="https://openrouter.ai/api/v1",
         model=model,
     )
@@ -35,7 +34,7 @@ def make_openrouter(model: str) -> OpenAICompatClient:
 
 def make_chutes(model: str) -> OpenAICompatClient:
     return OpenAICompatClient(
-        api_key=os.environ["CHUTES_API_KEY"],
-        base_url=os.environ.get("CHUTES_BASE_URL", "https://llm.chutes.ai/v1"),
+        api_key=settings.env.chutes_api_key,
+        base_url=settings.env.chutes_base_url,
         model=model,
     )
