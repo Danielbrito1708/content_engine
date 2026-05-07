@@ -9,7 +9,7 @@ from src.core.logger import log_setup
 def _init() -> Settings:
     load_dotenv()
     settings = Settings.load()
-    log_setup()
+    log_setup(settings)
 
     def _exception_hook(exc_type, exc_value, exc_tb):
         import structlog

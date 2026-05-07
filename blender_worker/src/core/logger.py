@@ -1,4 +1,3 @@
-import configparser
 import logging
 import os
 import sys
@@ -6,19 +5,22 @@ from logging.handlers import RotatingFileHandler
 
 import structlog
 
+from src.core.config import Settings
 
-def log_setup() -> None:
-    parser = configparser.ConfigParser()
-    parser.read("config.ini")
 
-    log_cfg = dict(parser["log"]) if "log" in parser else {}
-    level = getattr(logging, log_cfg.get("log_level", "INFO").upper(), logging.INFO)
-    log_dir = log_cfg.get("log_dir", "logs")
-    log_file = log_cfg.get("log_file", "app.log")
-    max_bytes = int(log_cfg.get("log_max_bytes", 10_485_760))
-    backup_count = int(log_cfg.get("log_backup_count", 5))
+def log_setup(settings: Settings) -> None:
+    log_cfg = getattr(settings.CONFIG, "log", None)
 
-    env = os.environ.get("ENV", "dev")
+    def _get(key: str, default):
+        return getattr(log_cfg, key, default) if log_cfg is not None else default
+
+    level = getattr(logging, str(_get("log_level", "INFO")).upper(), logging.INFO)
+    log_dir = str(_get("log_dir", "logs"))
+    log_file = str(_get("log_file", "app.log"))
+    max_bytes = int(_get("log_max_bytes", 10_485_760))
+    backup_count = int(_get("log_backup_count", 5))
+
+    env = settings.ENV
 
     shared = [
         structlog.contextvars.merge_contextvars,

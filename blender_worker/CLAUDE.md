@@ -155,7 +155,6 @@ Composes a comment card image (rounded rect background + positioned assets + wra
 
 ## Known tech debt
 
-- `logger.py` reads `config.ini` directly instead of reusing the `Settings` system — causes duplicate config parsing on startup.
 - `worker.py` uses FastAPI `BackgroundTasks` — jobs are lost if the container restarts mid-render. For production, replace with a proper queue (Celery + Redis, or similar).
 - MinIO bucket is not auto-created on startup — if the bucket configured in `config.ini [storage] bucket` doesn't exist, `POST /images/render` returns 500. Create manually: `mc mb local/<bucket>` or via the MinIO console (localhost:9001).
 
