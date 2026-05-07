@@ -14,8 +14,10 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `schemas/pipeline.py` — `PipelineCreate`, `PipelineResponse`, `PartResponse`
 - `clients/llm.py` — `LLMClient.refine(script, metadata) → RefineResult`
 - `clients/tts.py` — `TTSClient.generate(text, run_id, part_number) → audio_key`
-- `clients/blender.py` — `BlenderClient.create_job(...)`, `get_job_status(...)`
+- `clients/blender.py` — `BlenderClient`: `create_video(...)`, `create_job(...)`, `get_job_status(...)`, `poll_job(...)`
 - `clients/tiktok.py` — `TikTokClient.schedule(video_key, classification, part_number, series_id)`
+- `storage/client.py` — `upload_bytes(bucket, key, data, content_type)` via boto3 (MinIO/R2)
+- `utils/srt.py` — `text_to_srt(text, words_per_minute) → bytes`: gera SRT com timing estimado
 - `worker.py` — `run_pipeline(run_id)`: executa o pipeline completo em background via FastAPI BackgroundTasks
 
 ## Estado do PipelineRun
@@ -31,10 +33,6 @@ pending → tts_running → tts_done → render_pending → render_running → r
                                                                     ↘ failed
 ```
 
-## Decisão em aberto (TODO no worker.py)
-
-A integração com o `blender_worker` requer que o orchestrador registre os assets (vídeo de fundo, áudio gerado pelo TTS) como um `Video` no banco do blender_worker antes de criar o job. Isso será definido quando a API do blender_worker for estendida para aceitar asset keys diretamente.
-
 ## Comandos
 
 ```bash
@@ -44,7 +42,7 @@ poetry install
 # Rodar local (requer .env e db up)
 python main.py
 
-# Testes (requer db up com DATABASE_URL apontando para o DB orchestrator)
+# Testes (requer docker compose up com DB orchestrator disponível)
 poetry run pytest
 
 # Migrations
@@ -58,13 +56,11 @@ alembic upgrade head
 - `ENV` — `dev` ou `prod`
 - `DEBUG` — `true` ou `false`
 - `DATABASE_URL` — asyncpg para o banco `orchestrator`
-- `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` — credenciais MinIO
+- `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` — credenciais MinIO/R2
+- `BLENDER_TEMPLATE_ID` — UUID do template pré-registrado no blender_worker (`POST /templates`)
 
 URLs dos serviços são configuradas em `config.ini [services]`.
-
-## Testing rules
-
-Mesmas regras do blender_worker: integration tests com DB real, `mock_run_pipeline` fixture para evitar background tasks nos testes de rota.
+Assets estáticos (background + música) em `config.ini [template]`.
 
 ## Features
 
@@ -73,3 +69,39 @@ Mesmas regras do blender_worker: integration tests com DB real, `mock_run_pipeli
 - `POST /pipeline` — cria `PipelineRun` e inicia `run_pipeline` em background. Retorna 201 com o estado inicial.
 - `GET /pipeline/{id}` — retorna run + todas as parts com status atual.
 - `GET /pipeline` — lista runs ordenados por `created_at desc`, com paginação (`limit`, `offset`).
+
+**Request** (`PipelineCreate`): `script` (str), `metadata` (dict, opcional).
+**Response** (`PipelineResponse`): `id`, `status`, `parts_count`, `classification`, `error`, `parts[]`, timestamps.
+
+### Worker (`src/orchestrator/worker.py`)
+
+`run_pipeline(run_id)` — executa as 3 fases sequencialmente:
+
+1. **`_refine`**: chama `LLMClient.refine()` → cria `PipelinePart` para cada parte retornada
+2. **`_process_all_parts`**: para cada part, executa `_run_tts` + `_run_render` sequencialmente
+3. **`_schedule`**: chama `TikTokClient.schedule()` para cada part com `video_key` definido
+
+**`_run_tts`**: chama `POST tts_service/generate` → salva `audio_key` na part.
+
+**`_run_render`**:
+1. Gera SRT via `text_to_srt(part.script)` e faz upload para MinIO como `subs/{run_id}/part_{n}.srt`
+2. `POST blender_worker/videos` com `background_video_key` + `music_key` (do config.ini) + `voice_key` (audio do TTS) + `subtitle_key`
+3. `POST blender_worker/jobs` com `video_id` + `BLENDER_TEMPLATE_ID`
+4. Polling via `poll_job()` até `completed` ou `failed`
+5. Salva `video_key = output_key` na part
+
+**Pré-requisito de infra**: o template (`.blend` + `template.json`) e os assets estáticos (background.mp4, music.mp3) devem estar pré-registrados no blender_worker e no MinIO antes de rodar o pipeline.
+
+### SRT generation (`src/orchestrator/utils/srt.py`)
+
+`text_to_srt(text, words_per_minute=150) -> bytes` — converte texto plano em SRT com timing estimado. Divide em chunks de 8 palavras; timing estimado a 150 WPM.
+
+### Storage (`src/orchestrator/storage/client.py`)
+
+`upload_bytes(bucket, key, data, content_type) -> None` — upload via boto3 (MinIO/R2). Usa `run_in_executor` para não bloquear o event loop.
+
+## Testing rules
+
+Integration tests — requerem DB `orchestrator` rodando. MinIO e serviços externos são mockados com `respx` e `monkeypatch`.
+
+16 testes em 2 arquivos: `test_pipeline.py` (API layer) e `test_worker.py` (stages individuais + end-to-end).

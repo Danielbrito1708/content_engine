@@ -1,20 +1,21 @@
-import asyncio
+import os
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from structlog import get_logger
 
+from src.core import settings
 from src.orchestrator.clients.blender import BlenderClient
 from src.orchestrator.clients.llm import LLMClient
 from src.orchestrator.clients.tiktok import TikTokClient
 from src.orchestrator.clients.tts import TTSClient
 from src.orchestrator.db.engine import AsyncSessionLocal
 from src.orchestrator.db.models import PartStatus, PipelinePart, PipelineRun, PipelineStatus
+from src.orchestrator.storage.client import upload_bytes
+from src.orchestrator.utils.srt import text_to_srt
 
 log = get_logger(__name__)
-
-_RENDER_POLL_INTERVAL = 10
-_RENDER_TIMEOUT = 3600
 
 
 async def run_pipeline(run_id: uuid.UUID) -> None:
@@ -89,13 +90,37 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun) -> None:
 
 
 async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
-    # TODO: blender_worker currently receives video_id + template_id from its own DB.
-    # The orchestrator will need to register the audio as a video asset in blender_worker
-    # before creating the job. This integration will be defined when blender_worker's
-    # API is extended to accept direct asset keys.
-    log.info("render not yet integrated", run_id=str(run.id), part=part.part_number)
+    log.info("starting render", run_id=str(run.id), part=part.part_number)
     part.status = PartStatus.render_pending
     await session.commit()
+
+    bucket = settings.CONFIG.storage.bucket
+    subtitle_key = f"subs/{run.id}/part_{part.part_number}.srt"
+    await upload_bytes(bucket, subtitle_key, text_to_srt(part.script), "text/plain")
+
+    blender = BlenderClient()
+    video_id = await blender.create_video(
+        video_file_key=settings.CONFIG.template.background_video_key,
+        music_key=settings.CONFIG.template.music_key,
+        voice_key=part.audio_key,
+        subtitle_key=subtitle_key,
+    )
+
+    template_id = uuid.UUID(os.environ["BLENDER_TEMPLATE_ID"])
+    job_id = await blender.create_job(video_id=video_id, template_id=template_id)
+
+    part.blender_job_id = job_id
+    part.status = PartStatus.render_running
+    await session.commit()
+
+    result = await blender.poll_job(job_id)
+    if result["status"] == "failed":
+        raise RuntimeError(f"render job failed: {result.get('error')}")
+
+    part.video_key = result["output_key"]
+    part.status = PartStatus.render_done
+    await session.commit()
+    log.info("render done", run_id=str(run.id), part=part.part_number, key=part.video_key)
 
 
 async def _schedule(session, run: PipelineRun) -> None:
@@ -111,6 +136,7 @@ async def _schedule(session, run: PipelineRun) -> None:
     tiktok = TikTokClient()
     for part in parts:
         if part.video_key is None:
+            log.warning("part has no video_key, skipping schedule", part=part.part_number)
             continue
         data = await tiktok.schedule(
             video_key=part.video_key,
@@ -118,8 +144,10 @@ async def _schedule(session, run: PipelineRun) -> None:
             part_number=part.part_number,
             series_id=str(run.id),
         )
-        part.scheduled_at = data.get("scheduled_at")
-        part.tiktok_video_id = data.get("tiktok_video_id")
+        raw_ts = data.get("scheduled_at")
+        part.scheduled_at = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")) if raw_ts else None
+        part.tiktok_video_id = data.get("buffer_update_id")
+        await session.commit()
 
     run.status = PipelineStatus.scheduled
     await session.commit()

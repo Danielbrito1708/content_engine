@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("ROOT_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
