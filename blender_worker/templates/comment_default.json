@@ -1,0 +1,23 @@
+{
+  "version": "1.0",
+  "canvas": { "width": 800 },
+  "background": {
+    "color": [25, 25, 25, 230],
+    "radius": 16,
+    "padding": { "top": 20, "right": 20, "bottom": 20, "left": 20 }
+  },
+  "assets": [
+    {
+      "id": "avatar",
+      "minio_key": "assets/avatar.png",
+      "size": { "width": 48, "height": 48 },
+      "position": { "x": 0, "y": 0 }
+    }
+  ],
+  "text": {
+    "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "size": 18,
+    "color": [255, 255, 255, 255],
+    "offset": { "x": 60, "y": 4 }
+  }
+}

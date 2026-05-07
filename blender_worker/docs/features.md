@@ -1,0 +1,616 @@
+# Features — blender_worker
+
+Descrição detalhada de cada funcionalidade do sistema: comportamento esperado, contratos de API, fluxo de dados, casos de erro e dependências.
+
+---
+
+## 1. Health Check
+
+**Rota:** `GET /health`  
+**Arquivo:** `src/blender_worker/api/routes/health.py`  
+**Status:** Implementado
+
+### Descrição
+Verifica se os serviços de infraestrutura estão acessíveis. Usado para monitoramento e para confirmar que o container está pronto para receber jobs.
+
+### Comportamento
+- Executa `SELECT 1` no Postgres via engine async
+- Chama `list_buckets()` no MinIO via boto3
+- Cada check é independente — falha em um não impede o outro de rodar
+- Retorna `status: "ok"` se todos os checks passaram, `status: "degraded"` caso contrário
+
+### Resposta
+```json
+// 200 OK — todos os serviços saudáveis
+{
+  "status": "ok",
+  "checks": {
+    "db": "ok",
+    "minio": "ok"
+  }
+}
+
+// 200 OK — com falha parcial
+{
+  "status": "degraded",
+  "checks": {
+    "db": "ok",
+    "minio": "error: Connection refused"
+  }
+}
+```
+
+> Sempre retorna HTTP 200 — o status de degradação está no corpo, não no código HTTP.
+
+---
+
+## 2. Gerenciamento de Vídeos
+
+**Rotas:** `POST /videos`, `GET /videos/{id}`  
+**Arquivo:** `src/blender_worker/api/routes/videos.py`  
+**Status:** Implementado
+
+### Descrição
+Registra um vídeo no sistema. Um "vídeo" não é o arquivo em si — é um registro que aponta para todos os assets necessários para montar o vídeo (já devem estar no MinIO antes do registro).
+
+### POST /videos — Registrar vídeo
+
+**Request:**
+```json
+{
+  "video_file_key": "videos/ep01/background.mp4",
+  "music_key": "videos/ep01/music.mp3",
+  "voice_key": "videos/ep01/voice.mp3",
+  "subtitle_key": "videos/ep01/subtitles.srt",
+  "video_metadata": {
+    "title": "Episódio 01",
+    "duration_seconds": 30,
+    "fps": 30,
+    "resolution": "1920x1080"
+  }
+}
+```
+
+**Resposta:**
+```json
+// 201 Created
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "video_file_key": "videos/ep01/background.mp4",
+  "music_key": "videos/ep01/music.mp3",
+  "voice_key": "videos/ep01/voice.mp3",
+  "subtitle_key": "videos/ep01/subtitles.srt",
+  "video_metadata": { "title": "Episódio 01", ... },
+  "created_at": "2026-05-04T00:00:00Z"
+}
+```
+
+**Validações:**
+- Todos os `*_key` são obrigatórios
+- `metadata` é opcional
+- O sistema **não** verifica se os arquivos existem no MinIO no momento do registro — isso é responsabilidade de quem chama
+
+**Casos de erro:**
+- `422` — campos obrigatórios ausentes ou tipo inválido
+
+### GET /videos/{id} — Buscar vídeo
+
+**Resposta:**
+```json
+// 200 OK
+{ /* mesmo formato do POST */ }
+
+// 404 Not Found
+{ "detail": "Video not found" }
+```
+
+---
+
+## 3. Gerenciamento de Templates
+
+**Rotas:** `POST /templates`, `GET /templates/{id}`  
+**Arquivo:** `src/blender_worker/api/routes/templates.py`  
+**Status:** Implementado
+
+### Descrição
+Registra um template de edição. Um template é composto por:
+- Um arquivo `.blend` base — estrutura visual, posição de canais, configurações de cena
+- Um arquivo `.json` de timing — define os frames de cada seção do vídeo
+
+Templates são reutilizados em múltiplos jobs. Criar um template bem calibrado é o trabalho manual que o sistema elimina em escala.
+
+### POST /templates — Registrar template
+
+**Request:**
+```json
+{
+  "name": "Reels 30s v2",
+  "blend_key": "templates/reels-30s-v2.blend",
+  "json_key": "templates/reels-30s-v2.json"
+}
+```
+
+**Resposta:**
+```json
+// 201 Created
+{
+  "id": "a1b2c3d4-...",
+  "name": "Reels 30s v2",
+  "blend_key": "templates/reels-30s-v2.blend",
+  "json_key": "templates/reels-30s-v2.json",
+  "created_at": "2026-05-04T00:00:00Z"
+}
+```
+
+### Formato do template.json
+
+```json
+{
+  "frame_rate": 30,
+  "frame_end": 900,
+  "channels": {
+    "video": 1,
+    "music": 2,
+    "voice": 3,
+    "subtitles": 4
+  },
+  "timing": {
+    "intro_start": 0,
+    "intro_end": 90,
+    "speech_start": 90,
+    "speech_end": 750,
+    "outro_start": 750,
+    "outro_end": 900,
+    "music_fade_out": 840
+  }
+}
+```
+
+| Campo | Descrição |
+|---|---|
+| `frame_rate` | FPS da cena Blender |
+| `frame_end` | Frame final da timeline |
+| `channels.*` | Canal VSE de cada trilha |
+| `timing.*` | Frames de início/fim de cada seção |
+
+**Casos de erro:**
+- `422` — campos obrigatórios ausentes
+- `404` — template não encontrado no GET
+
+---
+
+## 4. Criação e Polling de Jobs
+
+**Rotas:** `POST /jobs`, `GET /jobs/{id}`  
+**Arquivo:** `src/blender_worker/api/routes/jobs.py`  
+**Status:** Implementado
+
+### Descrição
+Cria uma tarefa de montagem de vídeo e permite acompanhar seu progresso. O processamento acontece em background — a rota retorna imediatamente com status `pending`.
+
+### POST /jobs — Criar job
+
+**Request:**
+```json
+{
+  "video_id": "550e8400-e29b-41d4-a716-446655440000",
+  "template_id": "a1b2c3d4-e5f6-...",
+  "params": {
+    "output_key": "outputs/custom-path.blend"
+  }
+}
+```
+
+| Campo | Obrigatório | Descrição |
+|---|---|---|
+| `video_id` | Sim | UUID de um Video registrado |
+| `template_id` | Sim | UUID de um Template registrado |
+| `params` | Não | Overrides opcionais (ex: output_key customizado) |
+
+**Resposta:**
+```json
+// 201 Created
+{
+  "id": "job-uuid",
+  "video_id": "...",
+  "template_id": "...",
+  "status": "pending",
+  "output_key": null,
+  "params": null,
+  "error": null,
+  "created_at": "2026-05-04T00:00:00Z",
+  "updated_at": "2026-05-04T00:00:00Z"
+}
+```
+
+**Comportamento:**
+1. Job é persistido no DB com `status = pending`
+2. `render_job(job.id)` é enfileirado via `BackgroundTasks`
+3. Resposta retorna imediatamente — o cliente deve fazer polling
+
+**Casos de erro:**
+- `422` — `video_id` ou `template_id` ausentes ou formato inválido
+- `404` — `video_id` ou `template_id` não existem no DB
+
+### GET /jobs/{id} — Consultar status
+
+**Resposta:**
+```json
+// 200 OK — job em andamento
+{
+  "id": "job-uuid",
+  "status": "running",
+  "output_key": null,
+  "error": null,
+  ...
+}
+
+// 200 OK — job concluído
+{
+  "id": "job-uuid",
+  "status": "completed",
+  "output_key": "outputs/job-uuid.blend",
+  "error": null,
+  ...
+}
+
+// 200 OK — job falhou
+{
+  "id": "job-uuid",
+  "status": "failed",
+  "output_key": null,
+  "error": "blender: command not found",
+  ...
+}
+
+// 404 Not Found
+{ "detail": "Job not found" }
+```
+
+**Ciclo de vida do status:**
+```
+pending → running → completed
+                 ↘ failed
+```
+
+---
+
+## 5. Worker de Montagem
+
+**Função:** `render_job(job_id: UUID)`  
+**Arquivo:** `src/blender_worker/worker.py`  
+**Status:** Implementado
+
+### Descrição
+Função async chamada em background após a criação do job. Executa o pipeline completo de montagem: download de assets, execução do Blender, upload do resultado.
+
+### Pipeline detalhado
+
+```
+1. Busca Job no DB pelo job_id
+   → Se não encontrado: loga erro e retorna (sem exception)
+
+2. Atualiza status → running, commit
+
+3. Busca Video e Template no DB pelo job.video_id e job.template_id
+
+4. Cria diretório temporário: /tmp/blender_worker/{job_id}/
+
+5. Download do MinIO para o tempdir:
+   ├── template.blend   ← Template.blend_key
+   ├── template.json    ← Template.json_key
+   ├── video.mp4        ← Video.video_file_key  (extensão preservada)
+   ├── music.mp3        ← Video.music_key       (extensão preservada)
+   ├── voice.mp3        ← Video.voice_key       (extensão preservada)
+   └── subtitles.srt    ← Video.subtitle_key
+
+6. Serializa job_config.json no tempdir:
+   {
+     "job_id": "...",
+     "output_path": "/tmp/blender_worker/{job_id}/output.blend",
+     "assets": {
+       "video": "/tmp/.../video.mp4",
+       "music": "/tmp/.../music.mp3",
+       "voice": "/tmp/.../voice.mp3",
+       "subtitles": "/tmp/.../subtitles.srt"
+     },
+     "timing": { ...conteúdo do template.json... }
+   }
+
+7. Executa Blender como subprocess:
+   blender -b template.blend -P scripts/edit_video.py -- /tmp/.../job_config.json
+   → check=True: qualquer exit code != 0 levanta CalledProcessError → status = failed
+
+8. Upload do output.blend → MinIO: "outputs/{job_id}.blend"
+
+9. Atualiza Job: output_key = "outputs/{job_id}.blend", status = completed, commit
+
+10. Limpa tempdir
+```
+
+**Tratamento de erros:**
+- Qualquer exception em qualquer etapa define `status = failed` e `error = str(exc)`
+- O `finally` garante o commit do status mesmo em caso de erro
+- Tempdir é limpo mesmo em caso de erro
+
+---
+
+## 6. Script de Edição Blender
+
+**Arquivo:** `scripts/edit_video.py`  
+**Status:** Implementado
+
+### Descrição
+Script Python executado dentro do interpretador do Blender. Recebe o caminho do `job_config.json` como argumento após `--`. Não pode importar de `src/` — deve ser self-contained usando apenas stdlib e a API `bpy`.
+
+### Estrutura
+
+```python
+import bpy, json, sys, os, re
+
+def parse_args():
+    argv = sys.argv[sys.argv.index("--") + 1:]
+    return argv[0]  # caminho do job_config.json
+
+def setup_vse(scene):
+    if not scene.sequence_editor:
+        scene.sequence_editor_create()
+    return scene.sequence_editor
+
+def add_video_strip(vse, path, channel, frame_start):
+    # bpy.ops.sequencer.movie_strip_add(...)
+
+def add_audio_strip(vse, path, channel, frame_start):
+    # bpy.ops.sequencer.sound_strip_add(...)
+
+def import_subtitles(vse, srt_path, channel, timing):
+    # Parseia SRT e gera text strips animados
+    ...
+
+def main():
+    config = json.load(open(parse_args()))
+    timing = config["timing"]
+    assets = config["assets"]
+
+    scene = bpy.context.scene
+    scene.frame_end = timing["frame_end"]
+    scene.render.fps = timing["frame_rate"]
+
+    vse = setup_vse(scene)
+
+    add_video_strip(vse, assets["video"],    timing["channels"]["video"],     timing["timing"]["intro_start"])
+    add_audio_strip(vse, assets["music"],    timing["channels"]["music"],     timing["timing"]["intro_start"])
+    add_audio_strip(vse, assets["voice"],    timing["channels"]["voice"],     timing["timing"]["speech_start"])
+    import_subtitles(vse, assets["subtitles"], timing["channels"]["subtitles"], timing)
+
+    bpy.ops.wm.save_as_mainfile(filepath=config["output_path"])
+
+main()
+```
+
+---
+
+## 7. Legendas Animadas (import_subtitles)
+
+**Função:** `import_subtitles(vse, srt_path, channel, timing)`  
+**Localização:** `scripts/edit_video.py`  
+**Status:** Implementado
+
+### Descrição
+O Blender não tem suporte nativo para legendas animadas. Esta função parseia um `.srt` e cria text strips no VSE com keyframes de opacidade para simular animação de entrada/saída.
+
+### Formato SRT suportado
+```
+1
+00:00:03,000 --> 00:00:06,500
+Texto da primeira legenda
+
+2
+00:00:07,000 --> 00:00:10,200
+Segunda legenda
+com múltiplas linhas
+```
+
+### Comportamento
+1. Parseia o `.srt` com regex: extrai índice, timestamps (`HH:MM:SS,mmm`) e texto
+2. Converte timestamps para frame number: `frame = (h*3600 + m*60 + s + ms/1000) * frame_rate`
+3. Para cada entrada:
+   - Cria text strip no canal `channel` entre `frame_start` e `frame_end`
+   - Define o conteúdo do texto
+   - Insere keyframe de opacidade 0 → 1 no frame de entrada (fade in de ~3 frames)
+   - Insere keyframe de opacidade 1 → 0 no frame de saída (fade out de ~3 frames)
+4. Posicionamento: centralizado na parte inferior da tela (configurável via template)
+
+### Limitações conhecidas
+- Estilização (fonte, cor, tamanho) precisa estar pré-configurada no `template.blend`
+- Efeitos mais complexos (karaoke, palavra por palavra) requerem extensão desta função
+
+---
+
+## 8. Storage — Download e Upload
+
+**Funções:** `download_file()`, `upload_file()`  
+**Arquivo:** `src/blender_worker/storage/client.py`  
+**Status:** Implementado
+
+### download_file
+```python
+def download_file(bucket: str, key: str, dest_path: str) -> None
+```
+- Usa `get_s3_client().download_file(bucket, key, dest_path)`
+- Cria diretórios intermediários se necessário
+- Levanta exception se o objeto não existe no MinIO
+
+### upload_file
+```python
+def upload_file(bucket: str, key: str, src_path: str) -> None
+```
+- Usa `get_s3_client().upload_file(src_path, bucket, key)`
+- Levanta exception se o arquivo local não existe
+
+**Bucket padrão:** lido de `settings.CONFIG.storage.bucket` (configurado em `config.ini`)
+
+---
+
+## 9. Bootstrap e Configuração (`src/core`)
+
+**Arquivos:** `src/core/config.py`, `src/core/logger.py`, `src/core/bootstrap.py`  
+**Status:** Implementado
+
+### Descrição
+Módulo de infraestrutura responsável por inicializar o sistema antes de qualquer outro módulo ser carregado. É acionado automaticamente ao importar `from src.core import settings`.
+
+### Fluxo de bootstrap
+1. `load_dotenv()` — carrega o `.env` da raiz do projeto
+2. `Settings.load()` — lê variáveis de ambiente e o arquivo `config.ini` (ou `config.prod.ini` se `ENV=prod`)
+3. `log_setup()` — configura structlog + handlers de stdout e arquivo rotativo
+4. Instala `sys.excepthook` para logar exceções não tratadas
+
+### Objeto `settings`
+Acessível via `from src.core import settings`. Atributos disponíveis:
+
+| Atributo | Tipo | Origem |
+|---|---|---|
+| `ROOT_DIR` | `str` | Env var `ROOT_DIR` (obrigatório) |
+| `ENV` | `str` | Env var `ENV` (padrão: `dev`) |
+| `DEBUG` | `bool` | Env var `DEBUG` (padrão: `false`) |
+| `CONFIG.<section>.<key>` | tipado | `config.ini` / `config.prod.ini` |
+
+Exemplos de acesso: `settings.CONFIG.blender.bin`, `settings.CONFIG.storage.bucket`.
+
+### Logger
+- `dev`: saída colorida no stdout via `ConsoleRenderer`
+- `prod`: JSON no stdout via `JSONRenderer`
+- Arquivo rotativo: configurado por `[log]` no `config.ini`
+
+---
+
+---
+
+## 10. Gerador de Imagem — Comment Card
+
+**Rota:** `POST /images/render`  
+**Arquivos:** `src/blender_worker/api/routes/images.py`, `src/blender_worker/image/composer.py`, `src/blender_worker/image/text.py`  
+**Status:** Implementado
+
+### Descrição
+
+Gera uma imagem PNG no estilo "card de comentário": fundo retangular com bordas arredondadas, assets posicionados (ex: avatar), e texto com quebra de linha automática. O layout é controlado por um arquivo de guide JSON versionado no repositório. O PNG gerado é salvo no MinIO.
+
+### POST /images/render
+
+**Request:**
+```json
+{
+  "template": "comment_default",
+  "text": "Este é o texto do comentário, pode ser longo.",
+  "assets": {
+    "avatar": "uploads/usuario123/avatar.png"
+  },
+  "output_key": "renders/custom/resultado.png"
+}
+```
+
+| Campo | Obrigatório | Descrição |
+|---|---|---|
+| `template` | Sim | Nome do guide em `templates/` (ex: `"comment_default"` → `templates/comment_default.json`). 404 se não existir. |
+| `text` | Sim | Texto do comentário. Quebrado automaticamente em múltiplas linhas com base na largura disponível. |
+| `assets` | Não | `{"id": "minio_key"}` — substitui as MinIO keys padrão definidas no guide. Assets ausentes são ignorados silenciosamente pelo compositor. |
+| `output_key` | Não | Key de destino no MinIO. Se omitido, gera `renders/<uuid>.png`. |
+
+**Resposta:**
+```json
+// 201 Created
+{
+  "output_key": "renders/677b1bef-8c67-4a05-98b2-06b0f42d997d.png"
+}
+
+// 404 Not Found — template não existe
+{ "detail": "Template 'nome_invalido' not found" }
+```
+
+### Guide JSON (template de layout)
+
+Arquivo JSON versionado em `templates/`. Define o layout visual completo da imagem.
+
+```json
+{
+  "version": "1.0",
+  "canvas": { "width": 800 },
+  "background": {
+    "color": [25, 25, 25, 230],
+    "radius": 16,
+    "padding": { "top": 20, "right": 20, "bottom": 20, "left": 20 }
+  },
+  "assets": [
+    {
+      "id": "avatar",
+      "minio_key": "assets/avatar.png",
+      "size": { "width": 48, "height": 48 },
+      "position": { "x": 0, "y": 0 }
+    }
+  ],
+  "text": {
+    "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "size": 18,
+    "color": [255, 255, 255, 255],
+    "offset": { "x": 60, "y": 4 }
+  }
+}
+```
+
+| Campo | Descrição |
+|---|---|
+| `canvas.width` | Largura fixa em pixels |
+| `background.color` | RGBA (0–255 cada canal) |
+| `background.radius` | Raio das bordas arredondadas em pixels |
+| `background.padding` | Distância entre a borda do retângulo e o conteúdo interno |
+| `assets[].id` | Identificador; usado para mapear ao `assets` do request |
+| `assets[].size` | Tamanho que o asset ocupará — a imagem é redimensionada |
+| `assets[].position` | Posição relativa ao canto superior-esquerdo da área de padding |
+| `text.font_path` | Caminho absoluto para o arquivo `.ttf` |
+| `text.offset` | Posição do bloco de texto relativa ao canto superior-esquerdo da área de padding |
+
+**Altura do canvas:** calculada dinamicamente: `padding.top + max(maior_asset_height, altura_texto) + padding.bottom`.
+
+### Pipeline interno
+
+```
+1. Carrega guide JSON do disco (templates/{template}.json)
+2. Carrega fonte TTF (font_path do guide)
+3. Para cada asset no guide:
+   - Usa minio_key do request.assets[id] se fornecido, senão usa o padrão do guide
+   - Baixa bytes do MinIO (asyncio.to_thread)
+   - Falha silenciosa se não encontrar — compositor pula assets ausentes
+4. Calcula altura do canvas com base no texto quebrado
+5. Compõe imagem (Pillow):
+   - Rounded rect com supersampling 4× para bordas suaves
+   - Assets posicionados e redimensionados
+   - Texto renderizado linha por linha
+6. Upload do PNG para MinIO (asyncio.to_thread)
+7. Retorna output_key
+```
+
+### Observações
+
+- Resposta é **síncrona** — a composição é rápida (Pillow, não Blender), não usa BackgroundTasks.
+- O bucket MinIO precisa existir antes da primeira chamada. Não é criado automaticamente.
+- Fonte padrão: `DejaVuSans.ttf` (instalada via `fonts-dejavu-core` no Dockerfile). Para desenvolvimento local fora do Docker: `sudo apt install fonts-dejavu-core`.
+
+---
+
+## Resumo de Status
+
+| Feature | Status |
+|---|---|
+| `GET /health` | ✅ Implementado |
+| `POST /jobs` + `GET /jobs/{id}` | ✅ Implementado |
+| `POST /videos` + `GET /videos/{id}` | ✅ Implementado |
+| `POST /templates` + `GET /templates/{id}` | ✅ Implementado |
+| Worker pipeline completo | ✅ Implementado |
+| `scripts/edit_video.py` | ✅ Implementado |
+| `import_subtitles()` | ✅ Implementado |
+| `download_file()` / `upload_file()` | ✅ Implementado |
+| `src/core` (config, logger, bootstrap) | ✅ Implementado |
+| Migração inicial do DB | ✅ Gerada e aplicada |
+| `POST /images/render` (comment card) | ✅ Implementado |

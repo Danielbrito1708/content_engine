@@ -1,0 +1,19 @@
+{
+    "frame_rate": 30,
+    "frame_end": 900,
+    "channels": {
+      "video": 1,
+      "music": 2,
+      "voice": 3,
+      "subtitles": 4
+    },
+    "timing": {
+      "intro_start": 0,
+      "intro_end": 90,
+      "speech_start": 90,
+      "speech_end": 750,
+      "outro_start": 750,
+      "outro_end": 900,
+      "music_fade_out": 840
+    }
+}
