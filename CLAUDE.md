@@ -31,10 +31,24 @@ O orchestrador é o único serviço que conhece o fluxo completo. Os demais são
 
 ## Regras de desenvolvimento
 
-- Antes de qualquer commit: `git fetch origin && git status`. Se estiver atrás, fazer rebase primeiro.
+- Antes de qualquer commit: `git fetch origin && git status`. Se estiver atrás, fazer rebase primeiro: `git pull --rebase origin main`.
+- Nunca adicionar linhas `Co-Authored-By` em mensagens de commit.
 - Mudanças que afetam a interface entre serviços (request/response schemas) devem ser documentadas em `docs/vision.md` antes de serem implementadas.
 - Cada novo serviço deve ter seu próprio `CLAUDE.md` antes de começar a implementação.
 - Quando um serviço do monorepo for alterado, sincronizar a alteração no repo individual correspondente (se existir).
+
+## Regras de testes
+
+- Toda nova funcionalidade deve ter testes — nenhum feature, rota, model ou comportamento está completo sem testes correspondentes.
+- Cobrir tanto o happy path quanto edge cases (404s, falhas, dados ausentes).
+- Testes ficam em `tests/` dentro de cada serviço e espelham o módulo testado.
+- Rodar `poetry run pytest` antes de considerar qualquer trabalho concluído.
+
+## Regras de documentação
+
+- Todo novo feature deve ser documentado no `CLAUDE.md` do serviço correspondente antes de ser considerado pronto.
+- Documentar: caminho do módulo, API pública (funções/classes/endpoints), inputs/outputs e como se encaixa no pipeline.
+- Manter as entradas concisas — suficiente para uma sessão futura entender o que existe sem precisar ler o fonte.
 
 ## Comandos
 
