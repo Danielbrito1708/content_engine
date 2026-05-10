@@ -44,6 +44,8 @@ class TTSEnvSettings(BaseModel):
     silence_thresh_db: int
     min_silence_ms: int
     silence_padding_ms: int
+    whisper_model: str
+    whisper_language: str
 
     @model_validator(mode="before")
     @classmethod
@@ -65,6 +67,8 @@ class TTSEnvSettings(BaseModel):
             "silence_thresh_db": int(os.environ.get("SILENCE_THRESH_DB", "-40")),
             "min_silence_ms": int(os.environ.get("MIN_SILENCE_MS", "500")),
             "silence_padding_ms": int(os.environ.get("SILENCE_PADDING_MS", "100")),
+            "whisper_model": os.environ.get("WHISPER_MODEL", "base"),
+            "whisper_language": os.environ.get("WHISPER_LANGUAGE", "pt"),
         }
 
     @model_validator(mode="after")

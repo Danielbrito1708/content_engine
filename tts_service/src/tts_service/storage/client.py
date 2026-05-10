@@ -17,11 +17,19 @@ def get_s3_client():
 
 
 async def upload_audio(bucket: str, key: str, data: bytes) -> None:
+    await _put(bucket, key, data, "audio/mpeg")
+
+
+async def upload_bytes(bucket: str, key: str, data: bytes, content_type: str) -> None:
+    await _put(bucket, key, data, content_type)
+
+
+async def _put(bucket: str, key: str, data: bytes, content_type: str) -> None:
     s3 = get_s3_client()
     await asyncio.to_thread(
         s3.put_object,
         Bucket=bucket,
         Key=key,
         Body=data,
-        ContentType="audio/mpeg",
+        ContentType=content_type,
     )

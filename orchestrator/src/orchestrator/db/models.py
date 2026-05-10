@@ -57,6 +57,7 @@ class PipelinePart(Base):
     part_number: Mapped[int] = mapped_column(Integer, nullable=False)
     script: Mapped[str] = mapped_column(Text, nullable=False)
     audio_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    srt_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     video_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     blender_job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     status: Mapped[PartStatus] = mapped_column(Enum(PartStatus), nullable=False, default=PartStatus.pending)

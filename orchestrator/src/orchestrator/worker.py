@@ -12,7 +12,6 @@ from src.orchestrator.clients.tts import TTSClient
 from src.orchestrator.db.engine import AsyncSessionLocal
 from src.orchestrator.db.models import PartStatus, PipelinePart, PipelineRun, PipelineStatus
 from src.orchestrator.storage.client import upload_bytes
-from src.orchestrator.utils.srt import text_to_srt
 
 log = get_logger(__name__)
 
@@ -76,16 +75,17 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun) -> None:
     part.status = PartStatus.tts_running
     await session.commit()
 
-    audio_key = await TTSClient().generate(
+    audio_key, srt_key = await TTSClient().generate(
         text=part.script,
         run_id=str(run.id),
         part_number=part.part_number,
     )
 
     part.audio_key = audio_key
+    part.srt_key = srt_key
     part.status = PartStatus.tts_done
     await session.commit()
-    log.info("audio ready", run_id=str(run.id), part=part.part_number, key=audio_key)
+    log.info("audio ready", run_id=str(run.id), part=part.part_number, audio=audio_key, srt=srt_key)
 
 
 async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
@@ -93,16 +93,12 @@ async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
     part.status = PartStatus.render_pending
     await session.commit()
 
-    bucket = settings.CONFIG.storage.bucket
-    subtitle_key = f"subs/{run.id}/part_{part.part_number}.srt"
-    await upload_bytes(bucket, subtitle_key, text_to_srt(part.script), "text/plain")
-
     blender = BlenderClient()
     video_id = await blender.create_video(
         video_file_key=settings.CONFIG.template.background_video_key,
         music_key=settings.CONFIG.template.music_key,
         voice_key=part.audio_key,
-        subtitle_key=subtitle_key,
+        subtitle_key=part.srt_key,
     )
 
     template_id = uuid.UUID(settings.env.blender_template_id)

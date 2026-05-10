@@ -9,3 +9,4 @@ class GenerateRequest(BaseModel):
 
 class GenerateResponse(BaseModel):
     audio_key: str
+    srt_key: str
