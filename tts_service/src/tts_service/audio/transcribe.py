@@ -21,19 +21,22 @@ def transcribe_to_srt(audio_bytes: bytes, language: str = "pt", model_name: str 
         tmp_path = tmp.name
 
     try:
-        segments, _ = model.transcribe(tmp_path, language=language)
-        return _to_srt(list(segments))
+        segments, _ = model.transcribe(tmp_path, language=language, word_timestamps=True)
+        return _words_to_srt(list(segments))
     finally:
         os.unlink(tmp_path)
 
 
-def _to_srt(segments) -> bytes:
+def _words_to_srt(segments) -> bytes:
     lines = []
-    for i, seg in enumerate(segments, start=1):
-        lines.append(str(i))
-        lines.append(f"{_fmt(seg.start)} --> {_fmt(seg.end)}")
-        lines.append(seg.text.strip())
-        lines.append("")
+    i = 1
+    for seg in segments:
+        for word in (seg.words or []):
+            lines.append(str(i))
+            lines.append(f"{_fmt(word.start)} --> {_fmt(word.end)}")
+            lines.append(word.word.strip())
+            lines.append("")
+            i += 1
     return "\n".join(lines).encode("utf-8")
 
 
