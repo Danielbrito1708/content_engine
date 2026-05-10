@@ -9,6 +9,7 @@ os.environ.setdefault("TTS_VOICE", "pt-BR-ThalitaNeural")
 os.environ.setdefault("MINIO_ENDPOINT", "http://localhost:9000")
 os.environ.setdefault("MINIO_ACCESS_KEY", "minioadmin")
 os.environ.setdefault("MINIO_SECRET_KEY", "minioadmin")
+os.environ.setdefault("REMOVE_SILENCE", "false")
 
 from src.tts_service.api.app import app  # noqa: E402
 

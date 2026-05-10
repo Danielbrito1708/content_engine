@@ -40,6 +40,10 @@ class TTSEnvSettings(BaseModel):
     minio_bucket: str
     elevenlabs_api_key: str | None
     elevenlabs_voice_id: str | None
+    remove_silence: bool
+    silence_thresh_db: int
+    min_silence_ms: int
+    silence_padding_ms: int
 
     @model_validator(mode="before")
     @classmethod
@@ -57,6 +61,10 @@ class TTSEnvSettings(BaseModel):
             "minio_bucket": os.environ.get("MINIO_BUCKET", "blender-jobs"),
             "elevenlabs_api_key": os.environ.get("ELEVENLABS_API_KEY"),
             "elevenlabs_voice_id": os.environ.get("ELEVENLABS_VOICE_ID"),
+            "remove_silence": os.environ.get("REMOVE_SILENCE", "true").lower() == "true",
+            "silence_thresh_db": int(os.environ.get("SILENCE_THRESH_DB", "-40")),
+            "min_silence_ms": int(os.environ.get("MIN_SILENCE_MS", "500")),
+            "silence_padding_ms": int(os.environ.get("SILENCE_PADDING_MS", "100")),
         }
 
     @model_validator(mode="after")

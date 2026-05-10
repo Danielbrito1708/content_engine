@@ -45,9 +45,31 @@ Selecionado por `TTS_PROVIDER` env var:
 
 Voz configurada por `TTS_VOICE` env var.
 
+### Remoção de silêncios (`src/tts_service/audio/silence.py`)
+
+Pós-processamento aplicado ao áudio gerado pelo TTS antes do upload ao MinIO. Remove silêncios do início, do fim e internos (longos demais) do MP3.
+
+**Função pública:**
+- `remove_silence(audio_bytes, min_silence_ms, silence_thresh_db, padding_ms) -> bytes` — recebe MP3 em bytes, devolve MP3 processado em bytes. Puro, sem efeitos colaterais.
+
+**Controle via env vars:**
+
+| Var | Padrão | Descrição |
+|---|---|---|
+| `REMOVE_SILENCE` | `true` | Habilita/desabilita |
+| `SILENCE_THRESH_DB` | `-40` | Nível abaixo do qual é considerado silêncio |
+| `MIN_SILENCE_MS` | `500` | Duração mínima para um silêncio ser removido |
+| `SILENCE_PADDING_MS` | `100` | Margem de silêncio preservada nas bordas dos cortes |
+
+Falhas na remoção são logadas como warning e o áudio original é usado (sem interromper o pipeline).
+
+**Dependências:** `pydub` + `ffmpeg` (adicionado ao Dockerfile).
+
 ## Testes
 
-10 testes em `tests/test_generate.py`. edge-tts e MinIO são sempre mockados. Sem DB.
+`tests/test_generate.py` — 10 testes; edge-tts e MinIO sempre mockados; `REMOVE_SILENCE=false` no conftest (silence removal não afeta os testes do endpoint).
+
+`tests/test_silence.py` — 10 testes; testa a função `remove_silence` diretamente com áudio gerado por pydub + 3 testes de integração com o endpoint. Requer `ffmpeg` instalado.
 
 ```bash
 poetry run pytest
