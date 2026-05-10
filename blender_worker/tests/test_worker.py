@@ -51,7 +51,8 @@ async def test_render_job_completes(session, video, template):
 
     updated = await _get_job(job.id)
     assert updated.status == JobStatus.completed
-    assert updated.output_key == f"outputs/{job.id}.mp4"
+    assert updated.output_key == f"outputs/{job.id}/final.mp4"
+    assert updated.blend_key == f"outputs/{job.id}/output.blend"
     assert updated.error is None
 
 

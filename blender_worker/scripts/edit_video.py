@@ -125,7 +125,6 @@ def main():
 
     scene = bpy.context.scene
     scene.frame_start = 1
-    scene.frame_end = timing["frame_end"]
     scene.render.fps = frame_rate
 
     vse = setup_vse(scene)
@@ -138,19 +137,27 @@ def main():
 
     music_strip = add_sound_strip(vse, assets["music"], channels["music"], t["intro_start"] + 1)
     music_strip.volume = 0.2
-    if "music_fade_out" in t:
-        apply_volume_fade(
-            music_strip,
-            start_frame=t["intro_start"] + 1,
-            fade_start_frame=t["music_fade_out"],
-            end_frame=timing["frame_end"],
-            start_volume=0.2,
-        )
 
     voice_strip = add_sound_strip(vse, assets["voice"], channels["voice"], t["speech_start"] + 1)
     voice_strip.volume = 1.0
 
     import_subtitles(scene, vse, assets["subtitles"], channels["subtitles"], frame_rate)
+
+    # Set frame_end to the last frame where a content strip exists.
+    # Music is excluded because its file may be longer than the actual content.
+    music_channel = channels["music"]
+    content_strips = [s for s in vse.sequences_all if s.channel != music_channel]
+    last_frame = max(s.frame_final_end for s in content_strips) if content_strips else timing["frame_end"]
+    scene.frame_end = last_frame
+
+    if "music_fade_out" in t:
+        apply_volume_fade(
+            music_strip,
+            start_frame=t["intro_start"] + 1,
+            fade_start_frame=t["music_fade_out"],
+            end_frame=last_frame,
+            start_volume=0.2,
+        )
 
     # Render output format: MP4/H264/AAC
     scene.render.image_settings.file_format = "FFMPEG"

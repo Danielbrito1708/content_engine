@@ -85,8 +85,8 @@ Assembles video assets in Blender VSE and renders to MP4. Triggered by `POST /jo
 3. Writes `job_config.json` with paths and timing
 4. Runs `blender -b template.blend -P scripts/edit_video.py -- job_config.json` → saves `output.blend`
 5. Runs `blender -b output.blend -a` → renders `final.mp4`
-6. Uploads `final.mp4` to MinIO as `outputs/{job_id}.mp4`
-7. Sets job status → `completed` (or `failed` + error message on any exception)
+6. Uploads `final.mp4` to MinIO as `outputs/{job_id}.mp4` and `output.blend` as `outputs/{job_id}.blend`
+7. Sets `job.output_key` and `job.blend_key`; status → `completed` (or `failed` + error message on any exception)
 8. Cleans up tmpdir
 
 **`scripts/edit_video.py` VSE layout:**

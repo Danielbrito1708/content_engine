@@ -64,6 +64,7 @@ class Job(Base):
         Enum(JobStatus), nullable=False, default=JobStatus.pending
     )
     output_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    blend_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

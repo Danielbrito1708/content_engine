@@ -157,7 +157,8 @@ Em todos os casos, o trigger sempre normaliza para `plain text + metadata` antes
 
 ```
 tts_service     → audio/{pipeline_run_id}/part_{n}.mp3
-blender_worker  → outputs/{job_id}.mp4
+blender_worker  → outputs/{job_id}.mp4   (vídeo renderizado)
+                → outputs/{job_id}.blend  (cena Blender montada, para inspeção/reuso)
 ```
 
 O orchestrador armazena as keys MinIO de cada artefato no `pipeline_run` para passá-las para os próximos serviços.

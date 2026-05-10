@@ -19,6 +19,7 @@ class JobResponse(BaseModel):
     template_id: uuid.UUID
     status: JobStatus
     output_key: str | None
+    blend_key: str | None
     params: dict[str, Any] | None
     error: str | None
     created_at: datetime

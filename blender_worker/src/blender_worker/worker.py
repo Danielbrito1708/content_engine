@@ -112,12 +112,16 @@ async def render_job(job_id: uuid.UUID) -> None:
                     f"Render exited {render_result.returncode}. stderr: {render_result.stderr[-500:]}"
                 )
 
-            output_key = f"outputs/{job_id}.mp4"
+            output_key = f"outputs/{job_id}/final.mp4"
             await upload_file(bucket, output_key, rendered_file)
 
+            blend_key = f"outputs/{job_id}/output.blend"
+            await upload_file(bucket, blend_key, output_path)
+
             job.output_key = output_key
+            job.blend_key = blend_key
             job.status = JobStatus.completed
-            log.info("render completed", job_id=str(job_id), output_key=output_key)
+            log.info("render completed", job_id=str(job_id), output_key=output_key, blend_key=blend_key)
 
         except Exception as exc:
             job.status = JobStatus.failed
