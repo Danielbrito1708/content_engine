@@ -49,6 +49,9 @@ O orchestrador é o único serviço que conhece o fluxo completo. Os demais são
 - Todo novo feature deve ser documentado no `CLAUDE.md` do serviço correspondente antes de ser considerado pronto.
 - Documentar: caminho do módulo, API pública (funções/classes/endpoints), inputs/outputs e como se encaixa no pipeline.
 - Manter as entradas concisas — suficiente para uma sessão futura entender o que existe sem precisar ler o fonte.
+- **A cada nova implementação, atualizar os dois arquivos de produto nesta ordem:**
+  1. `docs/product.md` — descrever o que mudou em linguagem natural, sem detalhes técnicos, do ponto de vista do usuário.
+  2. `docs/vision.md` — com base no que foi descrito no `product.md`, detalhar as regras de negócio, decisões de design e como o novo comportamento se encaixa no pipeline.
 
 ## Comandos
 
