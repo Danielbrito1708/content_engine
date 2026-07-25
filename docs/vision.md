@@ -165,9 +165,47 @@ O orchestrador armazena as keys MinIO de cada artefato no `pipeline_run` para pa
 
 ---
 
+## Backlog de Features
+
+Features planejadas, ainda não implementadas. Cada entrada descreve o problema, o comportamento proposto e o que precisa mudar — o suficiente para uma sessão futura implementar sem redescobrir o contexto.
+
+### Fila de espera quando o Buffer está cheio
+
+**Problema.** O Buffer free aceita no máximo 10 posts agendados por vez (`config.ini [posting] buffer_queue_limit`). Quando o limite é atingido, `POST /schedule` no `tiktok_poster` responde `429` com `{"error": "buffer_queue_full"}`, o orchestrador marca o `pipeline_run` como `failed` e o vídeo — já renderizado, já pago em tempo de LLM, TTS e render — fica parado. A recuperação hoje é manual: esperar a fila baixar e resubmeter.
+
+Isso é o único ponto do pipeline onde uma condição **temporária e esperada** produz uma falha terminal. Com 2–3 posts/dia e séries de múltiplas partes, a fila enche em poucos dias de operação normal.
+
+**Comportamento proposto.** Fila cheia deixa de ser falha e passa a ser espera:
+
+- O orchestrador ganha o estado `awaiting_slot` — o run terminou render, tem os vídeos no MinIO, e só aguarda vaga no Buffer. Distinto de `failed`: nada deu errado.
+- Um worker periódico varre os runs em `awaiting_slot` (ordem FIFO por `created_at`) e retenta o agendamento. Ao conseguir, o run segue para `scheduled` normalmente.
+- Séries são atômicas: só agenda se houver vaga para **todas** as partes restantes. Agendar a parte 1 e deixar a parte 2 na espera publica um cliffhanger sem continuação.
+- O intervalo de varredura é configurável; algo na ordem de horas é suficiente — a fila só abre quando o Buffer publica.
+
+**O que muda:**
+
+| Onde | Mudança |
+|---|---|
+| `orchestrator/db/models.py` | novo valor `awaiting_slot` em `PipelineStatus` + migration |
+| `orchestrator/worker.py` | `_schedule` trata `429 buffer_queue_full` como `awaiting_slot`, não `failed` |
+| `orchestrator` (novo) | worker de retry periódico varrendo `awaiting_slot` |
+| `tiktok_poster/api/routes/schedule.py` | expor vagas livres na resposta do `429`, para o orchestrador decidir sobre séries sem tentativa e erro |
+| `docs/product.md` | reescrever "Fila cheia" na Feature 6 — deixa de ser falha |
+
+**Pré-requisito.** O retry periódico exige um agendador que sobreviva a restart do container. Hoje o orchestrador usa `BackgroundTasks`, que não serve — a mesma limitação já registrada como tech debt no `blender_worker`. Resolver os dois juntos (fila real: Celery + Redis, ou APScheduler com store no Postgres).
+
+**Alternativas consideradas.**
+
+- **Buffer pago** — resolve por dinheiro (limite muito maior), não resolve o caso de a fila encher mesmo assim. Vale como mitigação, não como solução.
+- **Publicar direto na TikTok Content Posting API** — elimina o Buffer e o limite de fila, mas troca um problema por outro: OAuth, refresh de token, e o agendamento passa a ser responsabilidade nossa. Ver "TikTok API" em Decisões em Aberto. A fila de espera é útil de qualquer forma, porque o limite de ritmo (posts/dia) continua existindo.
+
+**Critério de aceite.** Submeter runs além do limite da fila: nenhum vai para `failed`, todos ficam em `awaiting_slot`, e cada um é agendado sozinho conforme a fila abre — sem resubmissão manual e sem perder a ordem.
+
+---
+
 ## Decisões em Aberto
 
 - **Schema de classificação por tipo de conteúdo**: o LLM recebe um schema fixo ou gera livremente e o orchestrador valida? → Definir quando implementar o llm_service.
 - **TikTok API**: autenticação OAuth vs. token estático de longa duração → Definir quando implementar o tiktok_poster.
 - **Dashboard**: servido pelo orchestrador (FastAPI + Jinja2) ou container Next.js separado → MVP usa Jinja2, pode migrar depois.
-- **Retry automático**: se TTS ou render falhar, o orchestrador retenta automaticamente ou só marca como `failed`? → MVP marca como failed.
+- **Retry automático**: se TTS ou render falhar, o orchestrador retenta automaticamente ou só marca como `failed`? → MVP marca como failed. O caso de fila cheia do Buffer é diferente (falha temporária, não erro) e já tem solução desenhada em "Fila de espera quando o Buffer está cheio", no Backlog de Features.
