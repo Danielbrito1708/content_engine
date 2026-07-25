@@ -26,8 +26,11 @@ Serviço de geração de áudio a partir de texto. Expõe `POST /generate` que o
 
 **Response** (`GenerateResponse`):
 - `audio_key` (str) — key MinIO do áudio gerado: `audio/{run_id}/part_{part_number}.mp3`
+- `srt_key` (str) — key MinIO da legenda word-level: `subs/{run_id}/part_{part_number}.srt`
 
-Erros: `502` se o TTS falhar ou se o upload ao MinIO falhar.
+**Ordem das etapas:** TTS → remoção de silêncios → upload do áudio → transcrição → upload do SRT. A transcrição roda **depois** do corte de silêncio, sobre o mesmo áudio que vai ao vídeo — é o que mantém a legenda em sincronia.
+
+Erros: `502` se o TTS, o upload ao MinIO ou a transcrição falharem.
 
 ### Providers TTS (`src/tts_service/tts/`)
 
@@ -64,6 +67,28 @@ Pós-processamento aplicado ao áudio gerado pelo TTS antes do upload ao MinIO. 
 Falhas na remoção são logadas como warning e o áudio original é usado (sem interromper o pipeline).
 
 **Dependências:** `pydub` + `ffmpeg` (adicionado ao Dockerfile).
+
+### Transcrição / legenda word-level (`src/tts_service/audio/transcribe.py`)
+
+Transcreve o áudio final (já sem silêncios) e gera o SRT que o `blender_worker` usa como legenda. Substituiu o SRT com timing estimado que o orchestrador gerava a partir do roteiro.
+
+**Função pública:**
+- `transcribe_to_srt(audio_bytes, language="pt", model_name="base") -> bytes` — recebe MP3 em bytes, devolve SRT em bytes com **uma entrada por palavra**.
+
+Usa `faster-whisper` com `word_timestamps=True` (device `cpu`, `compute_type="int8"`). O modelo é carregado uma vez e reaproveitado num cache global (`_model`) — a primeira request paga o download/load.
+
+**Controle via env vars:**
+
+| Var | Padrão | Descrição |
+|---|---|---|
+| `WHISPER_MODEL` | `base` | Tamanho do modelo (`tiny`, `base`, `small`, `medium`, ...) |
+| `WHISPER_LANGUAGE` | `pt` | Idioma da transcrição |
+
+Modelos maiores alinham as palavras melhor, ao custo de CPU. Falha na transcrição **derruba a request** com `502` (diferente da remoção de silêncio, que degrada silenciosamente).
+
+O consumo dessa legenda (offset de sincronia, hold entre palavras, fades) é responsabilidade do `blender_worker` — ver `docs/vision.md` na raiz do monorepo.
+
+**Sem testes** — `transcribe.py` não tem cobertura (exigiria mockar `WhisperModel` ou fixture de áudio real).
 
 ## Testes
 

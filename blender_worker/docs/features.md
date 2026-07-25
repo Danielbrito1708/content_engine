@@ -154,6 +154,10 @@ Templates são reutilizados em múltiplos jobs. Criar um template bem calibrado 
     "voice": 3,
     "subtitles": 4
   },
+  "subtitles": {
+    "fade_frames": 3,
+    "max_hold_seconds": 0.4
+  },
   "timing": {
     "intro_start": 0,
     "intro_end": 90,
@@ -171,6 +175,7 @@ Templates são reutilizados em múltiplos jobs. Criar um template bem calibrado 
 | `frame_rate` | FPS da cena Blender |
 | `frame_end` | Frame final da timeline |
 | `channels.*` | Canal VSE de cada trilha |
+| `subtitles` | Opcional. `fade_frames` (padrão 3, `0` desliga) e `max_hold_seconds` (padrão 0.4) — ver seção 7 |
 | `timing.*` | Frames de início/fim de cada seção |
 
 **Casos de erro:**
@@ -343,6 +348,12 @@ Função async chamada em background após a criação do job. Executa o pipelin
 ### Descrição
 Script Python executado dentro do interpretador do Blender. Recebe o caminho do `job_config.json` como argumento após `--`. Não pode importar de `src/` — deve ser self-contained usando apenas stdlib e a API `bpy`.
 
+### ⚠️ `fps_base` precisa ser resetado
+
+O FPS efetivo do Blender é `render.fps / render.fps_base`, e o `fps_base` vem do `.blend`. O `template.blend` atual está gravado como `fps=6, fps_base=0.1` (ou seja, 60 fps). Definir só `render.fps = frame_rate` deixa o `fps_base` intacto e a cena roda a `frame_rate / 0.1` — **10× o pretendido**.
+
+O `main()` define `render.fps_base = 1.0` junto com `render.fps`. Sem isso: strips de áudio ficam 10× mais longas (o `frame_end` calculado a partir delas estoura), o MP4 sai com o fps errado, e todo timing em frames (legendas, `speech_start`, `music_fade_out`) fica fora de sincronia com o áudio.
+
 ### Estrutura
 
 ```python
@@ -363,8 +374,12 @@ def add_video_strip(vse, path, channel, frame_start):
 def add_audio_strip(vse, path, channel, frame_start):
     # bpy.ops.sequencer.sound_strip_add(...)
 
-def import_subtitles(vse, srt_path, channel, timing):
-    # Parseia SRT e gera text strips animados
+def build_subtitle_timeline(entries, frame_rate, frame_offset, fade_frames, max_hold_seconds):
+    # Puro: SRT → specs de strip sem overlap. Ver seção 7.
+    ...
+
+def import_subtitles(scene, vse, srt_path, channel, frame_rate, frame_offset, **subtitle_opts):
+    # Consome os specs e cria as text strips (scene: os keyframes vivem na action da cena)
     ...
 
 def main():
@@ -377,53 +392,114 @@ def main():
     scene.render.fps = timing["frame_rate"]
 
     vse = setup_vse(scene)
+    speech_start = timing["timing"]["speech_start"] + 1
 
-    add_video_strip(vse, assets["video"],    timing["channels"]["video"],     timing["timing"]["intro_start"])
-    add_audio_strip(vse, assets["music"],    timing["channels"]["music"],     timing["timing"]["intro_start"])
-    add_audio_strip(vse, assets["voice"],    timing["channels"]["voice"],     timing["timing"]["speech_start"])
-    import_subtitles(vse, assets["subtitles"], timing["channels"]["subtitles"], timing)
+    add_video_strip(vse, assets["video"], timing["channels"]["video"],  timing["timing"]["intro_start"])
+    add_audio_strip(vse, assets["music"], timing["channels"]["music"],  timing["timing"]["intro_start"])
+    add_audio_strip(vse, assets["voice"], timing["channels"]["voice"],  speech_start)
+
+    # frame_offset = speech_start: o SRT é relativo ao início da narração
+    import_subtitles(scene, vse, assets["subtitles"], timing["channels"]["subtitles"],
+                     timing["frame_rate"], frame_offset=speech_start, **timing.get("subtitles", {}))
 
     bpy.ops.wm.save_as_mainfile(filepath=config["output_path"])
 
-main()
+if __name__ == "__main__":   # Blender roda o script como __main__; o guard deixa os
+    main()                   # helpers puros importáveis pelos testes
 ```
 
 ---
 
-## 7. Legendas Animadas (import_subtitles)
+## 7. Legendas palavra por palavra (import_subtitles)
 
-**Função:** `import_subtitles(vse, srt_path, channel, timing)`  
+**Funções:** `parse_srt()`, `ts_to_frame()`, `build_subtitle_timeline()`, `import_subtitles()`  
 **Localização:** `scripts/edit_video.py`  
 **Status:** Implementado
 
 ### Descrição
-O Blender não tem suporte nativo para legendas animadas. Esta função parseia um `.srt` e cria text strips no VSE com keyframes de opacidade para simular animação de entrada/saída.
+O Blender não tem suporte nativo para legendas. Estas funções parseiam um `.srt` e criam text strips no VSE, uma por entrada, com keyframes de opacidade nas bordas.
+
+O `.srt` vem do `tts_service`, que transcreve a narração com Whisper (`word_timestamps=True`) e emite **uma entrada por palavra**. O timeline é construído para esse formato: entradas curtíssimas, muitas por segundo, quase sempre encostadas umas nas outras.
 
 ### Formato SRT suportado
 ```
 1
-00:00:03,000 --> 00:00:06,500
-Texto da primeira legenda
+00:00:00,000 --> 00:00:00,320
+Bem-vindo
 
 2
-00:00:07,000 --> 00:00:10,200
-Segunda legenda
-com múltiplas linhas
+00:00:00,320 --> 00:00:00,540
+ao
 ```
 
+Entradas de frase (várias palavras, múltiplas linhas) continuam funcionando — o timeline não assume tamanho de entrada.
+
+### API
+
+```python
+parse_srt(path) -> list[(start_ts, end_ts, text)]
+ts_to_frame(timestamp, frame_rate) -> int          # arredonda para o frame mais próximo
+
+build_subtitle_timeline(
+    entries, frame_rate,
+    frame_offset=0, fade_frames=3, max_hold_seconds=0.4, rise_frames=4,
+) -> list[dict]   # {start, end, text, fade_in, fade_out, rise} — tudo em frames
+
+import_subtitles(
+    scene, vse, srt_path, channel, frame_rate,
+    frame_offset=0, fade_frames=3, max_hold_seconds=0.4,
+    rise_frames=4, rise_offset=0.025,
+) -> int          # nº de strips criadas
+```
+
+`scene` é necessário porque os keyframes de uma strip ficam na action da *cena*, não na strip (`TextSequence` não tem `animation_data`).
+
+`build_subtitle_timeline` é puro (não toca `bpy`) — é onde vive toda a lógica e é o que os testes exercitam.
+
 ### Comportamento
-1. Parseia o `.srt` com regex: extrai índice, timestamps (`HH:MM:SS,mmm`) e texto
-2. Converte timestamps para frame number: `frame = (h*3600 + m*60 + s + ms/1000) * frame_rate`
-3. Para cada entrada:
-   - Cria text strip no canal `channel` entre `frame_start` e `frame_end`
-   - Define o conteúdo do texto
-   - Insere keyframe de opacidade 0 → 1 no frame de entrada (fade in de ~3 frames)
-   - Insere keyframe de opacidade 1 → 0 no frame de saída (fade out de ~3 frames)
-4. Posicionamento: centralizado na parte inferior da tela (configurável via template)
+1. Parseia o `.srt` com regex: índice, timestamps (`HH:MM:SS,mmm`) e texto
+2. Converte para frames com `round()` e soma `frame_offset` (o `main()` passa `speech_start + 1`, pois os timestamps do SRT são relativos ao início da narração)
+3. Monta o timeline:
+   - **Hold** — o fim de cada entrada é estendido até o início da próxima, limitado a `max_hold_seconds` além do seu próprio fim
+   - **Sem overlap** — o fim é clampado ao início da próxima entrada
+   - **Duração mínima** de 1 frame
+   - **Merge** — entradas que caem no mesmo frame são concatenadas numa strip só
+   - **Fade** — `fade_frames` só nas bordas de vão real (e na primeira/última strip), limitado a ⅓ da duração da strip
+   - **Rise** — `rise_frames` para *toda* palavra, limitado a `duração - 1`
+4. Cria uma text strip por spec, `blend_alpha = 1.0`, keyframes de opacidade só onde há fade
+5. Anima a entrada: cada palavra nasce em `SUBTITLE_Y - rise_offset` e sobe até `SUBTITLE_Y` em `rise` frames, com interpolação `SINE`/`EASE_OUT` fixada explicitamente por `_set_easing` (keyframes novos herdariam a preferência do Blender de quem rodar)
+6. Posicionamento de repouso: centralizado, `SUBTITLE_Y = 0.05` da altura
+
+### Fade × Rise
+
+São animações ortogonais e propositalmente têm alcances diferentes:
+
+| | Fade (`blend_alpha`) | Rise (`location[1]`) |
+|---|---|---|
+| Onde aplica | só nas bordas de vão real + primeira/última | **toda** palavra |
+| Por quê | fade entre palavras adjacentes lê como piscada | dá o "pop" por palavra sem tocar na opacidade |
+| Cap | ⅓ da duração | `duração - 1` |
+
+Num SRT de 12 palavras com uma pausa no meio: 4 curvas de `blend_alpha`, 12 de `location`.
+
+### Config no template.json
+```json
+"subtitles": {
+  "fade_frames": 3,
+  "max_hold_seconds": 0.4,
+  "rise_frames": 4,
+  "rise_offset": 0.025
+}
+```
+`fade_frames: 0` desliga o fade (corte seco); `rise_frames: 0` desliga a subida. `rise_offset` é fração da altura do frame (0.025 ≈ 48px em 1080×1920).
+
+### Testes
+`tests/test_subtitles.py` — 16 testes, marcados `no_db`. Carrega `edit_video.py` por path via `importlib`; não precisa de Blender nem de docker compose.
 
 ### Limitações conhecidas
-- Estilização (fonte, cor, tamanho) precisa estar pré-configurada no `template.blend`
-- Efeitos mais complexos (karaoke, palavra por palavra) requerem extensão desta função
+
+- **Estilização não é configurável.** As text strips nascem do código via `new_effect()` e o script nunca define `strip.font`, `font_size`, `color`, `use_shadow` ou `use_outline`. Resultado: `font = None` (o Blender cai na fonte embutida no binário) e `font_size = 60`, o default — **3,1% da altura num frame de 1920px**, bem abaixo dos 7–10% usuais de vídeo vertical. Nada no `template.blend` influencia isso: o template não tem text strips nem datablock de fonte. Para tornar configurável, o caminho de menor atrito é `.ttf` na imagem (o Dockerfile já instala `fonts-dejavu-core` para o compositor de imagem) + `font_size`/`color`/contorno no bloco `subtitles` do `template.json`.
+- Karaokê (frase fixa com a palavra atual destacada) exigiria strips sobrepostas ou material por palavra — não suportado
 
 ---
 
@@ -609,7 +685,7 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
 | `POST /templates` + `GET /templates/{id}` | ✅ Implementado |
 | Worker pipeline completo | ✅ Implementado |
 | `scripts/edit_video.py` | ✅ Implementado |
-| `import_subtitles()` | ✅ Implementado |
+| `import_subtitles()` — legendas palavra por palavra | ✅ Implementado |
 | `download_file()` / `upload_file()` | ✅ Implementado |
 | `src/core` (config, logger, bootstrap) | ✅ Implementado |
 | Migração inicial do DB | ✅ Gerada e aplicada |

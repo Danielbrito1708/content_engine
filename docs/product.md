@@ -72,7 +72,19 @@ O vídeo de fundo toca durante todo o tempo. A trilha sonora começa junto, com 
 
 **Legendas:**
 
-As legendas são geradas automaticamente a partir do roteiro. O sistema estima o tempo de cada trecho com base na velocidade média de fala, e as divide em blocos de até 8 palavras. Cada bloco aparece na tela com uma animação de entrada e saída suave.
+As legendas são geradas automaticamente a partir da narração — não do roteiro. O sistema escuta o áudio já pronto e descobre o momento exato em que cada palavra é dita, então a legenda acompanha de fato o que foi falado, e não uma estimativa de velocidade de fala.
+
+Na tela aparece uma palavra por vez, no ritmo da narração. Cada palavra fica visível até a próxima começar, para que não haja buracos entre elas. Quando a narração faz uma pausa mais longa, a legenda sai da tela em vez de deixar a última palavra pendurada — e volta suavemente quando a fala recomeça.
+
+**Animação de entrada:** cada palavra surge um pouco abaixo da posição final e sobe rapidamente até ela, desacelerando ao chegar. É um movimento curto — cerca de um oitavo de segundo — que dá um "pulo" a cada palavra e faz a legenda acompanhar o ritmo da fala em vez de só trocar o texto no lugar. Esse movimento vale para todas as palavras, inclusive as que vêm coladas umas nas outras.
+
+O aparecer e desaparecer suave (a transparência) fica reservado só para os momentos de pausa — entre palavras seguidas a troca é direta, porque desbotar a cada palavra lê como piscada.
+
+A altura da subida, a duração dela, o quanto a legenda pode "esperar" numa pausa antes de sair da tela e a duração do aparecer/desaparecer são todos ajustáveis no template.
+
+**Velocidade do vídeo:**
+
+O vídeo final agora respeita a taxa de quadros definida no template. Antes, um ajuste herdado do arquivo de template fazia a montagem rodar dez vezes mais rápido do que o pretendido — o que desalinhava a narração, a trilha e as legendas do vídeo de fundo. O tempo de cada elemento agora corresponde ao tempo real.
 
 **Templates:**
 

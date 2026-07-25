@@ -13,11 +13,11 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `db/engine.py` — engine async + `AsyncSessionLocal` + `get_session()` dependency
 - `schemas/pipeline.py` — `PipelineCreate`, `PipelineResponse`, `PartResponse`
 - `clients/llm.py` — `LLMClient.refine(script, metadata) → RefineResult`
-- `clients/tts.py` — `TTSClient.generate(text, run_id, part_number) → audio_key`
+- `clients/tts.py` — `TTSClient.generate(text, run_id, part_number) → (audio_key, srt_key)`
 - `clients/blender.py` — `BlenderClient`: `create_video(...)`, `create_job(...)`, `get_job_status(...)`, `poll_job(...)`
 - `clients/tiktok.py` — `TikTokClient.schedule(video_key, classification, part_number, series_id)`
 - `storage/client.py` — `upload_bytes(bucket, key, data, content_type)` via boto3 (MinIO/R2)
-- `utils/srt.py` — `text_to_srt(text, words_per_minute) → bytes`: gera SRT com timing estimado
+- `utils/srt.py` — ⚠️ código morto: `text_to_srt(text, words_per_minute) → bytes` gerava SRT com timing estimado. A legenda agora vem pronta do `tts_service` (word-level, transcrita do áudio). Pode ser removido.
 - `worker.py` — `run_pipeline(run_id)`: executa o pipeline completo em background via FastAPI BackgroundTasks
 
 ## Estado do PipelineRun
@@ -81,10 +81,10 @@ Assets estáticos (background + música) em `config.ini [template]`.
 2. **`_process_all_parts`**: para cada part, executa `_run_tts` + `_run_render` sequencialmente
 3. **`_schedule`**: chama `TikTokClient.schedule()` para cada part com `video_key` definido
 
-**`_run_tts`**: chama `POST tts_service/generate` → salva `audio_key` na part.
+**`_run_tts`**: chama `POST tts_service/generate` → salva `audio_key` e `srt_key` na part.
 
 **`_run_render`**:
-1. Gera SRT via `text_to_srt(part.script)` e faz upload para MinIO como `subs/{run_id}/part_{n}.srt`
+1. Usa `part.srt_key` — legenda word-level já transcrita e subida pelo `tts_service` em `subs/{run_id}/part_{n}.srt`. O orchestrador não gera SRT.
 2. `POST blender_worker/videos` com `background_video_key` + `music_key` (do config.ini) + `voice_key` (audio do TTS) + `subtitle_key`
 3. `POST blender_worker/jobs` com `video_id` + `BLENDER_TEMPLATE_ID`
 4. Polling via `poll_job()` até `completed` ou `failed`
@@ -92,9 +92,9 @@ Assets estáticos (background + música) em `config.ini [template]`.
 
 **Pré-requisito de infra**: o template (`.blend` + `template.json`) e os assets estáticos (background.mp4, music.mp3) devem estar pré-registrados no blender_worker e no MinIO antes de rodar o pipeline.
 
-### SRT generation (`src/orchestrator/utils/srt.py`)
+### Legendas
 
-`text_to_srt(text, words_per_minute=150) -> bytes` — converte texto plano em SRT com timing estimado. Divide em chunks de 8 palavras; timing estimado a 150 WPM.
+O orchestrador não participa da geração de legenda: o `tts_service` transcreve o próprio áudio (Whisper, timestamp por palavra) e devolve o `srt_key` junto com o `audio_key`. O orchestrador só persiste em `PipelinePart.srt_key` e repassa como `subtitle_key` ao `blender_worker`. Regras em `docs/vision.md` → "Legendas (word-level)".
 
 ### Storage (`src/orchestrator/storage/client.py`)
 

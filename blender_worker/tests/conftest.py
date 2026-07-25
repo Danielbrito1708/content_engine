@@ -55,8 +55,10 @@ def mock_render_job(monkeypatch):
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def clean_db():
+async def clean_db(request):
     yield
+    if "no_db" in request.keywords:
+        return
     async with AsyncSessionLocal() as s:
         await s.execute(delete(Job))
         await s.execute(delete(Video))

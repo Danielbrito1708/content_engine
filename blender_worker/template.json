@@ -7,6 +7,12 @@
       "voice": 3,
       "subtitles": 4
     },
+    "subtitles": {
+      "fade_frames": 3,
+      "max_hold_seconds": 0.4,
+      "rise_frames": 4,
+      "rise_offset": 0.025
+    },
     "timing": {
       "intro_start": 0,
       "intro_end": 90,
