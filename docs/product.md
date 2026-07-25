@@ -20,11 +20,29 @@ Periodicamente, ele varre comunidades do Reddit em português — desabafos, rel
 
 **Por que Reddit e não vídeos do YouTube:** a ideia de baixar vídeos populares e transcrevê-los foi considerada e descartada por três motivos. A transcrição de um vídeo é literalmente o roteiro de outra pessoa, o que é copiar e não se inspirar. Visualizações medem o canal e a thumbnail, não a qualidade do texto — seria otimizar pelo sinal errado. E o custo é muito maior: baixar e transcrever leva minutos por vídeo, enquanto um post do Reddit já chega pronto em texto. O YouTube ainda pode entrar depois, mas como **descobridor de temas** que estão performando, para o sistema escrever um roteiro original sobre o assunto.
 
+**Como ele escolhe entre as histórias:**
+
+Cada comunidade entrega suas histórias já ordenadas pelas mais votadas da semana — o próprio Reddit faz esse ranking, e é ele que o sistema usa como medida de qualidade.
+
+Mas o sistema não pega simplesmente as melhores do topo geral, porque isso faria uma única comunidade dominar tudo. Em vez disso, ele alterna: pega a melhor disponível de cada comunidade, uma por vez, em rodízio. O resultado é que as histórias publicadas continuam sendo as mais bem ranqueadas, e ao mesmo tempo variam de origem e de tom entre um vídeo e outro.
+
+O rodízio se mantém sozinho ao longo dos dias, porque o sistema lembra o que já usou e nunca repete.
+
 **O que é descartado automaticamente:**
 
 Nem toda história serve. O sistema recusa textos curtos demais, que não têm história suficiente para sustentar um vídeo, e longos demais, que precisariam ser tão cortados que o que iria ao ar já não seria o post original.
 
-Mais importante: há uma lista de assuntos vetados — automutilação, suicídio, abuso sexual, aliciamento. Não é moralismo, é sobrevivência do canal: o TikTok remove contas que publicam esse tipo de conteúdo. Uma única coleta ruim custaria o perfil inteiro.
+Depois disso, cada história que está prestes a ser publicada passa por uma leitura de segurança feita por um modelo de linguagem. A pergunta é uma só: publicar isso coloca a conta em risco de suspensão? Assuntos como automutilação, abuso sexual e violência gráfica são recusados. Não é moralismo, é sobrevivência do canal — o TikTok remove contas que publicam esse tipo de conteúdo, e uma única coleta ruim custaria o perfil inteiro.
+
+**Por que um modelo e não uma lista de palavras proibidas:**
+
+A primeira versão usava uma lista de termos vetados, e ela errava de um jeito instrutivo. Uma história sobre alguém que recebeu de volta um Pix enviado por engano foi descartada porque continha a frase "eram 3 mil que não *me mataria*, mas afundaria minhas contas". A lista viu a palavra e recusou uma história boa e inofensiva.
+
+Segurança depende do contexto, não da presença de palavras. A mesma expressão pode ser figura de linguagem sobre dinheiro ou relato de ameaça real — só lendo a frase inteira dá para saber. Por isso a decisão passou a ser de um modelo, que lê a história e julga o sentido.
+
+Histórias pesadas continuam passando: término, traição, briga de família, demissão, dívida, luto. Esse é justamente o material que funciona. O que é barrado é o que coloca a conta em risco.
+
+Para não sair caro, essa leitura acontece só nas histórias que já estão na fila para virar vídeo — algumas por ciclo, não em tudo que foi coletado. E se o serviço de leitura estiver indisponível, o sistema **não publica sem checar nem descarta a história**: ele apenas espera e tenta de novo no ciclo seguinte.
 
 **Nada é publicado duas vezes:**
 

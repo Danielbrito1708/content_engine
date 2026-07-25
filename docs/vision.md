@@ -163,10 +163,35 @@ O feed RSS **não carrega score**. Por isso pedimos `/r/{sub}/top/.rss?t=week`: 
 
 Leitura não autenticada é limitada a aproximadamente **uma requisição por 40s** — a resposta traz `x-ratelimit-remaining: 0` e `x-ratelimit-reset: ~40` já na primeira chamada. Requisições em sequência fazem só o primeiro subreddit responder 200; o resto toma 429. Daí o espaçamento obrigatório entre subreddits (`request_delay_seconds`, padrão 60s — 45s ainda tomou 429 em teste real, a janela desliza). Cada subreddit extra custa uma janela por ciclo, então a lista deve conter só subs que rendem.
 
+### Seleção entre candidatos
+
+As fontes são buscadas e concatenadas na ordem do config. Pegar o começo dessa lista dava **todas** as vagas ao primeiro subreddit: medido ao vivo, as duas submissões vieram de `r/desabafos` enquanto `r/relacionamentos` contribuiu cinco candidatos e não ganhou nenhuma. Configurar mais subreddits era decorativo.
+
+A seleção é por **rodízio entre origens** (`interleave_by_origin`), preservando o ranking interno de cada uma:
+
+```
+desabafos[0], relacionamentos[0], conselhos[0], desabafos[1], ...
+```
+
+Isso mantém o ranking do Reddit como critério — continuamos pegando o melhor *disponível* de cada — e garante variedade de origem e tom entre vídeos consecutivos. Combinado com o dedup, o rodízio entre ciclos emerge sozinho, sem estado de rotação persistido.
+
+**Não há score composto** (posição × tamanho × recência). Sem upvotes reais, qualquer peso seria inventado. Quando `seen_items` acumular histórico de performance, dá para ranquear com base em evidência.
+
 ### Filtros
 
-- **Blocklist tem precedência sobre tudo.** Match por substring sobre texto normalizado (casefold, sem acentos), então `suicíd` pega `SUICIDIO` e `suicidou`. Motivo é operacional, não moral: o TikTok remove contas por conteúdo de automutilação e abuso sexual, e uma coleta ruim custa o perfil.
-- **Tamanho limitado nas duas pontas.** Curto demais não sustenta um vídeo; longo demais obrigaria o LLM a cortar tanto que o que vai ao ar já não é o post.
+Duas etapas, separadas de propósito por custo e por natureza:
+
+**1. Determinística (`filters.py`).** Tamanho nas duas pontas: curto demais não sustenta um vídeo; longo demais obrigaria o LLM a cortar tanto que o que vai ao ar já não é o post. Roda sobre todo candidato, é grátis.
+
+**2. Moderação por LLM (`llm_service POST /moderate`).** Decide se publicar coloca a conta em risco de remoção.
+
+A versão anterior era uma blocklist por substring, e ela errou de forma instrutiva: `me matar` casou dentro de `"Eram 3 mil que não me mataria"` — figura de linguagem sobre dinheiro — descartando uma história boa. Enquanto `"disseram que depois de me matar iam fazer com ela..."` é ameaça real e precisa ser barrada. **As duas contêm a mesma sequência de caracteres.** Segurança é julgamento de contexto, não casamento de padrão.
+
+O prompt é explícito em aprovar histórias pesadas — término, traição, briga de família, demissão, dívida, luto — porque esse é o material do produto. O que barra é automutilação, abuso sexual, violência gráfica, ódio e conteúdo envolvendo menores.
+
+**Custo.** Roda por publicação, não por post buscado: só nos candidatos que já passaram tamanho, dedup e ordenação, e apenas até o orçamento do ciclo encher. Duas a três chamadas por ciclo em vez de ~30. Modelo configurado em `LLM_MODERATION_MODEL`, separado do modelo de refino — a chamada é um sim/não.
+
+**Falha de moderação não é veredito.** `ModerationError` é distinto de `safe=false`: o candidato **não** é gravado em `seen_items`, o ciclo encerra, e a história continua disponível depois. Uma indisponibilidade não pode nem publicar sem checagem, nem queimar história boa em definitivo.
 
 ### Dedup e auditoria
 

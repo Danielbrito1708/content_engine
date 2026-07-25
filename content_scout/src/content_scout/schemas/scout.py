@@ -10,8 +10,10 @@ class ScoutRunResponse(BaseModel):
     fetched: int
     already_seen: int
     filtered: int
+    unsafe: int
     submitted: int
     skipped_no_capacity: bool
+    moderation_unavailable: bool
     active_runs: int
     submitted_ids: list[str]
 

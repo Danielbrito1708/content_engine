@@ -36,9 +36,9 @@ alembic upgrade head
 - `SCOUT_ENABLED` — `true`/`false` (default `true`): liga o loop periódico
 - `SCOUT_USER_AGENT` — User-Agent das requisições ao Reddit
 
-Nenhuma chave de API é necessária — o caminho RSS não autentica.
+Nenhuma chave de API é necessária aqui — o caminho RSS não autentica, e a moderação passa pelo `llm_service`, que detém as chaves.
 
-Config em `config.ini`: `[services] orchestrator_url`, `[reddit]`, `[filters]`, `[scout]`.
+Config em `config.ini`: `[services] orchestrator_url` + `llm_url`, `[reddit]`, `[filters]`, `[scout]`.
 
 ## Features
 
@@ -58,12 +58,27 @@ Lê o feed Atom `/r/{sub}/top/.rss?t={janela}&limit={n}` de cada subreddit confi
 
 ⚠️ **Rate limit.** Leitura não autenticada permite ~1 requisição por 40s: a resposta já traz `x-ratelimit-remaining: 0` e `x-ratelimit-reset: ~40` na primeira chamada. Sem espaçamento, **só o primeiro subreddit da lista responde 200** e todos os outros tomam 429 silenciosamente. Por isso `request_delay_seconds` (padrão 60) entre requisições — medido ao vivo, 45s ainda tomou 429 com `reset=12`, então a janela desliza. Cada subreddit extra custa uma janela por ciclo: mantenha na lista só subs que rendem.
 
-### Filtros (`src/content_scout/filters.py`)
+### Filtros determinísticos (`src/content_scout/filters.py`)
 
-`evaluate(candidate, min_chars, max_chars, blocklist) -> str | None` — devolve o motivo da rejeição ou `None`.
+`evaluate(candidate, min_chars, max_chars) -> str | None` — devolve o motivo da rejeição ou `None`.
 
-- **Blocklist antes de tudo** — termo bloqueado desqualifica independente do resto. Match por substring sobre texto normalizado (casefold + sem acentos), então `suicíd` pega `SUICIDIO` e `suicidou`. Não é pudor: o TikTok remove contas por conteúdo de automutilação e abuso sexual.
-- **Limites de tamanho nas duas pontas** — curto demais não tem história; longo demais obrigaria o LLM a cortar tanto que o que vai ao ar já não é o post.
+Só checagens baratas e determinísticas. **Limites de tamanho nas duas pontas** — curto demais não tem história; longo demais obrigaria o LLM a cortar tanto que o que vai ao ar já não é o post.
+
+Segurança **não** mora aqui — ver abaixo.
+
+### Moderação por LLM (`src/content_scout/clients/llm.py` → `llm_service POST /moderate`)
+
+`ModerationClient.check(title, text) -> Verdict(safe, category, reason)`.
+
+**Por que não é mais blocklist.** A versão anterior casava substring: `me matar` casava dentro de `"Eram 3 mil que não me mataria"` — figura de linguagem sobre dinheiro — e descartava uma história boa. Já `"disseram que depois de me matar iam fazer com ela..."` é ameaça real e precisa ser barrada. As duas contêm exatamente a mesma sequência de caracteres. Segurança aqui é julgamento de contexto, e isso exige um modelo.
+
+**Custo.** A moderação roda **por publicação, não por post buscado** — só nos candidatos que já passaram tamanho, dedup e ordenação, e apenas até o orçamento do ciclo encher. Na prática, 2–3 chamadas por ciclo em vez de ~30. Usa `LLM_MODERATION_MODEL`, separado do modelo de refino.
+
+⚠️ **"Não deu para checar" nunca vira veredito.** `ModerationError` é distinto de `safe=False`:
+- `safe=False` → grava `SeenItem` com `unsafe:{categoria}`, candidato queimado para sempre.
+- `ModerationError` → **não grava nada**, encerra o ciclo e o candidato continua disponível no próximo. Uma indisponibilidade do `llm_service` não pode nem publicar sem checagem, nem descartar história boa em definitivo.
+
+O ciclo para na primeira falha de moderação em vez de tentar os demais: se o serviço caiu, todos falhariam igual.
 
 ### Ciclo do scout (`src/content_scout/scout.py`)
 
@@ -73,7 +88,13 @@ Lê o feed Atom `/r/{sub}/top/.rss?t={janela}&limit={n}` de cada subreddit confi
 
 **Backpressure** — consulta `GET /pipeline` no orchestrador e conta runs em estado ativo (`pending`, `refining`, `refined`, `processing`, `scheduling`). Se `active_runs >= max_pending_runs`, nada é submetido. A fila free do Buffer segura 10 posts; ingerir mais rápido do que se publica só converte roteiro novo em run falho.
 
-**Orçamento por ciclo** — `min(capacidade_restante, max_per_cycle, candidatos_frescos)`.
+**Orçamento por ciclo** — `min(capacidade_restante, max_per_cycle)`. A lista ordenada é percorrida **além** do orçamento, porque candidato rejeitado pela moderação não consome vaga — a próxima história assume.
+
+**Seleção: `interleave_by_origin(candidates)`** — rodízio entre origens, preservando o ranking interno de cada uma.
+
+As fontes são concatenadas na ordem do config, então pegar o começo da lista dava todas as vagas ao primeiro subreddit. Medido ao vivo: as duas submissões vieram de `r/desabafos` enquanto `r/relacionamentos` contribuiu 5 candidatos e não ganhou nenhuma — configurar mais subreddits era decorativo.
+
+Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando o melhor *disponível* de cada) e garante que nenhuma comunidade monopolize. Junto com o dedup, o rodízio entre ciclos emerge sozinho, sem guardar estado de rotação.
 
 **Dedup** — `SeenItem.external_id` é único e guarda **todo** candidato avaliado, inclusive os rejeitados, com o motivo. Sem isso o scout reposta a mesma história toda semana que ela reaparece no top, e re-avalia o mesmo lixo para sempre. A tabela também serve de trilha de auditoria para calibrar os filtros contra dados reais.
 
@@ -86,7 +107,7 @@ Lê o feed Atom `/r/{sub}/top/.rss?t={janela}&limit={n}` de cada subreddit confi
 - `POST /scout/run` — roda um ciclo agora, síncrono, e devolve os contadores. Feito para calibrar filtros vendo o resultado na hora.
 - `GET /scout/seen?status=&limit=&offset=` — trilha de auditoria; filtre por `filtered` para ver o que foi rejeitado e por quê.
 
-**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `submitted`, `skipped_no_capacity`, `active_runs`, `submitted_ids`.
+**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`.
 
 ### Adicionando uma fonte nova (ex.: YouTube)
 

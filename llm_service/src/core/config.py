@@ -34,6 +34,7 @@ class LLMEnvSettings(BaseModel):
 
     llm_provider: str
     llm_model: str
+    llm_moderation_model: str
     openrouter_api_key: str | None
     chutes_api_key: str | None
     chutes_base_url: str
@@ -45,6 +46,12 @@ class LLMEnvSettings(BaseModel):
         return {
             "llm_provider": os.environ.get("LLM_PROVIDER", "openrouter"),
             "llm_model": os.environ.get("LLM_MODEL", "anthropic/claude-3.5-sonnet"),
+            # Moderation is a yes/no call — it does not need the refinement model.
+            # Falls back to LLM_MODEL so the endpoint works with no extra config;
+            # point it at a cheaper model to cut the per-candidate cost.
+            "llm_moderation_model": os.environ.get(
+                "LLM_MODERATION_MODEL", os.environ.get("LLM_MODEL", "anthropic/claude-3.5-sonnet")
+            ),
             "openrouter_api_key": os.environ.get("OPENROUTER_API_KEY"),
             "chutes_api_key": os.environ.get("CHUTES_API_KEY"),
             "chutes_base_url": os.environ.get("CHUTES_BASE_URL", "https://llm.chutes.ai/v1"),

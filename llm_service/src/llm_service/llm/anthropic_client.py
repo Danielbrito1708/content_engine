@@ -8,6 +8,8 @@ from src.llm_service.schemas.refine import RefineResponse
 
 
 class AnthropicClient(BaseLLMClient):
+    needs_json_hint = True
+
     def __init__(self, model: str):
         self._client = anthropic.AsyncAnthropic(api_key=settings.env.anthropic_api_key)
         self._model = model

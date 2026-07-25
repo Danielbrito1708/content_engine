@@ -99,10 +99,24 @@ async def test_factory_openrouter(monkeypatch):
     assert isinstance(client, OpenAICompatClient)
 
 
+def _patch_provider(monkeypatch, provider: str):
+    """Swap the settings object the factory reads.
+
+    ``monkeypatch.setenv`` alone does nothing here: settings are loaded once at
+    bootstrap into a frozen model, so the factory never re-reads the environment.
+    """
+    from types import SimpleNamespace
+
+    from src.core import settings
+
+    stub = SimpleNamespace(env=SimpleNamespace(**{**settings.env.model_dump(),
+                                                 "llm_provider": provider}))
+    monkeypatch.setattr("src.llm_service.llm.factory.settings", stub)
+
+
 async def test_factory_anthropic(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
-    monkeypatch.setenv("LLM_MODEL", "claude-opus-4-5")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    _patch_provider(monkeypatch, "anthropic")
 
     from src.llm_service.llm.anthropic_client import AnthropicClient
     from src.llm_service.llm.factory import get_llm_client
@@ -111,8 +125,9 @@ async def test_factory_anthropic(monkeypatch):
 
 
 async def test_factory_unknown_provider_raises(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "invalid")
     import pytest
+    _patch_provider(monkeypatch, "invalid")
+
     from src.llm_service.llm.factory import get_llm_client
     with pytest.raises(ValueError, match="Unknown LLM_PROVIDER"):
         get_llm_client()

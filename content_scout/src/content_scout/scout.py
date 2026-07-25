@@ -1,9 +1,11 @@
 import asyncio
 from dataclasses import dataclass, field
+from itertools import zip_longest
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from src.content_scout.clients.llm import ModerationClient, ModerationError
 from src.content_scout.clients.orchestrator import OrchestratorClient
 from src.content_scout.db.engine import AsyncSessionLocal
 from src.content_scout.db.models import SeenItem, SeenStatus
@@ -20,8 +22,10 @@ class ScoutReport:
     fetched: int = 0
     already_seen: int = 0
     filtered: int = 0
+    unsafe: int = 0
     submitted: int = 0
     skipped_no_capacity: bool = False
+    moderation_unavailable: bool = False
     active_runs: int = 0
     submitted_ids: list[str] = field(default_factory=list)
 
@@ -47,6 +51,49 @@ def build_sources() -> list[Source]:
     ]
 
 
+def interleave_by_origin(
+    candidates: list[Candidate], usage: dict[str, int] | None = None
+) -> list[Candidate]:
+    """Round-robin across origins, least-served origin first.
+
+    Sources are fetched and concatenated in config order, so taking the head of
+    that list hands every slot to whichever subreddit happens to come first.
+    Measured live: both submissions came from the first sub while the second
+    contributed five candidates and won nothing — configuring more subreddits
+    was decorative.
+
+    Plain interleaving is not enough either. With a budget of 2 and three
+    origins, ``a0, b0, c0, a1, …`` truncated at 2 yields ``a0, b0`` every single
+    cycle: the third origin only gets a turn once the first two run dry.
+
+    So ``usage`` — how many candidates each origin has had submitted, straight
+    from the ``seen_items`` audit trail — orders the groups, least-served first.
+    Ties break on name for determinism. The counter is derived, never stored, so
+    it cannot drift out of sync with what was actually published.
+    """
+    usage = usage or {}
+    groups: dict[str, list[Candidate]] = {}
+    for candidate in candidates:
+        groups.setdefault(candidate.origin, []).append(candidate)
+
+    ranked = sorted(groups.items(), key=lambda kv: (usage.get(kv[0], 0), kv[0]))
+
+    ordered: list[Candidate] = []
+    for row in zip_longest(*(items for _origin, items in ranked)):
+        ordered.extend(c for c in row if c is not None)
+    return ordered
+
+
+async def _submitted_per_origin(session) -> dict[str, int]:
+    """How many candidates each origin has had published, from the audit trail."""
+    result = await session.execute(
+        select(SeenItem.origin, func.count())
+        .where(SeenItem.status == SeenStatus.submitted)
+        .group_by(SeenItem.origin)
+    )
+    return {origin: count for origin, count in result.all()}
+
+
 async def _known_ids(session, external_ids: list[str]) -> set[str]:
     if not external_ids:
         return set()
@@ -68,7 +115,6 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
     sources = sources or build_sources()
     scout_cfg = settings.CONFIG.scout
     filter_cfg = settings.CONFIG.filters
-    blocklist = [t.strip() for t in str(filter_cfg.blocklist).split(",") if t.strip()]
 
     candidates: list[Candidate] = []
     for source in sources:
@@ -92,7 +138,6 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 candidate,
                 min_chars=filter_cfg.min_chars,
                 max_chars=filter_cfg.max_chars,
-                blocklist=blocklist,
             )
             if reason:
                 report.filtered += 1
@@ -109,8 +154,43 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
             log.info("scout_no_capacity", active_runs=report.active_runs)
             return report
 
-        budget = min(capacity, scout_cfg.max_per_cycle, len(fresh))
-        for candidate in fresh[:budget]:
+        budget = min(capacity, scout_cfg.max_per_cycle)
+        moderation = ModerationClient()
+        usage = await _submitted_per_origin(session)
+
+        # Walk past the budget: rejected candidates don't consume a slot, so the
+        # list has to be walked until the budget is actually filled. Moderation
+        # runs here rather than in the filter pass so it only ever costs a call
+        # for candidates that were genuinely about to be published — a handful
+        # per cycle instead of one per fetched post.
+        for candidate in interleave_by_origin(fresh, usage):
+            if report.submitted >= budget:
+                break
+
+            try:
+                verdict = await moderation.check(candidate.title, candidate.text)
+            except ModerationError as exc:
+                # Not recorded as seen: an outage must not permanently discard a
+                # story. Stop the cycle — if the service is down, every remaining
+                # candidate would fail the same way.
+                report.moderation_unavailable = True
+                log.error("scout_moderation_unavailable", error=str(exc))
+                break
+
+            if not verdict.safe:
+                report.unsafe += 1
+                report.filtered += 1
+                session.add(
+                    _seen_row(candidate, SeenStatus.filtered, skip_reason=verdict.as_skip_reason())
+                )
+                log.info(
+                    "scout_rejected_unsafe",
+                    external_id=candidate.external_id,
+                    category=verdict.category,
+                    reason=verdict.reason,
+                )
+                continue
+
             try:
                 run_id = await orchestrator.create_pipeline(
                     script=candidate.text, metadata=candidate.to_metadata()
@@ -166,8 +246,10 @@ async def scout_loop() -> None:
                 fetched=report.fetched,
                 already_seen=report.already_seen,
                 filtered=report.filtered,
+                unsafe=report.unsafe,
                 submitted=report.submitted,
                 no_capacity=report.skipped_no_capacity,
+                moderation_unavailable=report.moderation_unavailable,
             )
         except Exception as exc:  # noqa: BLE001 — the loop must outlive any single failure
             log.error("scout_cycle_failed", error=str(exc), exc_info=True)

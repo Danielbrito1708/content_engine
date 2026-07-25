@@ -34,6 +34,19 @@ Serviço de refinamento e classificação de roteiros via LLM. Expõe `POST /ref
 
 Erros: `502` se o LLM retornar JSON inválido ou se a chamada à API falhar.
 
+### Endpoint de moderação (`src/llm_service/api/routes/moderate.py`)
+
+`POST /moderate` — decide se uma história pode virar vídeo publicado, do ponto de vista de risco de remoção da conta. Chamado pelo `content_scout`.
+
+**Request** (`ModerateRequest`): `text` (str), `title` (str, opcional).
+**Response** (`ModerateResponse`): `safe` (bool), `category` (str | null), `reason` (str | null).
+
+Erros: `502` se o LLM falhar ou devolver JSON sem veredito. O chamador precisa distinguir "inseguro" de "não deu para checar" — o segundo é retry, nunca aprovação.
+
+**Por que existe.** Substituiu uma blocklist por substring no `content_scout`, que não distinguia `"3 mil que não me mataria"` (figura de linguagem sobre dinheiro) de uma ameaça real de violência. O prompt em `prompts/moderate.py` traz esses casos como exemplos, e é explícito em marcar como seguro histórias pesadas — término, traição, luto, dívida — que são o material normal do produto.
+
+**Modelo próprio.** Usa `LLM_MODERATION_MODEL`, que cai de volta para `LLM_MODEL` quando não definido. A chamada é um sim/não, então não precisa do modelo de refino — apontar para um mais barato reduz o custo por candidato.
+
 ### Providers LLM (`src/llm_service/llm/`)
 
 Selecionado por `LLM_PROVIDER` env var:
@@ -44,7 +57,9 @@ Selecionado por `LLM_PROVIDER` env var:
 | `chutes` | `CHUTES_API_KEY`, `CHUTES_BASE_URL` | `openai` |
 | `anthropic` | `ANTHROPIC_API_KEY` | `anthropic` |
 
-Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`).
+Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`). `get_llm_client(model=...)` aceita override — usado pela moderação via `LLM_MODERATION_MODEL`.
+
+`BaseLLMClient.complete_json()` faz parse de JSON tolerando cercas de código. Providers sem modo JSON nativo marcam `needs_json_hint = True` (caso da Anthropic) e a instrução vai junto no prompt.
 
 ## Testes
 
