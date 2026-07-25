@@ -1,0 +1,40 @@
+[project]
+name = "content-scout"
+version = "0.1.0"
+description = "Finds candidate scripts on the internet and feeds them to the orchestrator"
+authors = [
+    {name = "Daniel", email = "danielbrito1708@gmail.com"}
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi (>=0.136.1,<0.137.0)",
+    "uvicorn (>=0.46.0,<0.47.0)",
+    "structlog (>=25.5.0,<26.0.0)",
+    "rich (>=15.0.0,<16.0.0)",
+    "python-dotenv (>=1.0.0,<2.0.0)",
+    "pydantic (>=2.13.3,<3.0.0)",
+    "sqlalchemy[asyncio] (>=2.0,<3.0)",
+    "asyncpg (>=0.29,<1.0)",
+    "alembic (>=1.13,<2.0)",
+    "httpx (>=0.27,<1.0)",
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.3,<10.0.0)",
+    "pytest-asyncio (>=0.23,<2.0)",
+    "anyio[trio] (>=4.0,<5.0)",
+    "respx (>=0.21,<1.0)",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+markers = [
+    "no_db: test needs neither Postgres nor any running service",
+]

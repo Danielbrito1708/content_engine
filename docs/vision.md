@@ -15,6 +15,7 @@
 | `llm_service` | 8002 | Refinamento, classificação e divisão de roteiros |
 | `tts_service` | 8003 | Geração de áudio a partir de texto |
 | `tiktok_poster` | 8004 | Publicação, agendamento, hashtags e analytics |
+| `content_scout` | 8005 | Descoberta automática de roteiros na internet |
 | `dashboard` | 3000 | Interface web simples para submissão e monitoramento |
 | `db` (infra) | 5433 | PostgreSQL compartilhado entre serviços |
 | `minio` (infra) | 9000 | Armazenamento de arquivos (áudio, vídeo, assets) |
@@ -24,8 +25,8 @@
 ## Pipeline Completo
 
 ```
-Usuário → dashboard / API
-  └─ POST /pipeline  { script: "...", metadata: {...} }
+content_scout (periódico)  ─┐
+Usuário → dashboard / API ─┴─ POST /pipeline  { script: "...", metadata: {...} }
        │
        ▼
   orchestrator
@@ -129,14 +130,63 @@ O schema é armazenado como JSONB no DB do orchestrador. Novos campos são adici
 
 ## Trigger (entrada)
 
-Por enquanto: `POST /pipeline` no orchestrador com `{ "script": "...", "metadata": {} }`.
+Duas portas de entrada, ambas terminando no mesmo `POST /pipeline`:
 
-Futuramente o trigger pode ser expandido para receber:
-- Posts do Reddit (URL → scraping → extração de texto)
-- Vídeos do YouTube (URL → transcrição)
-- Outros formatos
+1. **Manual** — `POST /pipeline` no orchestrador com `{ "script": "...", "metadata": {} }`.
+2. **Automática** — o `content_scout` descobre roteiros sozinho e chama o mesmo endpoint.
 
-Em todos os casos, o trigger sempre normaliza para `plain text + metadata` antes de enviar ao orchestrador. Quando o trigger virar serviço próprio, ele expõe a mesma interface para o orchestrador.
+O trigger sempre normaliza para `plain text + metadata` antes de enviar ao orchestrador, independente da origem.
+
+---
+
+## Descoberta de conteúdo (content_scout)
+
+### Escolha da fonte
+
+**Reddit, via feeds RSS.** Foram avaliadas três opções:
+
+| Opção | Veredito |
+|---|---|
+| Reddit RSS | **Escolhida.** Sem credencial, sem aprovação, fora da cláusula não-comercial da Data API |
+| Reddit Data API (OAuth) | Descartada por ora. 100 req/min sobrariam, mas exige pré-aprovação e o free tier proíbe uso comercial |
+| YouTube (baixar + transcrever) | Descartada como fonte de roteiro — ver abaixo |
+
+O `.json` sem autenticação do Reddit foi desativado em maio/2026 e responde 403. Os feeds RSS continuam abertos.
+
+**Por que o YouTube não vira roteiro.** A transcrição de um vídeo *é* o roteiro de outra pessoa — republicá-lo com outra voz é cópia, não inspiração. Além disso, visualizações medem o canal, a thumbnail e o algoritmo, não o texto: otimizar por elas é perseguir o proxy errado. E o custo é ordens de grandeza maior (download + Whisper por vídeo, contra texto já pronto). Se o YouTube entrar, entra como **minerador de tema** — `search.list` para descobrir assuntos em alta, e o `llm_service` escreve roteiro original a partir do tema. Sem download, sem transcrição, sem risco de cópia.
+
+### Sinal de qualidade
+
+O feed RSS **não carrega score**. Por isso pedimos `/r/{sub}/top/.rss?t=week`: a ordenação é feita pelo próprio Reddit e chega implícita na posição das entradas. É um sinal mais fraco que o upvote numérico, mas suficiente — o gargalo real é a fila de publicação, não a escassez de candidatos.
+
+### Rate limit
+
+Leitura não autenticada é limitada a aproximadamente **uma requisição por 40s** — a resposta traz `x-ratelimit-remaining: 0` e `x-ratelimit-reset: ~40` já na primeira chamada. Requisições em sequência fazem só o primeiro subreddit responder 200; o resto toma 429. Daí o espaçamento obrigatório entre subreddits (`request_delay_seconds`, padrão 60s — 45s ainda tomou 429 em teste real, a janela desliza). Cada subreddit extra custa uma janela por ciclo, então a lista deve conter só subs que rendem.
+
+### Filtros
+
+- **Blocklist tem precedência sobre tudo.** Match por substring sobre texto normalizado (casefold, sem acentos), então `suicíd` pega `SUICIDIO` e `suicidou`. Motivo é operacional, não moral: o TikTok remove contas por conteúdo de automutilação e abuso sexual, e uma coleta ruim custa o perfil.
+- **Tamanho limitado nas duas pontas.** Curto demais não sustenta um vídeo; longo demais obrigaria o LLM a cortar tanto que o que vai ao ar já não é o post.
+
+### Dedup e auditoria
+
+`seen_items` guarda **todo** candidato avaliado — inclusive os rejeitados, com o motivo. Serve a dois propósitos: impedir que a mesma história vire um segundo vídeo quando reaparece no top da semana seguinte, e permitir calibrar os limiares contra dados reais em vez de chute.
+
+### Backpressure
+
+Antes de submeter, o scout conta os runs ativos no orchestrador (`pending`, `refining`, `refined`, `processing`, `scheduling`). Se atingiu `max_pending_runs`, o ciclo não submete nada.
+
+A razão é a fila do Buffer, que segura 10 posts: ingerir mais rápido do que se publica não gera mais vídeos, só converte roteiro bom em run falho. Enquanto a feature "Fila de espera quando o Buffer está cheio" (ver Backlog) não existir, o backpressure é a única proteção contra isso.
+
+**Ordem das etapas.** A capacidade é verificada *depois* de registrar os filtrados e *antes* de submeter. Assim uma fila cheia não custa nada e não perde nada — o lixo é queimado e o ciclo seguinte parte de uma pilha menor.
+
+### Periodicidade
+
+Loop `asyncio` iniciado no `lifespan` do serviço, intervalo configurável. Não precisa de scheduler durável — diferente do retry do Buffer — porque `seen_items` torna o ciclo idempotente: um restart no pior caso repete uma passagem que não encontra nada novo.
+
+### Adicionando fontes
+
+Toda fonte implementa o Protocol `Source` (`name` + `async fetch() -> list[Candidate]`) e devolve `Candidate` com `external_id` estável, que é a chave de dedup. Dedup, filtros, orçamento e backpressure tratam todas as fontes igualmente.
 
 ---
 
@@ -149,6 +199,7 @@ Em todos os casos, o trigger sempre normaliza para `plain text + metadata` antes
 | `tts_service` | FastAPI + edge-tts (→ ElevenLabs futuramente) |
 | `blender_worker` | FastAPI + Blender 4.2 LTS + Pillow (existente) |
 | `tiktok_poster` | FastAPI + TikTok API |
+| `content_scout` | FastAPI + SQLAlchemy + PostgreSQL + httpx |
 | `dashboard` | HTML/JS servido pelo orchestrador (MVP) |
 
 ---

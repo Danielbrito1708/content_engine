@@ -15,6 +15,7 @@ content_engine/
   llm_service/              ← refinamento e classificação de roteiros
   tts_service/              ← geração de áudio (edge-tts → ElevenLabs)
   tiktok_poster/            ← publicação, agendamento e analytics do TikTok
+  content_scout/            ← descoberta automática de roteiros na internet (Reddit)
 ```
 
 Cada serviço tem seu próprio `Dockerfile`, `pyproject.toml`, `CLAUDE.md` e `docs/`.
@@ -24,7 +25,8 @@ Cada serviço tem seu próprio `Dockerfile`, `pyproject.toml`, `CLAUDE.md` e `do
 Leia `docs/vision.md` antes de qualquer trabalho que envolva mais de um serviço. O pipeline é:
 
 ```
-Trigger (plain text) → orchestrator → llm_service → tts_service → blender_worker → tiktok_poster
+content_scout (automático) ─┐
+Trigger manual (plain text) ─┴→ orchestrator → llm_service → tts_service → blender_worker → tiktok_poster
 ```
 
 O orchestrador é o único serviço que conhece o fluxo completo. Os demais são stateless em relação ao pipeline — recebem uma tarefa, executam, retornam resultado.
@@ -78,6 +80,7 @@ docker compose logs -f orchestrator
 | llm_service | 8002 |
 | tts_service | 8003 |
 | tiktok_poster | 8004 |
+| content_scout | 8005 |
 | PostgreSQL | 5433 |
 | MinIO API | 9000 |
 | MinIO Console | 9001 |
@@ -90,6 +93,7 @@ Internamente (dentro do Docker network), os serviços se comunicam pelo nome do 
 - `http://llm_service:8000`
 - `http://tts_service:8000`
 - `http://tiktok_poster:8000`
+- `http://content_scout:8000`
 
 Externamente (localhost), cada um usa a porta mapeada acima.
 
@@ -100,6 +104,7 @@ Externamente (localhost), cada um usa a porta mapeada acima.
 - `llm_service` — planejado
 - `tts_service` — planejado
 - `tiktok_poster` — planejado
+- `content_scout` — implementado (fonte Reddit via RSS; YouTube previsto como minerador de tema)
 
 ## Decisões em aberto
 
