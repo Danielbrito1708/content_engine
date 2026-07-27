@@ -226,15 +226,19 @@ Também é possível listar todos os pipelines já criados, com paginação, par
 
 ## Feature 8 — Geração de cards de comentário
 
-Além dos vídeos, o sistema consegue gerar imagens no estilo "card de comentário do TikTok" — aquele visual de fundo escuro com bordas arredondadas, avatar e texto de comentário. Esse tipo de imagem é muito usado como overlay em vídeos de reação ou para dar contexto a uma história.
+Além dos vídeos, o sistema consegue gerar imagens no estilo "card de comentário do TikTok" — fundo branco com bordas arredondadas, avatar no topo e o texto do comentário logo abaixo, em letra preta bem grossa (Arial Black). Esse tipo de imagem é muito usado como overlay em vídeos de reação ou para dar contexto a uma história.
 
-O visual do card é controlado por um arquivo de template que define: a largura da imagem, a cor e o arredondamento do fundo, a posição e o tamanho do avatar, a fonte e o tamanho do texto, e o espaçamento interno. Todos esses parâmetros podem ser ajustados sem alterar o código.
+A imagem sai sempre com a mesma largura do vídeo do TikTok, e só a altura muda conforme o tamanho do texto. Dentro dessa moldura, o card em si é mais estreito e fica encostado mais à esquerda: o lado direito da tela do TikTok é ocupado pelos botões de curtir, comentar e compartilhar, então o card precisa dar espaço para eles. O resto da moldura é transparente, o que permite aplicar a imagem sobre o vídeo inteiro sem ninguém precisar calcular posição.
+
+O visual do card é controlado por um arquivo de template que define: a largura e a posição do card, a cor e o arredondamento do fundo, o tamanho do avatar, a fonte, o tamanho e o espaçamento do texto, e o espaçamento interno. Todos esses parâmetros podem ser ajustados sem alterar o código.
 
 O texto do comentário é quebrado automaticamente em múltiplas linhas para caber na largura definida. A altura do card cresce de acordo com o texto — não há limite de caracteres imposto pelo sistema.
 
-O card também pode ter uma sombra projetada, que dá a sensação de que ele está flutuando sobre o vídeo em vez de estar colado nele. Dá para escolher a cor e a opacidade da sombra, o quanto ela é difusa, o quanto ela se espalha para além do card e para que lado ela cai — o padrão é uma sombra suave caindo para baixo, como se a luz viesse de cima. A sombra é opcional: templates que não a configuram continuam produzindo exatamente a mesma imagem de antes.
+Se alguém configurar um card largo demais, ou grudado demais numa das bordas, o sistema recusa a configuração com uma mensagem dizendo de que lado e por quantos pixels ele passou — em vez de gerar uma imagem com a sombra cortada pela metade.
 
-Quando a sombra está ligada, a imagem gerada fica maior que o card, porque precisa de espaço transparente em volta para a sombra caber inteira sem ser cortada. O card em si não muda de tamanho, e a sombra nunca escurece o próprio card por baixo — ela aparece só ao redor dele.
+O card também tem uma sombra projetada, que dá a sensação de que ele está flutuando sobre o vídeo em vez de estar colado nele. Dá para escolher a cor e a opacidade da sombra, o quanto ela é difusa, o quanto ela se espalha para além do card e para que lado ela cai — o padrão é uma sombra suave caindo para baixo, como se a luz viesse de cima. A sombra é opcional: templates que não a configuram continuam produzindo a mesma imagem de antes.
+
+A altura da imagem já reserva o espaço que a sombra precisa em cima e embaixo, então ela nunca aparece cortada. A sombra também nunca escurece o próprio card por baixo — ela aparece só ao redor dele.
 
 O resultado é uma imagem PNG salva no storage, pronta para ser usada como asset em um vídeo.
 

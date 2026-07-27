@@ -1,4 +1,17 @@
-# Fontes das legendas
+# Fontes
+
+Duas fontes são versionadas aqui, para dois consumidores diferentes:
+
+| Arquivo | Usada por | Onde é apontada |
+|---|---|---|
+| `Futura-Bold.ttf` | legendas do vídeo (`scripts/edit_video.py`) | `subtitles.font_path` do `template.json` |
+| `Arial-Black.ttf` | texto do comment card (`image/composer.py`) | `text.font_path` do guide em `templates/` |
+
+**Arial Black não existe na imagem Docker.** O Dockerfile instala só `fonts-dejavu-core`;
+a família Arial vem do pacote `ttf-mscorefonts-installer`, que exige aceite de EULA e baixa
+de fora no build. Versionar o `.ttf` aqui é o que faz o card renderizar igual em qualquer
+máquina. É uma fonte proprietária da Microsoft — a mesma consideração de licença que já
+vale para a Futura.
 
 As legendas do vídeo (`scripts/edit_video.py`) usam **Futura Bold**, versionada aqui
 como `Futura-Bold.ttf`.
