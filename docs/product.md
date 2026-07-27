@@ -102,6 +102,10 @@ A voz padrão é feminina, jovem e adequada para o estilo TikTok brasileiro. É 
 
 O sistema suporta dois motores de voz: um gratuito, baseado na tecnologia da Microsoft, que funciona sem nenhuma configuração extra; e o ElevenLabs, pago, que oferece qualidade superior e controle mais fino sobre a voz. A escolha entre eles é feita por configuração, sem alterar nada no fluxo de produção.
 
+A narração sai acelerada em relação ao ritmo natural da voz. O padrão é 15% mais rápido — o suficiente para dar o ritmo apressado que o formato do TikTok pede, sem que a fala soe artificial ou fique difícil de acompanhar. A voz continua com o tom normal: ela fala mais rápido, não fica mais aguda, porque a aceleração é feita pelo próprio motor de voz e não por acelerar o arquivo depois de pronto.
+
+A velocidade é configurável e aceita tanto acelerar quanto desacelerar. Também é possível voltar ao ritmo original da voz, se um tipo de conteúdo pedir uma narração mais calma. Como o vídeo fica mais curto quando a fala é mais rápida, acelerar também ajuda roteiros na fronteira dos 60 segundos a caberem em um único vídeo em vez de serem divididos em partes.
+
 ---
 
 ## Feature 4 — Remoção de silêncios do áudio
@@ -213,6 +217,8 @@ O resultado é uma imagem PNG salva no storage, pronta para ser usada como asset
 O sistema é configurável em vários aspectos sem precisar alterar o código:
 
 **Voz:** qual voz e qual motor de TTS usar. Padrão: voz feminina jovem brasileira, motor gratuito da Microsoft.
+
+**Velocidade da narração:** quanto mais rápido (ou mais devagar) a voz fala em relação ao ritmo natural dela. Padrão: 15% mais rápido.
 
 **Remoção de silêncio:** se deve remover silêncios, qual é o limiar de volume para considerar algo silêncio, e qual é a duração mínima de silêncio para remover.
 

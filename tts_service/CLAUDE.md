@@ -5,7 +5,7 @@ Serviço de geração de áudio a partir de texto. Expõe `POST /generate` que o
 ## Arquitetura
 
 - `api/routes/generate.py` — endpoint principal
-- `api/routes/health.py` — `GET /health` com provider e voice ativos
+- `api/routes/health.py` — `GET /health` com provider, voice e rate ativos
 - `tts/base.py` — `BaseTTSClient` com método abstrato `generate(text) -> bytes`
 - `tts/edge.py` — `EdgeTTSClient` (edge-tts, Microsoft Neural TTS, gratuito)
 - `tts/elevenlabs.py` — stub para implementação futura
@@ -47,6 +47,22 @@ Selecionado por `TTS_PROVIDER` env var:
 - `pt-BR-AntonioNeural` (masculino)
 
 Voz configurada por `TTS_VOICE` env var.
+
+### Velocidade da narração (`TTS_RATE`)
+
+Acelera (ou desacelera) a narração na **própria síntese**, via `rate` do `edge_tts.Communicate` — que é `prosody rate` do SSML. O pitch fica intacto, diferente de acelerar o MP3 depois (resample deixa a voz aguda).
+
+| Var | Padrão | Descrição |
+|---|---|---|
+| `TTS_RATE` | `+15%` | Percentual **com sinal** sobre o ritmo natural da voz |
+
+Formato obrigatório: `^[+-]\d+%$` (`+15%`, `-10%`, `+0%` para desligar). Formato inválido **derruba o boot** em `TTSEnvSettings._check_rate_format` — falhar no start é melhor do que o edge-tts rejeitar na hora de sintetizar, no meio de uma request.
+
+`EdgeTTSClient(voice=..., rate=...)` aceita override explícito; sem argumento, usa `settings.env.tts_rate`.
+
+Como o rate age antes de tudo, a remoção de silêncio e a transcrição já rodam sobre o áudio acelerado — **o SRT sai sincronizado sem nenhum ajuste** e o `blender_worker` não muda.
+
+O `elevenlabs.py` (stub) ainda não implementa rate; quando for implementado, o equivalente é o parâmetro `speed` do voice settings.
 
 ### Remoção de silêncios (`src/tts_service/audio/silence.py`)
 
@@ -101,6 +117,8 @@ O consumo dessa legenda (offset de sincronia, hold entre palavras, fades) é res
 ⚠️ **`settings.env` é um pydantic model frozen construído uma vez no bootstrap.** `monkeypatch.setenv` não alcança o código sob teste, e `setattr` no campo levanta `ValidationError` — para exercitar um branch que depende de env, troque o `settings` do módulo (ver `test_factory_unknown_raises`).
 
 Rodar com Python 3.11 (o do Dockerfile) — anotações são avaliadas no import, então um nome não importado numa assinatura quebra a coleção do arquivo inteiro, coisa que o Python 3.14 local não acusa.
+
+`tests/test_rate.py` — 16 testes; `edge_tts.Communicate` mockado. Cobre o repasse do `rate` na síntese, o override explícito no construtor, a validação de formato do `TTS_RATE` (via `TTSEnvSettings()` direto, que relê o env) e o campo `rate` no `/health`.
 
 ```bash
 poetry run pytest

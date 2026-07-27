@@ -7,4 +7,9 @@ router = APIRouter()
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "provider": settings.env.tts_provider, "voice": settings.env.tts_voice}
+    return {
+        "status": "ok",
+        "provider": settings.env.tts_provider,
+        "voice": settings.env.tts_voice,
+        "rate": settings.env.tts_rate,
+    }
