@@ -114,9 +114,15 @@ A velocidade é configurável e aceita tanto acelerar quanto desacelerar. També
 
 Antes de usar o áudio no vídeo, o sistema remove automaticamente os silêncios desnecessários. Isso inclui o silêncio antes da fala começar, o silêncio depois da fala terminar, e pausas longas no meio do áudio que deixam o vídeo pesado.
 
-Pausas naturais entre palavras e frases — as que existem para dar ritmo à fala — são preservadas. Só os silêncios acima de 500 milissegundos são removidos. O resultado é um áudio mais compacto e dinâmico, sem cortes bruscos.
+Pausas naturais entre palavras e frases — as que existem para dar ritmo à fala — são preservadas. O resultado é um áudio mais compacto e dinâmico, sem cortes bruscos.
 
-Esse comportamento é ativo por padrão, mas pode ser desligado. Os limiares (quanto silêncio é considerado silêncio, qual é o mínimo para remoção) são configuráveis.
+**A narração continuava soando vazia, e a causa era o próprio corte.** O ajuste que definia quanto silêncio remover nunca funcionou como se imaginava: em vez de escolher *quais* pausas eliminar, ele definia *quanto silêncio sobrava* em cada uma. Com o valor antigo, uma pausa de um segundo e meio e uma de três segundos terminavam as duas com meio segundo de nada — todo intervalo longo virava a mesma lacuna. O valor foi reduzido para 200 milissegundos, e agora pausas curtas passam intactas enquanto as longas encolhem de verdade. Quem já tinha o ajuste antigo configurado não precisa mudar nada: o nome antigo continua sendo aceito.
+
+Esse comportamento é ativo por padrão, mas pode ser desligado. Os limiares (quanto silêncio é considerado silêncio, qual o tamanho máximo de uma pausa) são configuráveis.
+
+**Ferramenta avulsa para calibrar os limiares.** Existe também um comando que processa um arquivo de áudio na máquina, fora do pipeline. Ele serve para ouvir o resultado de um ajuste antes de aplicá-lo à produção: dá para rodar o mesmo áudio com limiares diferentes e comparar, em vez de descobrir que o corte ficou agressivo demais só depois de o vídeo estar pronto. Ele aplica exatamente o mesmo tratamento que a produção aplica — inclusive o ajuste de volume — para que o que se ouve no teste seja o que sai no vídeo.
+
+O comando informa quanto tempo o áudio tinha, quanto ficou e qual a porcentagem removida. Tem um modo de simulação, que faz as contas e reporta o resultado sem gravar arquivo nenhum, e nunca sobrescreve um arquivo existente sem que isso seja pedido explicitamente. Aceita vários arquivos de uma vez, e um que falhe não interrompe os demais.
 
 ---
 
@@ -240,7 +246,7 @@ O sistema é configurável em vários aspectos sem precisar alterar o código:
 
 **Volume da narração:** o nível de audição padronizado de todas as narrações, e a opção de desligar essa padronização.
 
-**Remoção de silêncio:** se deve remover silêncios, qual é o limiar de volume para considerar algo silêncio, e qual é a duração mínima de silêncio para remover.
+**Remoção de silêncio:** se deve remover silêncios, qual é o limiar de volume para considerar algo silêncio, e qual o tamanho máximo que uma pausa pode ter depois do corte.
 
 **Hashtags obrigatórias:** quais hashtags sempre aparecem em todos os posts. Padrão: `#tiktokbrasil` e `#fyp`.
 

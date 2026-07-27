@@ -9,12 +9,9 @@ _FALLBACK_SAMPLE_RATE = 48000
 _FALLBACK_BITRATE = "192k"
 
 # start_duration controls how long non-silence must be observed before the filter
-# begins outputting. Using min_silence_s here would silently drop short speech clips
+# begins outputting. Using max_pause_s here would silently drop short speech clips
 # (e.g. 300ms clip never reaches a 500ms non-silence threshold → nothing output).
 # Use a small fixed value (50ms) so output starts as soon as speech is confirmed.
-#
-# stop_duration controls how long a silence must be to qualify for removal — this IS
-# the user-facing min_silence_ms parameter.
 _START_CONFIRM_S = 0.05
 
 # Voices carry nothing useful below 80 Hz — only room rumble and plosive thump, which
@@ -28,7 +25,7 @@ _LOUDNESS_RANGE = 11
 def build_filter_chain(
     *,
     trim_silence: bool,
-    min_silence_ms: int,
+    max_pause_ms: int,
     silence_thresh_db: int,
     normalize: bool,
     loudness_target_lufs: int,
@@ -43,18 +40,18 @@ def build_filter_chain(
     filters: list[str] = []
 
     if trim_silence:
-        min_silence_s = min_silence_ms / 1000.0
+        max_pause_s = max_pause_ms / 1000.0
         thresh = f"{silence_thresh_db}dB"
         lead = (
             f"silenceremove=start_periods=1:"
             f"start_duration={_START_CONFIRM_S}:start_threshold={thresh}"
         )
         # 1. strip leading silence, 2. areverse + strip trailing + reverse back,
-        # 3. strip internal silences.
+        # 3. cap internal pauses.
         filters += [lead, "areverse", lead, "areverse"]
         filters.append(
             f"silenceremove=stop_periods=-1:"
-            f"stop_duration={min_silence_s}:stop_threshold={thresh}"
+            f"stop_duration={max_pause_s}:stop_threshold={thresh}"
         )
 
     if normalize:
@@ -95,7 +92,7 @@ def process_audio(
     audio_bytes: bytes,
     *,
     trim_silence: bool = True,
-    min_silence_ms: int = 500,
+    max_pause_ms: int = 200,
     silence_thresh_db: int = -40,
     normalize: bool = True,
     loudness_target_lufs: int = -16,
@@ -107,6 +104,17 @@ def process_audio(
     Everything happens in one pass because each MP3→MP3 round trip is another lossy
     generation. When no filter is requested the input is returned untouched rather than
     re-encoded, for the same reason.
+
+    `max_pause_ms` is a **ceiling, not a trigger**. ffmpeg's silenceremove copies audio
+    until `stop_duration` of silence has gone by and only then stops, so the parameter is
+    at once the detection threshold and the amount of silence left behind. A pause
+    shorter than it survives untouched; every longer one — 600ms or 6s — comes out at
+    exactly max_pause_ms. Measured on a 7.5s clip holding a 1.5s and a 3.0s pause: both
+    ended at 0.52s under the old 500ms default, which is why the narration sounded gappy.
+
+    `stop_silence` is deliberately not used: it *adds* to what is kept (measured, 0.1
+    gave 0.62s of residual pause), so it can only lengthen pauses — under a low ceiling
+    it would stretch a pause past its original length.
 
     `bitrate` and `sample_rate` default to whatever the source already is. Forcing them
     higher cannot add information — it only inflates the file.
@@ -129,7 +137,7 @@ def process_audio(
 
         filters = build_filter_chain(
             trim_silence=trim_silence,
-            min_silence_ms=min_silence_ms,
+            max_pause_ms=max_pause_ms,
             silence_thresh_db=silence_thresh_db,
             normalize=normalize,
             loudness_target_lufs=loudness_target_lufs,

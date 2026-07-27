@@ -49,7 +49,7 @@ class TTSEnvSettings(BaseModel):
     elevenlabs_voice_id: str | None
     remove_silence: bool
     silence_thresh_db: int
-    min_silence_ms: int
+    max_pause_ms: int
     normalize_audio: bool
     loudness_target_lufs: int
     audio_bitrate: str | None
@@ -81,7 +81,12 @@ class TTSEnvSettings(BaseModel):
             "elevenlabs_voice_id": os.environ.get("ELEVENLABS_VOICE_ID"),
             "remove_silence": os.environ.get("REMOVE_SILENCE", "true").lower() == "true",
             "silence_thresh_db": int(os.environ.get("SILENCE_THRESH_DB", "-40")),
-            "min_silence_ms": int(os.environ.get("MIN_SILENCE_MS", "500")),
+            # MIN_SILENCE_MS is the former name. It always meant the same number —
+            # the silence left behind at each cut — so it is honoured as a deprecated
+            # alias rather than ignored, which would silently change a tuned .env.
+            "max_pause_ms": int(
+                os.environ.get("MAX_PAUSE_MS") or os.environ.get("MIN_SILENCE_MS") or "200"
+            ),
             "normalize_audio": os.environ.get("NORMALIZE_AUDIO", "true").lower() == "true",
             "loudness_target_lufs": int(os.environ.get("LOUDNESS_TARGET_LUFS", "-16")),
             # Unset means "match the source". Forcing a rate/bitrate above what the

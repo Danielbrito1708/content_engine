@@ -92,9 +92,9 @@ O `elevenlabs.py` (stub) ainda não implementa rate; quando for implementado, o 
 Substituiu `audio/silence.py`. Corta silêncios **e** normaliza loudness numa **única passada de ffmpeg**, antes do upload ao MinIO. Uma passada só porque cada round-trip MP3→MP3 é outra geração lossy.
 
 **Funções públicas:**
-- `build_filter_chain(*, trim_silence, min_silence_ms, silence_thresh_db, normalize, loudness_target_lufs, sample_rate) -> list[str]` — os filtros em ordem; lista vazia = nada a fazer
+- `build_filter_chain(*, trim_silence, max_pause_ms, silence_thresh_db, normalize, loudness_target_lufs, sample_rate) -> list[str]` — os filtros em ordem; lista vazia = nada a fazer
 - `probe_source(path) -> tuple[int, str]` — `(sample_rate, bitrate)` da entrada via `ffprobe`. Entrada ilegível cai no fallback `(48000, "192k")` em vez de derrubar o pipeline
-- `process_audio(audio_bytes, *, trim_silence, min_silence_ms, silence_thresh_db, normalize, loudness_target_lufs, bitrate, sample_rate) -> bytes` — MP3 em bytes → MP3 em bytes. Puro. **Devolve o input intacto quando não há filtro**, em vez de re-encodar por nada. `bitrate` e `sample_rate` em `None` (padrão) = **casar com a fonte**.
+- `process_audio(audio_bytes, *, trim_silence, max_pause_ms, silence_thresh_db, normalize, loudness_target_lufs, bitrate, sample_rate) -> bytes` — MP3 em bytes → MP3 em bytes. Puro. **Devolve o input intacto quando não há filtro**, em vez de re-encodar por nada. `bitrate` e `sample_rate` em `None` (padrão) = **casar com a fonte**.
 
 **Controle via env vars:**
 
@@ -102,7 +102,7 @@ Substituiu `audio/silence.py`. Corta silêncios **e** normaliza loudness numa **
 |---|---|---|
 | `REMOVE_SILENCE` | `true` | Habilita o corte de silêncio |
 | `SILENCE_THRESH_DB` | `-40` | Nível abaixo do qual é considerado silêncio |
-| `MIN_SILENCE_MS` | `500` | Duração mínima para um silêncio ser removido |
+| `MAX_PAUSE_MS` | `200` | **Teto** de cada pausa; pausas menores passam intactas (alias depreciado: `MIN_SILENCE_MS`) |
 | `NORMALIZE_AUDIO` | `true` | Habilita highpass + loudnorm |
 | `LOUDNESS_TARGET_LUFS` | `-16` | Alvo de loudness integrada (referência das plataformas de vídeo) |
 | `AUDIO_BITRATE` | *(vazio = casa com a fonte)* | Força o bitrate do MP3 de saída |
@@ -112,6 +112,8 @@ Substituiu `audio/silence.py`. Corta silêncios **e** normaliza loudness numa **
 
 `SILENCE_PADDING_MS` foi removido — nunca foi consumido pela implementação.
 
+⚠️ **`MAX_PAUSE_MS` é um teto, não um gatilho.** O `silenceremove` copia o áudio até que `stop_duration` de silêncio já tenha passado e só então para, então o número é ao mesmo tempo o limiar de detecção **e o silêncio que fica para trás**. Pausa menor que o teto passa intacta; toda pausa maior — 600ms ou 6s — sai em exatamente `MAX_PAUSE_MS`. Medido: com o antigo default de 500, pausas de 1,5s e 3,0s terminavam ambas em 0,52s, e era isso que deixava a narração esburacada. `stop_silence` **não** é usado: ele soma ao que é preservado (medido, `0.1` deixou 0,62s), então só alonga pausas. Seis testes em `test_postprocess.py` fixam isso.
+
 **Três armadilhas que a implementação evita (todas cobertas por teste):**
 1. **`aresample` depois do `loudnorm` é obrigatório** — em single-pass o `loudnorm` emite 192 kHz independentemente da entrada. Sem o resample explícito o arquivo sai gigante sem ganho.
 2. **Trim antes de loudnorm** — o `loudnorm` mede o stream inteiro; silêncio de borda puxa a medição para baixo e o filtro compensa deixando a voz alta demais.
@@ -120,6 +122,39 @@ Substituiu `audio/silence.py`. Corta silêncios **e** normaliza loudness numa **
 Falhas no pós-processamento são logadas como warning e o áudio original é usado (sem interromper o pipeline).
 
 **Dependências:** `ffmpeg` (no Dockerfile) — filtros `silenceremove`, `highpass`, `loudnorm`, `aresample` via subprocess.
+
+### CLI de calibragem (`scripts/cut_silence.py`)
+
+Roda `process_audio` num arquivo local, fora do serviço — feito para calibrar os limiares contra um áudio real sem subir o container nem reprocessar um pipeline run. Chama a **mesma** função da rota; não reimplementa a cadeia de filtros.
+
+```bash
+poetry run python scripts/cut_silence.py narracao.mp3
+poetry run python scripts/cut_silence.py narracao.mp3 --max-pause-ms 150 --thresh-db -35
+poetry run python scripts/cut_silence.py parte_1.mp3 parte_2.mp3 --dry-run
+```
+
+| Flag | Padrão | Descrição |
+|---|---|---|
+| `-o/--output` | `<nome>.trimmed.mp3` | Só vale com um único input |
+| `--max-pause-ms` | `200` | Teto de cada pausa interna |
+| `--thresh-db` | `-40` | Nível considerado silêncio |
+| `--no-normalize` | — | Desliga o loudnorm; isola o efeito do corte |
+| `-n/--dry-run` | — | Processa e reporta, sem gravar |
+| `-f/--force` | — | Permite sobrescrever a saída |
+
+A normalização fica **ligada por padrão**, igual à produção — o que sai do CLI é o que o pipeline produziria.
+
+Reporta `origem: 4.00s -> 2.42s (-1.58s, 39.5%) destino` por arquivo.
+
+**API pública (testável):** `cut_file(source, output, max_pause_ms, silence_thresh_db, normalize=True) -> CutResult` (`output=None` é dry-run), `probe_duration_ms(bytes) -> int` (0 quando o ffprobe não lê), `default_output_for(path)`, `main(argv) -> int`.
+
+Saída sempre MP3, qualquer que seja o formato de entrada — o encoder vem da extensão que `process_audio` usa no temp interno.
+
+Códigos de saída: `0` ok, `1` falha em pelo menos um arquivo (ou ffmpeg ausente, que aborta imediatamente), `2` erro de uso (input inexistente, `-o` com múltiplos inputs).
+
+⚠️ **O relatório é ASCII de propósito** (`->`, não `→`). O console do Windows é cp1252 e `print` com seta Unicode levanta `UnicodeEncodeError` em execução real — os testes não pegam isso sozinhos porque o `capsys` captura em UTF-8; `test_main_reports_durations` faz um `.encode("cp1252")` na saída justamente para cobrir o buraco.
+
+**Dependências:** `ffmpeg` e `ffprobe` no PATH.
 
 ### Transcrição / legenda word-level (`src/tts_service/audio/transcribe.py`)
 
@@ -147,7 +182,9 @@ O consumo dessa legenda (offset de sincronia, hold entre palavras, fades) é res
 
 `tests/test_generate.py` — 12 testes; edge-tts e MinIO sempre mockados; `REMOVE_SILENCE=false` **e `NORMALIZE_AUDIO=false`** no conftest, para que nenhum teste de endpoint chame ffmpeg.
 
-`tests/test_postprocess.py` — 25 testes (era `test_silence.py`); áudio gerado por `wave` + ffmpeg (`_make_mp3`, com `amplitude` para material quiet/hot; `_make_24khz_mp3` para imitar a saída do `edge`). Cobre a montagem da filter chain, o corte de silêncio, sample rate e bitrate de saída via `ffprobe`, a loudness medida via filtro `ebur128`, o casamento com a fonte (não faz upsample) e 4 testes de integração com o endpoint. Requer `ffmpeg` **e `ffprobe`** instalados.
+`tests/test_postprocess.py` — 31 testes (era `test_silence.py`); áudio gerado por `wave` + ffmpeg (`_make_mp3`, com `amplitude` para material quiet/hot; `_make_24khz_mp3` para imitar a saída do `edge`). Cobre a montagem da filter chain, o corte de silêncio, o **teto de pausa** (6 testes, via `_pause_durations_ms` com `silencedetect`), sample rate e bitrate de saída via `ffprobe`, a loudness medida via filtro `ebur128`, o casamento com a fonte (não faz upsample) e 4 testes de integração com o endpoint. Requer `ffmpeg` **e `ffprobe`** instalados.
+
+`tests/test_cut_silence.py` — 22 testes do CLI. O script é carregado por caminho (`scripts/` não é pacote), mesma convenção de `blender_worker/tests/test_subtitles.py`, **mas com `sys.modules[spec.name] = module` antes do `exec_module`** — sem isso o `@dataclass` do `CutResult` levanta `AttributeError` ao resolver o módulo dono. Reaproveita `_make_mp3` de `test_postprocess.py`. Requer `ffmpeg` e `ffprobe`.
 
 `tests/test_azure.py` — 17 testes; `httpx.AsyncClient.post` sempre mockado, **nenhum acessa a rede**. Cobre derivação de locale, escape de XML no SSML, headers/URL/corpo da request, erro HTTP e corpo vazio, e a validação de config no boot (via `TTSEnvSettings()` direto, que relê o env).
 
