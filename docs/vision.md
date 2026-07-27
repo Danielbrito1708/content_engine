@@ -15,6 +15,7 @@
 | `llm_service` | 8002 | Refinamento, classificação e divisão de roteiros |
 | `tts_service` | 8003 | Geração de áudio a partir de texto |
 | `tiktok_poster` | 8004 | Publicação, agendamento, hashtags e analytics |
+| `content_scout` | 8005 | Descoberta automática de roteiros na internet |
 | `dashboard` | 3000 | Interface web simples para submissão e monitoramento |
 | `db` (infra) | 5433 | PostgreSQL compartilhado entre serviços |
 | `minio` (infra) | 9000 | Armazenamento de arquivos (áudio, vídeo, assets) |
@@ -24,8 +25,8 @@
 ## Pipeline Completo
 
 ```
-Usuário → dashboard / API
-  └─ POST /pipeline  { script: "...", metadata: {...} }
+content_scout (periódico)  ─┐
+Usuário → dashboard / API ─┴─ POST /pipeline  { script: "...", metadata: {...} }
        │
        ▼
   orchestrator
@@ -186,14 +187,88 @@ Cores aceitam `[r, g, b]` ou `[r, g, b, a]` (alfa assume 1.0); qualquer outro n�
 
 ## Trigger (entrada)
 
-Por enquanto: `POST /pipeline` no orchestrador com `{ "script": "...", "metadata": {} }`.
+Duas portas de entrada, ambas terminando no mesmo `POST /pipeline`:
 
-Futuramente o trigger pode ser expandido para receber:
-- Posts do Reddit (URL → scraping → extração de texto)
-- Vídeos do YouTube (URL → transcrição)
-- Outros formatos
+1. **Manual** — `POST /pipeline` no orchestrador com `{ "script": "...", "metadata": {} }`.
+2. **Automática** — o `content_scout` descobre roteiros sozinho e chama o mesmo endpoint.
 
-Em todos os casos, o trigger sempre normaliza para `plain text + metadata` antes de enviar ao orchestrador. Quando o trigger virar serviço próprio, ele expõe a mesma interface para o orchestrador.
+O trigger sempre normaliza para `plain text + metadata` antes de enviar ao orchestrador, independente da origem.
+
+---
+
+## Descoberta de conteúdo (content_scout)
+
+### Escolha da fonte
+
+**Reddit, via feeds RSS.** Foram avaliadas três opções:
+
+| Opção | Veredito |
+|---|---|
+| Reddit RSS | **Escolhida.** Sem credencial, sem aprovação, fora da cláusula não-comercial da Data API |
+| Reddit Data API (OAuth) | Descartada por ora. 100 req/min sobrariam, mas exige pré-aprovação e o free tier proíbe uso comercial |
+| YouTube (baixar + transcrever) | Descartada como fonte de roteiro — ver abaixo |
+
+O `.json` sem autenticação do Reddit foi desativado em maio/2026 e responde 403. Os feeds RSS continuam abertos.
+
+**Por que o YouTube não vira roteiro.** A transcrição de um vídeo *é* o roteiro de outra pessoa — republicá-lo com outra voz é cópia, não inspiração. Além disso, visualizações medem o canal, a thumbnail e o algoritmo, não o texto: otimizar por elas é perseguir o proxy errado. E o custo é ordens de grandeza maior (download + Whisper por vídeo, contra texto já pronto). Se o YouTube entrar, entra como **minerador de tema** — `search.list` para descobrir assuntos em alta, e o `llm_service` escreve roteiro original a partir do tema. Sem download, sem transcrição, sem risco de cópia.
+
+### Sinal de qualidade
+
+O feed RSS **não carrega score**. Por isso pedimos `/r/{sub}/top/.rss?t=week`: a ordenação é feita pelo próprio Reddit e chega implícita na posição das entradas. É um sinal mais fraco que o upvote numérico, mas suficiente — o gargalo real é a fila de publicação, não a escassez de candidatos.
+
+### Rate limit
+
+Leitura não autenticada é limitada a aproximadamente **uma requisição por 40s** — a resposta traz `x-ratelimit-remaining: 0` e `x-ratelimit-reset: ~40` já na primeira chamada. Requisições em sequência fazem só o primeiro subreddit responder 200; o resto toma 429. Daí o espaçamento obrigatório entre subreddits (`request_delay_seconds`, padrão 60s — 45s ainda tomou 429 em teste real, a janela desliza). Cada subreddit extra custa uma janela por ciclo, então a lista deve conter só subs que rendem.
+
+### Seleção entre candidatos
+
+As fontes são buscadas e concatenadas na ordem do config. Pegar o começo dessa lista dava **todas** as vagas ao primeiro subreddit: medido ao vivo, as duas submissões vieram de `r/desabafos` enquanto `r/relacionamentos` contribuiu cinco candidatos e não ganhou nenhuma. Configurar mais subreddits era decorativo.
+
+A seleção é por **rodízio entre origens** (`interleave_by_origin`), preservando o ranking interno de cada uma:
+
+```
+desabafos[0], relacionamentos[0], conselhos[0], desabafos[1], ...
+```
+
+Isso mantém o ranking do Reddit como critério — continuamos pegando o melhor *disponível* de cada — e garante variedade de origem e tom entre vídeos consecutivos. Combinado com o dedup, o rodízio entre ciclos emerge sozinho, sem estado de rotação persistido.
+
+**Não há score composto** (posição × tamanho × recência). Sem upvotes reais, qualquer peso seria inventado. Quando `seen_items` acumular histórico de performance, dá para ranquear com base em evidência.
+
+### Filtros
+
+Duas etapas, separadas de propósito por custo e por natureza:
+
+**1. Determinística (`filters.py`).** Tamanho nas duas pontas: curto demais não sustenta um vídeo; longo demais obrigaria o LLM a cortar tanto que o que vai ao ar já não é o post. Roda sobre todo candidato, é grátis.
+
+**2. Moderação por LLM (`llm_service POST /moderate`).** Decide se publicar coloca a conta em risco de remoção.
+
+A versão anterior era uma blocklist por substring, e ela errou de forma instrutiva: `me matar` casou dentro de `"Eram 3 mil que não me mataria"` — figura de linguagem sobre dinheiro — descartando uma história boa. Enquanto `"disseram que depois de me matar iam fazer com ela..."` é ameaça real e precisa ser barrada. **As duas contêm a mesma sequência de caracteres.** Segurança é julgamento de contexto, não casamento de padrão.
+
+O prompt é explícito em aprovar histórias pesadas — término, traição, briga de família, demissão, dívida, luto — porque esse é o material do produto. O que barra é automutilação, abuso sexual, violência gráfica, ódio e conteúdo envolvendo menores.
+
+**Custo.** Roda por publicação, não por post buscado: só nos candidatos que já passaram tamanho, dedup e ordenação, e apenas até o orçamento do ciclo encher. Duas a três chamadas por ciclo em vez de ~30. Modelo configurado em `LLM_MODERATION_MODEL`, separado do modelo de refino — a chamada é um sim/não.
+
+**Falha de moderação não é veredito.** `ModerationError` é distinto de `safe=false`: o candidato **não** é gravado em `seen_items`, o ciclo encerra, e a história continua disponível depois. Uma indisponibilidade não pode nem publicar sem checagem, nem queimar história boa em definitivo.
+
+### Dedup e auditoria
+
+`seen_items` guarda **todo** candidato avaliado — inclusive os rejeitados, com o motivo. Serve a dois propósitos: impedir que a mesma história vire um segundo vídeo quando reaparece no top da semana seguinte, e permitir calibrar os limiares contra dados reais em vez de chute.
+
+### Backpressure
+
+Antes de submeter, o scout conta os runs ativos no orchestrador (`pending`, `refining`, `refined`, `processing`, `scheduling`). Se atingiu `max_pending_runs`, o ciclo não submete nada.
+
+A razão é a fila do Buffer, que segura 10 posts: ingerir mais rápido do que se publica não gera mais vídeos, só converte roteiro bom em run falho. Enquanto a feature "Fila de espera quando o Buffer está cheio" (ver Backlog) não existir, o backpressure é a única proteção contra isso.
+
+**Ordem das etapas.** A capacidade é verificada *depois* de registrar os filtrados e *antes* de submeter. Assim uma fila cheia não custa nada e não perde nada — o lixo é queimado e o ciclo seguinte parte de uma pilha menor.
+
+### Periodicidade
+
+Loop `asyncio` iniciado no `lifespan` do serviço, intervalo configurável. Não precisa de scheduler durável — diferente do retry do Buffer — porque `seen_items` torna o ciclo idempotente: um restart no pior caso repete uma passagem que não encontra nada novo.
+
+### Adicionando fontes
+
+Toda fonte implementa o Protocol `Source` (`name` + `async fetch() -> list[Candidate]`) e devolve `Candidate` com `external_id` estável, que é a chave de dedup. Dedup, filtros, orçamento e backpressure tratam todas as fontes igualmente.
 
 ---
 
@@ -206,6 +281,7 @@ Em todos os casos, o trigger sempre normaliza para `plain text + metadata` antes
 | `tts_service` | FastAPI + edge-tts (→ ElevenLabs futuramente) |
 | `blender_worker` | FastAPI + Blender 4.2 LTS + Pillow (existente) |
 | `tiktok_poster` | FastAPI + TikTok API |
+| `content_scout` | FastAPI + SQLAlchemy + PostgreSQL + httpx |
 | `dashboard` | HTML/JS servido pelo orchestrador (MVP) |
 
 ---
@@ -223,9 +299,47 @@ O orchestrador armazena as keys MinIO de cada artefato no `pipeline_run` para pa
 
 ---
 
+## Backlog de Features
+
+Features planejadas, ainda não implementadas. Cada entrada descreve o problema, o comportamento proposto e o que precisa mudar — o suficiente para uma sessão futura implementar sem redescobrir o contexto.
+
+### Fila de espera quando o Buffer está cheio
+
+**Problema.** O Buffer free aceita no máximo 10 posts agendados por vez (`config.ini [posting] buffer_queue_limit`). Quando o limite é atingido, `POST /schedule` no `tiktok_poster` responde `429` com `{"error": "buffer_queue_full"}`, o orchestrador marca o `pipeline_run` como `failed` e o vídeo — já renderizado, já pago em tempo de LLM, TTS e render — fica parado. A recuperação hoje é manual: esperar a fila baixar e resubmeter.
+
+Isso é o único ponto do pipeline onde uma condição **temporária e esperada** produz uma falha terminal. Com 2–3 posts/dia e séries de múltiplas partes, a fila enche em poucos dias de operação normal.
+
+**Comportamento proposto.** Fila cheia deixa de ser falha e passa a ser espera:
+
+- O orchestrador ganha o estado `awaiting_slot` — o run terminou render, tem os vídeos no MinIO, e só aguarda vaga no Buffer. Distinto de `failed`: nada deu errado.
+- Um worker periódico varre os runs em `awaiting_slot` (ordem FIFO por `created_at`) e retenta o agendamento. Ao conseguir, o run segue para `scheduled` normalmente.
+- Séries são atômicas: só agenda se houver vaga para **todas** as partes restantes. Agendar a parte 1 e deixar a parte 2 na espera publica um cliffhanger sem continuação.
+- O intervalo de varredura é configurável; algo na ordem de horas é suficiente — a fila só abre quando o Buffer publica.
+
+**O que muda:**
+
+| Onde | Mudança |
+|---|---|
+| `orchestrator/db/models.py` | novo valor `awaiting_slot` em `PipelineStatus` + migration |
+| `orchestrator/worker.py` | `_schedule` trata `429 buffer_queue_full` como `awaiting_slot`, não `failed` |
+| `orchestrator` (novo) | worker de retry periódico varrendo `awaiting_slot` |
+| `tiktok_poster/api/routes/schedule.py` | expor vagas livres na resposta do `429`, para o orchestrador decidir sobre séries sem tentativa e erro |
+| `docs/product.md` | reescrever "Fila cheia" na Feature 6 — deixa de ser falha |
+
+**Pré-requisito.** O retry periódico exige um agendador que sobreviva a restart do container. Hoje o orchestrador usa `BackgroundTasks`, que não serve — a mesma limitação já registrada como tech debt no `blender_worker`. Resolver os dois juntos (fila real: Celery + Redis, ou APScheduler com store no Postgres).
+
+**Alternativas consideradas.**
+
+- **Buffer pago** — resolve por dinheiro (limite muito maior), não resolve o caso de a fila encher mesmo assim. Vale como mitigação, não como solução.
+- **Publicar direto na TikTok Content Posting API** — elimina o Buffer e o limite de fila, mas troca um problema por outro: OAuth, refresh de token, e o agendamento passa a ser responsabilidade nossa. Ver "TikTok API" em Decisões em Aberto. A fila de espera é útil de qualquer forma, porque o limite de ritmo (posts/dia) continua existindo.
+
+**Critério de aceite.** Submeter runs além do limite da fila: nenhum vai para `failed`, todos ficam em `awaiting_slot`, e cada um é agendado sozinho conforme a fila abre — sem resubmissão manual e sem perder a ordem.
+
+---
+
 ## Decisões em Aberto
 
 - **Schema de classificação por tipo de conteúdo**: o LLM recebe um schema fixo ou gera livremente e o orchestrador valida? → Definir quando implementar o llm_service.
 - **TikTok API**: autenticação OAuth vs. token estático de longa duração → Definir quando implementar o tiktok_poster.
 - **Dashboard**: servido pelo orchestrador (FastAPI + Jinja2) ou container Next.js separado → MVP usa Jinja2, pode migrar depois.
-- **Retry automático**: se TTS ou render falhar, o orchestrador retenta automaticamente ou só marca como `failed`? → MVP marca como failed.
+- **Retry automático**: se TTS ou render falhar, o orchestrador retenta automaticamente ou só marca como `failed`? → MVP marca como failed. O caso de fila cheia do Buffer é diferente (falha temporária, não erro) e já tem solução desenhada em "Fila de espera quando o Buffer está cheio", no Backlog de Features.
