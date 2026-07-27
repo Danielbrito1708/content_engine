@@ -85,9 +85,17 @@ Assembles video assets in Blender VSE and renders to MP4. Triggered by `POST /jo
 3. Writes `job_config.json` with paths and timing
 4. Runs `blender -b template.blend -P scripts/edit_video.py -- job_config.json` → saves `output.blend`
 5. Runs `blender -b output.blend -a` → renders `final.mp4`
-6. Uploads `final.mp4` to MinIO as `outputs/{job_id}.mp4` and `output.blend` as `outputs/{job_id}.blend`
+6. Uploads `final.mp4` to MinIO as `outputs/{job_id}/final.mp4` and `output.blend` as `outputs/{job_id}/output.blend`
 7. Sets `job.output_key` and `job.blend_key`; status → `completed` (or `failed` + error message on any exception)
 8. Cleans up tmpdir
+
+**Background asset validation** — `check_movie_strip(strip, path, min_frames=MIN_MOVIE_FRAMES)` runs on the ch1 movie strip right after it is added and raises `ValueError` if `frame_duration < 2`, failing the job with the offending path in the message.
+
+A file with no decodable video track *still loads* as a movie strip — Blender hands back one placeholder frame instead of raising. Without this check the render succeeds and quietly emits a black background for the entire video: the job reports `completed`, the MP4 has a plausible size and duration, and nothing downstream can distinguish a broken asset from a deliberately dark one. Measured against the real RNA: the 1 KB `assets/background.mp4` placeholder reports `frame_duration=1`; a valid 5s/30fps clip reports `150`. Two frames is the floor that separates them — a genuinely 1-frame background is a still image and belongs in an image strip.
+
+Pure (takes anything with a `frame_duration`), so it is tested without Blender.
+
+**Render length** — `content_end_frame(strips, bed_channels, fallback)` sets `scene.frame_end`. The music **and the background video** are *beds*: each is however long its asset happens to be, so neither may define where the video ends — only the narration and its subtitles do. Measured: a 90s background under a 68s narration rendered 22s of dead air after the last word left the screen. Previously only music was excluded, which went unnoticed because the placeholder background was a single frame. A bed *shorter* than the narration is deliberately not handled: the tail goes black, which is a problem to fix in the asset. Pure, so the rule is tested without Blender.
 
 **`scripts/edit_video.py` VSE layout:**
 - Scene — `fps = frame_rate` **and `fps_base = 1.0`**. Blender's effective fps is `fps / fps_base`, and `fps_base` comes from the `.blend` (the current `template.blend` is `6/0.1` = 60fps). Leaving it alone makes the scene run at `frame_rate / 0.1` — 10x off, which desyncs every frame-based timing and stretches sound strips 10x.

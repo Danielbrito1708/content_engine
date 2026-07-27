@@ -11,6 +11,17 @@ import sys
 DEFAULT_FADE_FRAMES = 3
 DEFAULT_MAX_HOLD_SECONDS = 0.4
 
+# A file with no decodable video track still loads as a movie strip — Blender
+# gives it one placeholder frame instead of raising. The render then *succeeds*
+# and quietly produces a black background for its full length, which is worse
+# than failing: the job reports `completed`, the MP4 looks plausible by size and
+# duration, and nothing downstream can tell a broken asset from a deliberately
+# dark one. Measured against the real RNA: the 1 KB `assets/background.mp4` stub
+# reports frame_duration=1, a valid 5s/30fps clip reports 150. Two frames is the
+# floor that separates them — a genuinely 1-frame background is a still image
+# and belongs in an image strip, not here.
+MIN_MOVIE_FRAMES = 2
+
 # Vertical position of the subtitle, as a fraction of frame height (0 = bottom).
 SUBTITLE_Y = 0.05
 # Entrance animation: each word starts this far below SUBTITLE_Y and rises to it
@@ -213,13 +224,29 @@ def setup_vse(scene):
     return scene.sequence_editor
 
 
+def check_movie_strip(strip, path, min_frames=MIN_MOVIE_FRAMES):
+    """Raise if the movie strip carries no decodable video.
+
+    Pure — takes anything with a `frame_duration`, so it is testable without
+    Blender. See MIN_MOVIE_FRAMES for why this check has to exist at all.
+    """
+    if strip.frame_duration < min_frames:
+        raise ValueError(
+            f"Background video has no decodable frames: {path} "
+            f"(frame_duration={strip.frame_duration}). The file is a "
+            f"placeholder or is corrupt — replace the asset before rendering."
+        )
+    return strip
+
+
 def add_movie_strip(vse, path, channel, frame_start):
-    return vse.sequences.new_movie(
+    strip = vse.sequences.new_movie(
         name=os.path.basename(path),
         filepath=path,
         channel=channel,
         frame_start=frame_start,
     )
+    return check_movie_strip(strip, path)
 
 
 def add_sound_strip(vse, path, channel, frame_start):
@@ -229,6 +256,28 @@ def add_sound_strip(vse, path, channel, frame_start):
         channel=channel,
         frame_start=frame_start,
     )
+
+
+def content_end_frame(strips, bed_channels, fallback):
+    """Last frame carrying content, ignoring the background beds.
+
+    Music and the background video are *beds*: each is however long its asset
+    happens to be, and neither says anything about when the story ends — only
+    the narration and its subtitles do. Counting the beds makes the video as
+    long as the longest asset: measured, a 90s background under a 68s narration
+    rendered 22s of dead air after the last word had already left the screen.
+
+    Pure — takes any objects with `channel` and `frame_final_end`, so the rule is
+    testable without Blender.
+
+    A bed *shorter* than the narration is the mirror case and is deliberately
+    not handled here: the tail goes black, which is an asset problem to fix in
+    the asset, not a length the timeline should silently shrink to.
+    """
+    content = [s for s in strips if s.channel not in bed_channels]
+    if not content:
+        return fallback
+    return max(s.frame_final_end for s in content)
 
 
 def apply_volume_fade(strip, start_frame, fade_start_frame, end_frame, start_volume):
@@ -374,11 +423,8 @@ def main():
         style=resolve_subtitle_style(subs),
     )
 
-    # Set frame_end to the last frame where a content strip exists.
-    # Music is excluded because its file may be longer than the actual content.
-    music_channel = channels["music"]
-    content_strips = [s for s in vse.sequences_all if s.channel != music_channel]
-    last_frame = max(s.frame_final_end for s in content_strips) if content_strips else timing["frame_end"]
+    bed_channels = {channels["music"], channels["video"]}
+    last_frame = content_end_frame(vse.sequences_all, bed_channels, timing["frame_end"])
     scene.frame_end = last_frame
 
     if "music_fade_out" in t:

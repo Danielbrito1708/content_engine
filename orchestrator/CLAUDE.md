@@ -17,7 +17,6 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `clients/blender.py` — `BlenderClient`: `create_video(...)`, `create_job(...)`, `get_job_status(...)`, `poll_job(...)`
 - `clients/tiktok.py` — `TikTokClient.schedule(video_key, classification, part_number, series_id)`
 - `storage/client.py` — `upload_bytes(bucket, key, data, content_type)` via boto3 (MinIO/R2)
-- `utils/srt.py` — ⚠️ código morto: `text_to_srt(text, words_per_minute) → bytes` gerava SRT com timing estimado. A legenda agora vem pronta do `tts_service` (word-level, transcrita do áudio). Pode ser removido.
 - `worker.py` — `run_pipeline(run_id)`: executa o pipeline completo em background via FastAPI BackgroundTasks
 
 ## Estado do PipelineRun

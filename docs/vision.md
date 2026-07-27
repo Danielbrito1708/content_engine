@@ -172,6 +172,28 @@ Cores aceitam `[r, g, b]` ou `[r, g, b, a]` (alfa assume 1.0); qualquer outro n�
 
 ---
 
+## Integridade dos assets e duração do render
+
+### Fundo sem imagem decodificável
+
+Um arquivo sem faixa de vídeo utilizável **ainda carrega** como movie strip: o Blender devolve uma strip com um frame de placeholder em vez de levantar erro. Sem checagem, o render conclui com sucesso e produz fundo preto pela duração inteira — o job reporta `completed`, o MP4 tem tamanho e duração plausíveis, e nada a jusante distingue um asset quebrado de um deliberadamente escuro. Foi exatamente o que aconteceu com o `assets/background.mp4` de 1 KB versionado no bucket.
+
+`check_movie_strip()` roda logo após a strip ser adicionada e derruba o job se `frame_duration < 2`, nomeando o arquivo na mensagem.
+
+**Por que 2 frames.** Medido contra a RNA real: o stub de 1 KB reporta `frame_duration=1`; um clipe válido de 5s a 30fps reporta `150`. Dois frames é o piso que separa os dois casos. Um fundo genuinamente de 1 frame é imagem estática e pertence a uma image strip, não aqui.
+
+**Falhar é melhor que degradar.** Diferente da fonte de legenda — cuja ausência degrada a estética e nunca derruba o render — um fundo inexistente não degrada nada: destrói o vídeo. Não há resultado parcial útil a preservar, então a falha é dura e imediata.
+
+### Beds não definem a duração
+
+`content_end_frame()` calcula `scene.frame_end` ignorando os canais de **música e vídeo de fundo**. Ambos são *beds*: cada um tem o tamanho que o asset por acaso tem, e nenhum diz nada sobre onde a história termina — só a narração e sua legenda dizem.
+
+Medido: um fundo de 90s sob narração de 68s renderizava 22s de ar morto depois da última palavra sair da tela. A regra anterior excluía apenas a música; a falha passou despercebida porque o fundo placeholder tinha um único frame e nunca era o mais longo.
+
+**O caso espelhado é deliberadamente não tratado.** Um bed *mais curto* que a narração deixa o final preto. Encurtar a timeline até o fundo cortaria narração no meio da frase — o defeito está no asset e é lá que se corrige.
+
+---
+
 ## Agendamento (tiktok_poster)
 
 - Ritmo: 2 posts por dia.

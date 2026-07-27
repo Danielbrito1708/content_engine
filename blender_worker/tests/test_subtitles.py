@@ -28,6 +28,8 @@ parse_srt = edit_video.parse_srt
 ts_to_frame = edit_video.ts_to_frame
 resolve_subtitle_style = edit_video.resolve_subtitle_style
 apply_text_style = edit_video.apply_text_style
+check_movie_strip = edit_video.check_movie_strip
+content_end_frame = edit_video.content_end_frame
 
 
 def _entry(start, end, text):
@@ -309,3 +311,74 @@ def test_apply_text_style_only_sets_size_when_configured():
     sized = _FakeStrip()
     apply_text_style(sized, resolve_subtitle_style({"font_size": 90}, exists=NO_FONTS), font=None)
     assert sized.font_size == 90
+
+
+class _FakeMovieStrip:
+    """Stand-in for a Blender MovieSequence — only frame_duration matters here."""
+
+    def __init__(self, frame_duration):
+        self.frame_duration = frame_duration
+
+
+def test_check_movie_strip_accepts_a_strip_with_real_frames():
+    # A valid 5s/30fps clip measured 150 against the real RNA.
+    strip = _FakeMovieStrip(150)
+    assert check_movie_strip(strip, "background.mp4") is strip
+
+
+def test_check_movie_strip_rejects_a_file_with_no_decodable_video():
+    # The 1 KB placeholder measured exactly this: it loads, but carries a single
+    # placeholder frame and would render as a black background for the whole video.
+    with pytest.raises(ValueError, match="no decodable frames"):
+        check_movie_strip(_FakeMovieStrip(1), "background.mp4")
+
+
+def test_check_movie_strip_names_the_offending_file():
+    with pytest.raises(ValueError, match="assets/background.mp4"):
+        check_movie_strip(_FakeMovieStrip(0), "assets/background.mp4")
+
+
+def test_check_movie_strip_accepts_exactly_the_minimum():
+    strip = _FakeMovieStrip(edit_video.MIN_MOVIE_FRAMES)
+    assert check_movie_strip(strip, "background.mp4") is strip
+
+
+def test_check_movie_strip_min_frames_is_overridable():
+    # A template that deliberately wants a longer floor can raise it without
+    # editing the script.
+    with pytest.raises(ValueError):
+        check_movie_strip(_FakeMovieStrip(10), "background.mp4", min_frames=60)
+
+
+class _FakeChanStrip:
+    """Stand-in for any VSE strip — only channel and end frame matter here."""
+
+    def __init__(self, channel, frame_final_end):
+        self.channel = channel
+        self.frame_final_end = frame_final_end
+
+
+def test_content_end_frame_ignores_the_music_and_video_beds():
+    # voice/subs end at 2045; a 2700-frame background and 3000-frame music must
+    # not stretch the render past the last spoken word.
+    strips = [
+        _FakeChanStrip(1, 2700),   # background video
+        _FakeChanStrip(2, 3000),   # music
+        _FakeChanStrip(3, 2045),   # voice
+        _FakeChanStrip(4, 2040),   # subtitles
+    ]
+    assert content_end_frame(strips, bed_channels={1, 2}, fallback=9999) == 2045
+
+
+def test_content_end_frame_falls_back_when_only_beds_exist():
+    strips = [_FakeChanStrip(1, 2700), _FakeChanStrip(2, 3000)]
+    assert content_end_frame(strips, bed_channels={1, 2}, fallback=1234) == 1234
+
+
+def test_content_end_frame_falls_back_on_an_empty_timeline():
+    assert content_end_frame([], bed_channels={1, 2}, fallback=77) == 77
+
+
+def test_content_end_frame_uses_the_longest_content_strip():
+    strips = [_FakeChanStrip(3, 900), _FakeChanStrip(4, 1500), _FakeChanStrip(4, 1200)]
+    assert content_end_frame(strips, bed_channels={1, 2}, fallback=0) == 1500

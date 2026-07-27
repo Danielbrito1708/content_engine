@@ -82,12 +82,17 @@ async def test_refine_marks_failed_on_http_error(session):
 # ── _run_tts ───────────────────────────────────────────────────────────────
 
 @respx.mock
-async def test_run_tts_sets_audio_key(session):
+async def test_run_tts_sets_audio_and_srt_keys(session):
     run = await _make_run(session)
     part = await _make_part(session, run.id)
 
+    # tts_service transcribes its own audio and returns both keys — the
+    # orchestrator never generates the SRT itself.
     respx.post("http://tts_service:8000/generate").mock(
-        return_value=Response(200, json={"audio_key": f"audio/{run.id}/part_1.mp3"})
+        return_value=Response(200, json={
+            "audio_key": f"audio/{run.id}/part_1.mp3",
+            "srt_key": f"subs/{run.id}/part_1.srt",
+        })
     )
 
     await _run_tts(session, part, run)
@@ -95,6 +100,7 @@ async def test_run_tts_sets_audio_key(session):
     await session.refresh(part)
     assert part.status == PartStatus.tts_done
     assert part.audio_key == f"audio/{run.id}/part_1.mp3"
+    assert part.srt_key == f"subs/{run.id}/part_1.srt"
 
 
 @respx.mock
@@ -250,7 +256,10 @@ async def test_run_pipeline_full(session, monkeypatch):
         })
     )
     respx.post("http://tts_service:8000/generate").mock(
-        return_value=Response(200, json={"audio_key": f"audio/{run.id}/part_1.mp3"})
+        return_value=Response(200, json={
+            "audio_key": f"audio/{run.id}/part_1.mp3",
+            "srt_key": f"subs/{run.id}/part_1.srt",
+        })
     )
     respx.post("http://blender_worker:8000/videos").mock(
         return_value=Response(201, json={"id": str(video_id), "video_file_key": "x", "music_key": "x",

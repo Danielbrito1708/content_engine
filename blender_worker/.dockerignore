@@ -1,9 +1,19 @@
 __pycache__
+*.pyc
+.pytest_cache
 
 .env
+# `poetry install` with virtualenvs.in-project puts a host venv here. Without
+# this line it lands in the build context and is COPYed into the image — Windows
+# or macOS binaries inside a Linux image, on top of a 3 GB Blender layer.
+.venv
 
 .git
 .gitignore
+.claude/
+
+logs/
+graphify-out/
 
 tests
 
