@@ -44,6 +44,16 @@ Histórias pesadas continuam passando: término, traição, briga de família, d
 
 Para não sair caro, essa leitura acontece só nas histórias que já estão na fila para virar vídeo — algumas por ciclo, não em tudo que foi coletado. E se o serviço de leitura estiver indisponível, o sistema **não publica sem checar nem descarta a história**: ele apenas espera e tenta de novo no ciclo seguinte.
 
+**O que mais é guardado sobre cada história:**
+
+Além do texto, o sistema registra quem escreveu (o usuário do Reddit) e, para as histórias que vão virar vídeo, **quantos comentários a postagem recebeu** e uma amostra das reações — as vinte primeiras, com autor e texto.
+
+A quantidade de comentários é a medida de repercussão que dá para obter. Os feeds do Reddit não expõem número de curtidas — nem no post, nem nos comentários —, então quantas pessoas se sentiram compelidas a responder é o indicador mais próximo de "essa história mexeu com gente". Fica guardado para, mais adiante, dar para comparar o que repercutiu no Reddit com o que rendeu no TikTok.
+
+As reações em si têm valor próprio: são o que o público achou da história, escrito por gente real. Servem de matéria-prima para os cards de comentário (Feature 8) e para entender por que uma história funcionou.
+
+Esse enriquecimento custa caro em tempo — o Reddit só permite uma consulta por minuto —, então acontece **só nas histórias que já foram aprovadas e estão indo para a fila**, não em tudo que foi coletado. Se a consulta falhar, a história é publicada do mesmo jeito: o registro fica marcado como "não consultado", que é diferente de "não teve comentário nenhum".
+
 **Nada é publicado duas vezes:**
 
 O sistema guarda registro de toda história que já avaliou, inclusive as que rejeitou e o motivo. Uma história que reaparece no topo da semana seguinte não vira um segundo vídeo. E o registro das rejeições permite ajustar os critérios olhando dados reais, em vez de chutar.

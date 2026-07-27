@@ -3,6 +3,35 @@ from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
+class Comment:
+    """One reaction to a candidate, normalized across sources.
+
+    No score field: Reddit's feeds carry none (see ``RedditSource``), and
+    inventing a placeholder would let downstream code sort by a number that does
+    not exist. Ordering is the source's own, preserved as ``position``.
+    """
+
+    external_id: str
+    author: str
+    text: str
+    position: int
+    published: str = ""
+
+
+@dataclass(frozen=True)
+class CommentThread:
+    """Reactions to a candidate plus how many the source reported.
+
+    ``total`` is the count the source made visible, which is a floor rather than
+    a census — deleted, collapsed and paged-out replies never appear. It is a
+    popularity signal, not a metric to report as exact.
+    """
+
+    total: int
+    comments: list["Comment"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class Candidate:
     """A piece of text that could become a video script.
 
@@ -46,3 +75,17 @@ class Source(Protocol):
     name: str
 
     async def fetch(self) -> list[Candidate]: ...
+
+
+@runtime_checkable
+class CommentCapableSource(Protocol):
+    """Optional capability: a source that can also return reactions to a candidate.
+
+    Kept separate from ``Source`` so a source without comments (or one whose API
+    makes them too expensive) stays a valid source. The scout probes for this
+    with ``isinstance`` and simply skips enrichment when it is not implemented.
+    """
+
+    name: str
+
+    async def fetch_comments(self, candidate: Candidate) -> CommentThread | None: ...
