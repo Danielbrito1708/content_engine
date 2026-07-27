@@ -244,6 +244,16 @@ Antes, a duração era ditada pelo mais longo entre todos os arquivos — inclus
 
 Se o fundo for **mais curto** que a narração, o final fica preto — isso continua sendo caso de trocar o arquivo de fundo por um mais longo.
 
+## Legenda no centro e maior
+
+A legenda agora aparece **no meio da tela**, não mais no rodapé, e com a fonte bem maior.
+
+O tamanho anterior era o padrão interno do Blender — pequeno demais para vídeo vertical, e menor do que a configuração do projeto dizia usar. O arquivo de template que estava em uso não trazia a definição de tamanho, então a configuração escrita no repositório nunca chegava ao vídeo. Corrigido: a palavra agora sai mais de três vezes maior do que saía antes.
+
+**Palavras longas se ajustam sozinhas.** Uma palavra comprida como "procedimento," não caberia na largura da tela no tamanho novo — e antes seria simplesmente cortada nas bordas, sem aviso. Agora o tamanho escolhido funciona como um teto: a maioria esmagadora das palavras sai nele, e só as poucas que não cabem encolhem o suficiente para caber inteiras. Numa narração real de 178 palavras, apenas 13 precisaram de ajuste.
+
+**Dá para mudar sem mexer em código.** Posição vertical e tamanho são configuração do template: `y_position` (0.5 = centro, 0.05 = rodapé como antes) e `font_size`.
+
 ## Fluxo completo resumido
 
 ```
