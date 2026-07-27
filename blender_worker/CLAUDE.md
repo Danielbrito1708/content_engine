@@ -131,11 +131,13 @@ The `.srt` produced by `tts_service` has **one entry per word** (Whisper `word_t
 
 **Template config** (optional block in `template.json`):
 ```json
-"subtitles": { "fade_frames": 3, "max_hold_seconds": 0.4, "rise_frames": 4, "rise_offset": 0.025, "y_position": 0.5 }
+"subtitles": { "fade_frames": 3, "max_hold_seconds": 0.4, "rise_frames": 4, "rise_offset": 0.025, "font_size": 160, "y_position": 0.474 }
 ```
 `rise_offset` is a fraction of frame height (0.025 ≈ 48px at 1080×1920); `rise_frames: 0` disables the animation.
 
 **Vertical position** — `y_position` (default `0.5`, dead centre) is a fraction of frame height, clamped to 0..1 because an off-frame value renders as subtitles silently missing rather than as an error. Strips use `align_y = "CENTER"`, so the value positions the text's own middle: the same number means the same place for a tall word and a short one. `0.05` restores the old bottom-anchored look.
+
+The shipped template uses **0.474** — 50px below dead centre at 1920 high (`50/1920 = 0.026`). Verified by rendering the same word at the same size with only `y_position` changing: the glyph centre moved exactly 50.0px. Measure a position change that way, holding size fixed; comparing frames that differ in *both* size and position reads ~3px short, because the x-height box of a smaller font sits differently against the anchor.
 
 ⚠️ **`template.json` lives in the bucket, not in the repo.** `render_job` downloads `templates/template.json` from MinIO/R2 — editing the repo copy changes nothing until it is uploaded. These two drifted: the repo declared `font_size: 140` while the deployed template had no typography block at all, so every render used Blender's built-in 60 (measured from the rendered glyphs: 33px for "ano" against 104px at size 190). `font_size` is the only property with no code default, which is exactly why it was the one that silently regressed — font, colour and outline kept working from `DEFAULT_*`, so nothing looked broken.
 
@@ -169,7 +171,7 @@ Without it, raising the body size clips long words, and the clipping is **silent
 
 `fit_font_size` is pure (the measurer is injected), so the rule is tested without Blender.
 
-**Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 140, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
+**Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 160, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. At 160 the auto-fit touches only 2 of 178 words on a real narration. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
 
 - Tests: `tests/test_subtitles.py` (35 tests total, marked `no_db` — no docker compose, no Blender needed).
 

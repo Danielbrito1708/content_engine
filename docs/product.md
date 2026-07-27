@@ -284,7 +284,9 @@ O tamanho anterior era o padrão interno do Blender — pequeno demais para víd
 
 **Palavras longas se ajustam sozinhas.** Uma palavra comprida como "procedimento," não caberia na largura da tela no tamanho novo — e antes seria simplesmente cortada nas bordas, sem aviso. Agora o tamanho escolhido funciona como um teto: a maioria esmagadora das palavras sai nele, e só as poucas que não cabem encolhem o suficiente para caber inteiras. Numa narração real de 178 palavras, apenas 13 precisaram de ajuste.
 
-**Dá para mudar sem mexer em código.** Posição vertical e tamanho são configuração do template: `y_position` (0.5 = centro, 0.05 = rodapé como antes) e `font_size`.
+**Dá para mudar sem mexer em código.** Posição vertical e tamanho são configuração do template: `y_position` (0.5 = centro exato, 0.05 = rodapé como antes) e `font_size`.
+
+Valores em uso hoje: **tamanho 160**, posição **0.474** — ou seja, 50 pixels abaixo do centro da tela.
 
 ## Fluxo completo resumido
 
