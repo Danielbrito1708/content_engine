@@ -256,11 +256,11 @@ Tabela: `pipeline_parts`
 
 ## 6. Utilitários
 
-### ~~Gerador de SRT~~ (`src/orchestrator/utils/srt.py`) — ⚠️ código morto
+### ~~Gerador de SRT~~ (`src/orchestrator/utils/`) — removido
 
-`text_to_srt(text, words_per_minute=150)` gerava SRT com timing estimado (chunks de 8 palavras a 150 WPM). **Não é mais chamado por ninguém** — a legenda agora vem do `tts_service`, transcrita do áudio real com timestamp por palavra (ver `docs/vision.md` → "Legendas (word-level)"). O timing estimado dessincronizava porque o TTS não fala na velocidade assumida e a remoção de silêncios desloca tudo.
+`text_to_srt(text, words_per_minute=150)` gerava SRT com timing estimado (chunks de 8 palavras a 150 WPM). O pacote `utils/` inteiro foi removido: a legenda vem do `tts_service`, transcrita do áudio real com timestamp por palavra (ver `docs/vision.md` → "Legendas (word-level)"). O timing estimado dessincronizava porque o TTS não fala na velocidade assumida e a remoção de silêncios desloca tudo.
 
-O arquivo (e `utils/__init__.py`) pode ser removido.
+Registrado aqui para que uma sessão futura não reintroduza a abordagem por estimativa.
 
 ### Storage (`src/orchestrator/storage/client.py`)
 

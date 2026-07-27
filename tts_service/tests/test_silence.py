@@ -12,6 +12,7 @@ import wave
 from unittest.mock import AsyncMock, patch
 
 from tests.conftest import SAMPLE_REQUEST
+from tests.test_generate import _mock_transcription
 from src.tts_service.audio.silence import remove_silence
 
 _SAMPLE_RATE = 44100
@@ -69,14 +70,6 @@ def _duration_ms(audio_bytes: bytes) -> int:
         os.unlink(path)
 
 
-def _tone(duration_ms: int = 300) -> AudioSegment:
-    return Sine(440).to_audio_segment(duration=duration_ms)
-
-
-def _silence(duration_ms: int) -> AudioSegment:
-    return AudioSegment.silent(duration=duration_ms)
-
-
 # --- pure function tests ---
 
 def test_removes_leading_silence():
@@ -127,11 +120,14 @@ def test_audio_with_only_speech_unchanged_length():
 
 async def test_route_calls_remove_silence_when_enabled(client):
     fake_mp3 = _make_mp3(("tone", 300))
+    transcribe, upload_srt = _mock_transcription()
     with (
         patch("src.tts_service.api.routes.generate.get_tts_client") as mock_factory,
         patch("src.tts_service.api.routes.generate.upload_audio", new_callable=AsyncMock),
         patch("src.tts_service.api.routes.generate.settings") as mock_settings,
         patch("src.tts_service.api.routes.generate.remove_silence", side_effect=lambda b, *a, **kw: b) as mock_remove,
+        transcribe,
+        upload_srt,
     ):
         mock_settings.env.remove_silence = True
         mock_settings.env.min_silence_ms = 500
@@ -147,10 +143,13 @@ async def test_route_calls_remove_silence_when_enabled(client):
 
 
 async def test_route_skips_remove_silence_when_disabled(client):
+    transcribe, upload_srt = _mock_transcription()
     with (
         patch("src.tts_service.api.routes.generate.get_tts_client") as mock_factory,
         patch("src.tts_service.api.routes.generate.upload_audio", new_callable=AsyncMock),
         patch("src.tts_service.api.routes.generate.remove_silence") as mock_remove,
+        transcribe,
+        upload_srt,
     ):
         mock_factory.return_value.generate = AsyncMock(return_value=b"\xff\xfb\x90\x00" + b"\x00" * 100)
         # conftest sets REMOVE_SILENCE=false
@@ -162,11 +161,14 @@ async def test_route_skips_remove_silence_when_disabled(client):
 
 async def test_route_continues_on_silence_removal_error(client):
     fake_mp3 = b"\xff\xfb\x90\x00" + b"\x00" * 100
+    transcribe, upload_srt = _mock_transcription()
     with (
         patch("src.tts_service.api.routes.generate.get_tts_client") as mock_factory,
         patch("src.tts_service.api.routes.generate.upload_audio", new_callable=AsyncMock) as mock_upload,
         patch("src.tts_service.api.routes.generate.settings") as mock_settings,
         patch("src.tts_service.api.routes.generate.remove_silence", side_effect=RuntimeError("ffmpeg missing")),
+        transcribe,
+        upload_srt,
     ):
         mock_settings.env.remove_silence = True
         mock_settings.env.min_silence_ms = 500

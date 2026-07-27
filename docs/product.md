@@ -230,6 +230,20 @@ O sistema é configurável em vários aspectos sem precisar alterar o código:
 
 ---
 
+## Quando o vídeo de fundo está quebrado
+
+Antes, um arquivo de fundo corrompido ou vazio não impedia nada: o sistema montava o vídeo normalmente, marcava o trabalho como concluído e entregava um MP4 com a tela **preta** do começo ao fim. A narração e a legenda estavam lá, mas o vídeo era inutilizável — e nada avisava. Só olhando o resultado dava para perceber.
+
+Agora o sistema confere o arquivo de fundo antes de montar. Se ele não tiver imagem de verdade, o trabalho falha na hora, dizendo qual arquivo está com problema. Você descobre em segundos, em vez de esperar a montagem inteira para receber um vídeo preto que parece bom pelo tamanho e pela duração.
+
+## Duração do vídeo
+
+O vídeo agora termina junto com a narração.
+
+Antes, a duração era ditada pelo mais longo entre todos os arquivos — inclusive o vídeo de fundo e a música, que são apenas pano de fundo. Na prática, um fundo de 90 segundos sob uma narração de 68 gerava 22 segundos de silêncio no fim, com a legenda já fora da tela. Quem define onde a história acaba é a narração; fundo e trilha são decoração e não esticam mais o vídeo.
+
+Se o fundo for **mais curto** que a narração, o final fica preto — isso continua sendo caso de trocar o arquivo de fundo por um mais longo.
+
 ## Fluxo completo resumido
 
 ```

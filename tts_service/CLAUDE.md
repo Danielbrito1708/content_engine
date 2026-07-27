@@ -66,7 +66,7 @@ Pós-processamento aplicado ao áudio gerado pelo TTS antes do upload ao MinIO. 
 
 Falhas na remoção são logadas como warning e o áudio original é usado (sem interromper o pipeline).
 
-**Dependências:** `pydub` + `ffmpeg` (adicionado ao Dockerfile).
+**Dependências:** `ffmpeg` (adicionado ao Dockerfile) — a implementação usa o filtro `silenceremove` via subprocess, sem `pydub`.
 
 ### Transcrição / legenda word-level (`src/tts_service/audio/transcribe.py`)
 
@@ -92,9 +92,15 @@ O consumo dessa legenda (offset de sincronia, hold entre palavras, fades) é res
 
 ## Testes
 
-`tests/test_generate.py` — 10 testes; edge-tts e MinIO sempre mockados; `REMOVE_SILENCE=false` no conftest (silence removal não afeta os testes do endpoint).
+`tests/test_generate.py` — 11 testes; edge-tts e MinIO sempre mockados; `REMOVE_SILENCE=false` no conftest (silence removal não afeta os testes do endpoint).
 
-`tests/test_silence.py` — 10 testes; testa a função `remove_silence` diretamente com áudio gerado por pydub + 3 testes de integração com o endpoint. Requer `ffmpeg` instalado.
+`tests/test_silence.py` — 10 testes; testa a função `remove_silence` diretamente com áudio gerado por `wave` + ffmpeg (`_make_mp3`) + 3 testes de integração com o endpoint. Requer `ffmpeg` instalado.
+
+⚠️ **Todo teste do endpoint que espera 201 precisa mockar `transcribe_to_srt` e `upload_bytes`** — use `_mock_transcription()` de `test_generate.py`. O `FAKE_MP3` do conftest é header + zeros; o Whisper real não decodifica isso e a rota devolve `502` na etapa de transcrição. Os testes ficaram quebrados exatamente assim quando a transcrição entrou na rota sem que os mocks fossem atualizados.
+
+⚠️ **`settings.env` é um pydantic model frozen construído uma vez no bootstrap.** `monkeypatch.setenv` não alcança o código sob teste, e `setattr` no campo levanta `ValidationError` — para exercitar um branch que depende de env, troque o `settings` do módulo (ver `test_factory_unknown_raises`).
+
+Rodar com Python 3.11 (o do Dockerfile) — anotações são avaliadas no import, então um nome não importado numa assinatura quebra a coleção do arquivo inteiro, coisa que o Python 3.14 local não acusa.
 
 ```bash
 poetry run pytest
