@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -39,6 +39,20 @@ class SeenItem(Base):
     #: Enrichment costs a rate-limit window per item, so only published
     #: candidates carry it — ``None`` means "not looked at", not "zero replies".
     comment_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Story-quality judgement. All four are ``None`` when the candidate was never
+    #: scored — filtered items are not, and neither is anything in a cycle where
+    #: ``llm_service`` was unreachable. ``NULL`` means "not judged", which is not
+    #: the same claim as a low score.
+    has_hook: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    story_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: ``weak_storytelling`` / ``no_hook`` / ``strong`` — derived from
+    #: ``story_score`` against a configurable threshold, stored so the audit trail
+    #: reads without re-deriving it and so the label can be forwarded downstream.
+    story_tag: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: The line the model read as the hook, when it found one. Shows *what* was
+    #: rewarded, which is what makes the threshold tunable against real data.
+    hook_line: Mapped[str | None] = mapped_column(Text, nullable=True)
+    story_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[SeenStatus] = mapped_column(Enum(SeenStatus), nullable=False)
     skip_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pipeline_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)

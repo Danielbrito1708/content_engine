@@ -1,0 +1,61 @@
+from pydantic import BaseModel, field_validator
+
+#: Score bounds. A model that answers outside them is clamped rather than
+#: rejected — see ``_clamp``.
+MIN_SCORE = 0
+MAX_SCORE = 10
+
+
+class StoryItem(BaseModel):
+    """One candidate to judge, identified by its position in the request.
+
+    ``opening`` is the start of the post, not the whole body: the endpoint judges
+    whether the first seconds promise a payoff, which is the only thing a
+    short-form viewer ever sees before deciding to swipe.
+    """
+
+    index: int
+    opening: str
+    title: str = ""
+
+
+class StoryQualityRequest(BaseModel):
+    """A batch. Batching is the point — see the route docstring for why."""
+
+    items: list[StoryItem]
+
+
+class StoryVerdict(BaseModel):
+    """Judgement on one candidate.
+
+    ``hook`` and ``score`` answer different questions and can disagree: a title
+    can promise a great payoff over a body that then rambles (hook without
+    story), and a well-told story can open on a buried lede (story without hook).
+    """
+
+    index: int
+    #: Does the title or the opening promise a story worth staying for?
+    hook: bool
+    #: Overall storytelling strength, 0–10. The caller decides where "weak" starts.
+    score: int
+    #: The line the model read as the hook, when there was one. Kept for
+    #: calibration: it shows *what* the model rewarded, not just how much.
+    hook_line: str | None = None
+    reason: str | None = None
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def _clamp(cls, value):
+        """Pull out-of-range scores into range instead of failing the batch.
+
+        One bad number must not cost the verdict on every other candidate in the
+        request — a batch is only cheaper than N calls if it does not fail as one.
+        """
+        try:
+            return max(MIN_SCORE, min(MAX_SCORE, int(value)))
+        except (TypeError, ValueError):
+            return value
+
+
+class StoryQualityResponse(BaseModel):
+    results: list[StoryVerdict]

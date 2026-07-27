@@ -5,7 +5,13 @@ from itertools import zip_longest
 import structlog
 from sqlalchemy import func, select
 
-from src.content_scout.clients.llm import ModerationClient, ModerationError
+from src.content_scout.clients.llm import (
+    TAG_WEAK,
+    ModerationClient,
+    ModerationError,
+    StoryQualityClient,
+    StoryScore,
+)
 from src.content_scout.clients.orchestrator import OrchestratorClient
 from src.content_scout.db.engine import AsyncSessionLocal
 from src.content_scout.db.models import ItemComment, SeenItem, SeenStatus
@@ -34,6 +40,9 @@ class ScoutReport:
     active_runs: int = 0
     submitted_ids: list[str] = field(default_factory=list)
     comments_fetched: int = 0
+    story_scored: int = 0
+    weak_storytelling: int = 0
+    story_quality_unavailable: bool = False
 
 
 def build_sources() -> list[Source]:
@@ -89,6 +98,29 @@ def interleave_by_origin(
     for row in zip_longest(*(items for _origin, items in ranked)):
         ordered.extend(c for c in row if c is not None)
     return ordered
+
+
+def rank_by_story(
+    candidates: list[Candidate], scores: dict[str, StoryScore], neutral: int
+) -> list[Candidate]:
+    """Order candidates by storytelling score, strongest first.
+
+    A stable sort over the flat list is all this needs: ``interleave_by_origin``
+    preserves each origin group's internal order, so sorting here turns that
+    order into "best opening first" without touching the cross-origin fairness
+    the interleave exists to provide. Ties keep the source's own ranking, which
+    is the fallback signal when the model cannot separate two candidates.
+
+    A candidate with no score sorts at ``neutral`` — the weak/strong threshold —
+    rather than last. Sending it to the back would turn a model failure into a
+    permanent handicap for a story nobody has actually judged, and the leftovers
+    of every cycle are exactly the candidates that would inherit it.
+    """
+    def key(candidate: Candidate) -> int:
+        score = scores.get(candidate.external_id)
+        return -(score.score if score is not None else neutral)
+
+    return sorted(candidates, key=key)
 
 
 async def _submitted_per_origin(session) -> dict[str, int]:
@@ -187,14 +219,39 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
         moderation = ModerationClient()
         usage = await _submitted_per_origin(session)
 
+        # Story quality runs over *every* fresh candidate, not just the ones about
+        # to be published — it is what decides which those are, so scoring only
+        # the head of the list would be circular. That is affordable because the
+        # whole cycle is one batched call; see StoryQualityClient. It runs after
+        # the capacity check for the same reason moderation does: a full queue
+        # publishes nothing, so it should cost nothing.
+        story_scores: dict[str, StoryScore] = {}
+        if scout_cfg.story_quality:
+            story_scores = await StoryQualityClient().score(fresh)
+            report.story_scored = len(story_scores)
+            # An outage here is recorded but never fatal: unlike moderation, this
+            # gates nothing. The cycle carries on selecting by source ranking.
+            report.story_quality_unavailable = bool(fresh) and not story_scores
+            report.weak_storytelling = sum(
+                1
+                for score in story_scores.values()
+                if score.tag(scout_cfg.min_story_score) == TAG_WEAK
+            )
+
+        ordered = interleave_by_origin(
+            rank_by_story(fresh, story_scores, scout_cfg.min_story_score), usage
+        )
+
         # Walk past the budget: rejected candidates don't consume a slot, so the
         # list has to be walked until the budget is actually filled. Moderation
         # runs here rather than in the filter pass so it only ever costs a call
         # for candidates that were genuinely about to be published — a handful
         # per cycle instead of one per fetched post.
-        for candidate in interleave_by_origin(fresh, usage):
+        for candidate in ordered:
             if report.submitted >= budget:
                 break
+
+            story = story_scores.get(candidate.external_id)
 
             try:
                 verdict = await moderation.check(candidate.title, candidate.text)
@@ -210,7 +267,13 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 report.unsafe += 1
                 report.filtered += 1
                 session.add(
-                    _seen_row(candidate, SeenStatus.filtered, skip_reason=verdict.as_skip_reason())
+                    _seen_row(
+                        candidate,
+                        SeenStatus.filtered,
+                        skip_reason=verdict.as_skip_reason(),
+                        story=story,
+                        min_story_score=scout_cfg.min_story_score,
+                    )
                 )
                 log.info(
                     "scout_rejected_unsafe",
@@ -235,6 +298,11 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
             metadata = candidate.to_metadata()
             if thread is not None:
                 metadata["comment_count"] = thread.total
+            if story is not None:
+                # The refiner is told to open on a strong hook. Knowing whether
+                # this post already has one — and which line it is — is the
+                # difference between polishing a hook and having to invent one.
+                metadata.update(story.as_metadata(scout_cfg.min_story_score))
 
             try:
                 run_id = await orchestrator.create_pipeline(
@@ -249,6 +317,8 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                         skip_reason=str(exc)[:255],
                         thread=thread,
                         max_comments=scout_cfg.max_comments_stored,
+                        story=story,
+                        min_story_score=scout_cfg.min_story_score,
                     )
                 )
                 continue
@@ -262,6 +332,8 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                     pipeline_run_id=run_id,
                     thread=thread,
                     max_comments=scout_cfg.max_comments_stored,
+                    story=story,
+                    min_story_score=scout_cfg.min_story_score,
                 )
             )
             log.info(
@@ -269,6 +341,8 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 external_id=candidate.external_id,
                 origin=candidate.origin,
                 run_id=str(run_id),
+                story_score=story.score if story else None,
+                story_tag=story.tag(scout_cfg.min_story_score) if story else None,
             )
 
         await session.commit()
@@ -278,13 +352,21 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
 
 def _seen_row(candidate: Candidate, status: SeenStatus, skip_reason: str | None = None,
               pipeline_run_id=None, thread: CommentThread | None = None,
-              max_comments: int = 0) -> SeenItem:
+              max_comments: int = 0, story: StoryScore | None = None,
+              min_story_score: int = 0) -> SeenItem:
     """Build the audit row, with comment enrichment when it was gathered.
 
     ``comment_count`` stays ``None`` for candidates that were never enriched —
     filtered ones never are — so the column distinguishes "no replies" from "not
     looked at". Only the first ``max_comments`` bodies are kept: the count is the
     signal, the bodies are a sample.
+
+    The story columns follow the same rule: ``None`` throughout when ``story`` is
+    absent, which covers items rejected by the cheap filters and every item in a
+    cycle where the scoring call failed. The tag is derived here rather than
+    stored by the client so the threshold applies at write time — moving it later
+    only affects new rows, and the raw ``story_score`` stays there to re-derive
+    the old ones.
     """
     return SeenItem(
         source=candidate.source,
@@ -295,6 +377,11 @@ def _seen_row(candidate: Candidate, status: SeenStatus, skip_reason: str | None 
         char_count=candidate.char_count,
         author=candidate.extra.get("author") or None,
         comment_count=thread.total if thread is not None else None,
+        has_hook=story.hook if story is not None else None,
+        story_score=story.score if story is not None else None,
+        story_tag=story.tag(min_story_score) if story is not None else None,
+        hook_line=story.hook_line if story is not None else None,
+        story_reason=story.reason[:255] if story is not None and story.reason else None,
         status=status,
         skip_reason=skip_reason,
         pipeline_run_id=pipeline_run_id,
@@ -330,8 +417,11 @@ async def scout_loop() -> None:
                 unsafe=report.unsafe,
                 submitted=report.submitted,
                 comments_fetched=report.comments_fetched,
+                story_scored=report.story_scored,
+                weak_storytelling=report.weak_storytelling,
                 no_capacity=report.skipped_no_capacity,
                 moderation_unavailable=report.moderation_unavailable,
+                story_quality_unavailable=report.story_quality_unavailable,
             )
         except Exception as exc:  # noqa: BLE001 — the loop must outlive any single failure
             log.error("scout_cycle_failed", error=str(exc), exc_info=True)

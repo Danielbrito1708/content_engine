@@ -24,13 +24,21 @@ async def trigger_run():
 @router.get("/seen", response_model=list[SeenItemResponse])
 async def list_seen(
     status: SeenStatus | None = None,
+    story_tag: str | None = None,
     limit: int = Query(50, le=200),
     offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ):
-    """Audit trail. Filter by status to see what was rejected and why."""
+    """Audit trail. Filter by status to see what was rejected and why.
+
+    ``story_tag`` is the calibration handle: listing ``weak_storytelling`` shows
+    what the score is punishing, which is the only honest way to decide where
+    ``min_story_score`` belongs.
+    """
     stmt = select(SeenItem).order_by(SeenItem.created_at.desc()).limit(limit).offset(offset)
     if status is not None:
         stmt = stmt.where(SeenItem.status == status)
+    if story_tag is not None:
+        stmt = stmt.where(SeenItem.story_tag == story_tag)
     result = await session.execute(stmt)
     return result.scalars().all()

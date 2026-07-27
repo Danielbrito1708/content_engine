@@ -334,6 +334,38 @@ Isso mantém o ranking do Reddit como critério — continuamos pegando o melhor
 
 **Não há score composto** (posição × tamanho × recência). Sem upvotes reais, qualquer peso seria inventado. Quando `seen_items` acumular histórico de performance, dá para ranquear com base em evidência.
 
+Dentro de cada origem, a ordem deixou de ser só a posição no feed: o ranking interno é a nota de qualidade narrativa descrita abaixo, com a posição do feed como critério de desempate. O rodízio entre origens é anterior e independente — ele decide *de quem* é a vez, a nota decide *qual* história daquela origem.
+
+### Qualidade narrativa: gancho e storytelling
+
+O ranking do Reddit mede quantas pessoas votaram, não se a história **se conta bem**. São coisas diferentes: um desabafo desorganizado acumula upvotes por identificação e ainda assim não vira vídeo, porque a retenção no TikTok se decide nos primeiros dois segundos e ela depende da abertura, não do total de votos.
+
+Daí um segundo sinal, independente do primeiro: `llm_service POST /story-quality` julga o **título + a abertura** de cada candidato e devolve, por candidato, um booleano `hook`, uma nota `score` de 0–10, a frase que serviu de gancho (`hook_line`) e um motivo curto.
+
+**As duas perguntas são separadas de propósito.** `hook` pergunta se o título ou as primeiras linhas prometem um desfecho; `score` pergunta se a história como um todo se sustenta. Elas discordam nos dois sentidos, e cada discordância é um diagnóstico diferente: título ótimo sobre corpo que se perde, ou história boa que começa longe do conflito (*lide enterrado*). Colapsar as duas num número só apagaria a distinção que diz o que fazer com o post.
+
+**Só a abertura é enviada, não o post inteiro.** Trinta posts completos seriam ~180 mil caracteres e destruiriam o batching (ver custo). Mas o recorte não é só economia: é o input honesto para a pergunta. O espectador decide com exatamente essa quantidade de texto, então julgar a abertura *é* julgar o que determina a retenção. O que essa escolha **não** consegue avaliar é se o post desanda no meio — uma limitação real, aceita porque um post que abre bem e desanda ainda é material aproveitável pelo refinamento, enquanto um que abre mal já perdeu o espectador.
+
+**Custo: uma chamada por ciclo, não uma por candidato.** Este é o ponto que viabiliza a feature. A moderação pode rodar só nos 2–3 candidatos que vão ser publicados porque ela é um *gate*; a nota é um sinal de **seleção**, e pontuar só a cabeça da lista seria circular — é ela que define qual é a cabeça. Avaliar todos exigiria ~30 chamadas por ciclo, então o endpoint recebe uma lista e devolve uma lista: ~4k tokens de entrada numa chamada, mais barato do que a moderação já custa. Cada item leva o próprio `index` e os vereditos devolvem esse índice, de modo que um modelo que reordena ou omite entradas não desloca nota para a história errada.
+
+**Falha aqui não derruba o ciclo — e essa assimetria com a moderação é deliberada.** A moderação decide se pode publicar, então "não deu para checar" tem que parar tudo. A nota decide apenas a *ordem*, então perdê-la custa o sinal e nada mais: `StoryQualityClient.score()` devolve mapa vazio em vez de levantar exceção, o ciclo cai de volta no ranking do Reddit e as colunas ficam `NULL`.
+
+**Etiqueta, não filtro.** O veredito é gravado em `seen_items.story_tag`, derivado da nota contra `min_story_score`:
+
+| Tag | Condição | Leitura |
+|---|---|---|
+| `weak_storytelling` | `score < min_story_score` | Não se conta bem |
+| `no_hook` | nota ok, `hook = false` | Boa história, gancho enterrado |
+| `strong` | nota ok e `hook = true` | Abre e se sustenta |
+
+`weak_storytelling` tem precedência sobre `no_hook` — história fraca é o diagnóstico principal mesmo quando o título por acaso engancha —, e `has_hook` guarda a resposta crua nos dois casos, então nada se perde.
+
+**Um candidato marcado como fraco continua sendo publicado** se não houver nada melhor atrás dele. Transformar a nota em corte rígido converteria um sinal probabilístico em filtro e poderia esvaziar a fila numa semana ruim, com o agravante de que o custo de um vídeo mediano é muito menor que o de não publicar. A nota atua na ordem; a etiqueta atua como informação — para o refinamento e para a calibragem.
+
+**A tag é derivada, não pedida ao modelo.** O modelo devolve nota; a linha entre fraco e forte é config (`min_story_score`, padrão 6 — a régua do prompt põe post comum de fórum em 4–6). Assim o corte se move contra dados reais via `GET /scout/seen?story_tag=weak_storytelling`, do mesmo jeito que `min_chars`/`max_chars` moram em config. `story_score` fica gravado cru, então mover o corte permite re-derivar as linhas antigas.
+
+**`story_tag IS NULL` ≠ fraco.** Nulo significa não avaliado: todo candidato barrado pelos filtros baratos (a nota roda depois deles, e depois do backpressure — fila cheia não publica, então não deve pagar julgamento) e todo candidato de um ciclo em que o `llm_service` caiu. Um candidato sem nota ordena **no próprio limiar**, não no fim da fila: manda-lo para o fim converteria uma falha de modelo em handicap permanente para uma história que ninguém julgou, e são justamente as sobras de cada ciclo que herdariam esse handicap.
+
 ### Filtros
 
 Duas etapas, separadas de propósito por custo e por natureza:
@@ -372,14 +404,20 @@ Como o limite é do cliente e não do método, o espaçamento vive num throttle 
 
 ### Contrato com o orchestrador
 
-O metadata enviado em `POST /pipeline` ganha dois campos opcionais, ambos vindos do scout:
+O metadata enviado em `POST /pipeline` ganha campos opcionais, todos vindos do scout:
 
 | Campo | Origem | Quando está presente |
 |---|---|---|
 | `author` | `<author><name>` do feed | Sempre que a fonte expõe autor |
 | `comment_count` | contagem de `t1_` no feed do post | Só quando o enriquecimento rodou e teve sucesso |
+| `story_tag` | derivado de `story_score` | Só quando a avaliação narrativa rodou |
+| `story_score` | `POST /story-quality` | idem |
+| `has_hook` | `POST /story-quality` | idem |
+| `hook_line` | `POST /story-quality` | Só quando o modelo achou uma frase de gancho |
 
-São aditivos e opcionais — o orchestrador e o `llm_service` seguem funcionando sem eles, e submissões manuais nunca os terão.
+São aditivos e opcionais — o orchestrador e o `llm_service` seguem funcionando sem eles, e submissões manuais nunca os terão. O orchestrador repassa o dict inteiro ao `POST /refine` sem interpretar nada, então nenhuma mudança de schema é necessária nele.
+
+**Por que os campos de história viajam.** O prompt de refino manda abrir com um gancho forte. Saber que o post **não** tem gancho é a diferença entre polir uma frase que já existe e ter que construí-la; e quando existe, `hook_line` diz qual é a frase que merece ficar na frente. Os campos ausentes são deliberadamente ausentes e não `null`: dizer ao refinador que a história é fraca quando ninguém a avaliou seria pior que não dizer nada.
 
 ### Dedup e auditoria
 
