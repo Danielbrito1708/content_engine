@@ -5,8 +5,9 @@ Serviço de geração de áudio a partir de texto. Expõe `POST /generate` que o
 ## Arquitetura
 
 - `api/routes/generate.py` — endpoint principal
-- `api/routes/health.py` — `GET /health` com provider, voice e rate ativos
+- `api/routes/health.py` — `GET /health` com provider, voice, rate e parâmetros de áudio ativos
 - `tts/base.py` — `BaseTTSClient` com método abstrato `generate(text) -> bytes`
+- `tts/azure.py` — `AzureTTSClient` (Azure Speech REST, **padrão de produção**)
 - `tts/edge.py` — `EdgeTTSClient` (edge-tts, Microsoft Neural TTS, gratuito)
 - `tts/elevenlabs.py` — stub para implementação futura
 - `tts/factory.py` — `get_tts_client()` seleciona o provider via `TTS_PROVIDER` env var
@@ -28,7 +29,7 @@ Serviço de geração de áudio a partir de texto. Expõe `POST /generate` que o
 - `audio_key` (str) — key MinIO do áudio gerado: `audio/{run_id}/part_{part_number}.mp3`
 - `srt_key` (str) — key MinIO da legenda word-level: `subs/{run_id}/part_{part_number}.srt`
 
-**Ordem das etapas:** TTS → remoção de silêncios → upload do áudio → transcrição → upload do SRT. A transcrição roda **depois** do corte de silêncio, sobre o mesmo áudio que vai ao vídeo — é o que mantém a legenda em sincronia.
+**Ordem das etapas:** TTS → pós-processamento (silêncio + loudness) → upload do áudio → transcrição → upload do SRT. A transcrição roda **depois** do pós-processamento, sobre o mesmo áudio que vai ao vídeo — é o que mantém a legenda em sincronia.
 
 Erros: `502` se o TTS, o upload ao MinIO ou a transcrição falharem.
 
@@ -36,17 +37,39 @@ Erros: `502` se o TTS, o upload ao MinIO ou a transcrição falharem.
 
 Selecionado por `TTS_PROVIDER` env var:
 
-| Provider | Env var | Status |
-|---|---|---|
-| `edge` (padrão) | `TTS_VOICE` | Implementado |
-| `elevenlabs` | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | Stub (NotImplementedError) |
+| Provider | Env var | Qualidade | Status |
+|---|---|---|---|
+| `azure` (recomendado) | `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION` | 48 kHz / 192 kbps | Implementado |
+| `edge` (padrão do código) | `TTS_VOICE` | 24 kHz / 48 kbps (fixo) | Implementado |
+| `elevenlabs` | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | 44.1 kHz | Stub (NotImplementedError) |
 
-**Vozes PT-BR disponíveis no edge-tts:**
+**Vozes PT-BR** (as mesmas nos providers `edge` e `azure`):
 - `pt-BR-ThalitaNeural` (padrão — feminina, jovem)
 - `pt-BR-FranciscaNeural` (feminina)
 - `pt-BR-AntonioNeural` (masculino)
 
 Voz configurada por `TTS_VOICE` env var.
+
+### Provider Azure (`src/tts_service/tts/azure.py`)
+
+Existe porque o `edge-tts` tem o formato de saída **hardcoded** em `audio-24khz-48kbitrate-mono-mp3` — é constante na lib, não parâmetro. A 24 kHz, nada acima de ~12 kHz existe no sinal, e era isso que deixava a narração abafada. O Azure serve as mesmas vozes neurais com o formato escolhido pelo cliente.
+
+`POST https://{region}.tts.speech.microsoft.com/cognitiveservices/v1` com corpo SSML.
+
+| Var | Padrão | Descrição |
+|---|---|---|
+| `AZURE_SPEECH_KEY` | — | **Obrigatória** quando `TTS_PROVIDER=azure` |
+| `AZURE_SPEECH_REGION` | — | **Obrigatória**; slug do recurso (`brazilsouth`, `eastus`, ...) |
+| `AZURE_OUTPUT_FORMAT` | `audio-48khz-192kbitrate-mono-mp3` | Qualquer formato aceito pelo endpoint |
+
+Key/region ausentes **derrubam o boot** em `TTSEnvSettings._check_provider_key` — mesma razão do `TTS_RATE`.
+
+**API pública do módulo:**
+- `voice_locale(voice) -> str` — `'pt-BR-ThalitaNeural'` → `'pt-BR'`; fallback `pt-BR` para formatos inesperados
+- `build_ssml(text, voice, rate) -> str` — passa o texto por `xml.sax.saxutils.escape`. Roteiro com `&` ou `<` geraria XML malformado e `400` do Azure
+- `AzureTTSClient(key, region, voice, rate, output_format, timeout)` — todos os args opcionais, caem no `settings.env`
+
+Reaproveita `TTS_VOICE` e `TTS_RATE`, então trocar `edge` ↔ `azure` não muda voz nem ritmo. Erro HTTP ou corpo vazio viram `RuntimeError` → `502` na rota.
 
 ### Velocidade da narração (`TTS_RATE`)
 
@@ -64,25 +87,36 @@ Como o rate age antes de tudo, a remoção de silêncio e a transcrição já ro
 
 O `elevenlabs.py` (stub) ainda não implementa rate; quando for implementado, o equivalente é o parâmetro `speed` do voice settings.
 
-### Remoção de silêncios (`src/tts_service/audio/silence.py`)
+### Pós-processamento de áudio (`src/tts_service/audio/postprocess.py`)
 
-Pós-processamento aplicado ao áudio gerado pelo TTS antes do upload ao MinIO. Remove silêncios do início, do fim e internos (longos demais) do MP3.
+Substituiu `audio/silence.py`. Corta silêncios **e** normaliza loudness numa **única passada de ffmpeg**, antes do upload ao MinIO. Uma passada só porque cada round-trip MP3→MP3 é outra geração lossy.
 
-**Função pública:**
-- `remove_silence(audio_bytes, min_silence_ms, silence_thresh_db, padding_ms) -> bytes` — recebe MP3 em bytes, devolve MP3 processado em bytes. Puro, sem efeitos colaterais.
+**Funções públicas:**
+- `build_filter_chain(*, trim_silence, min_silence_ms, silence_thresh_db, normalize, loudness_target_lufs, sample_rate) -> list[str]` — os filtros em ordem; lista vazia = nada a fazer
+- `process_audio(audio_bytes, *, trim_silence, min_silence_ms, silence_thresh_db, normalize, loudness_target_lufs, bitrate, sample_rate) -> bytes` — MP3 em bytes → MP3 em bytes. Puro. **Devolve o input intacto quando não há filtro**, em vez de re-encodar por nada.
 
 **Controle via env vars:**
 
 | Var | Padrão | Descrição |
 |---|---|---|
-| `REMOVE_SILENCE` | `true` | Habilita/desabilita |
+| `REMOVE_SILENCE` | `true` | Habilita o corte de silêncio |
 | `SILENCE_THRESH_DB` | `-40` | Nível abaixo do qual é considerado silêncio |
 | `MIN_SILENCE_MS` | `500` | Duração mínima para um silêncio ser removido |
-| `SILENCE_PADDING_MS` | `100` | Margem de silêncio preservada nas bordas dos cortes |
+| `NORMALIZE_AUDIO` | `true` | Habilita highpass + loudnorm |
+| `LOUDNESS_TARGET_LUFS` | `-16` | Alvo de loudness integrada (referência das plataformas de vídeo) |
+| `AUDIO_BITRATE` | `192k` | Bitrate do MP3 de saída |
+| `AUDIO_SAMPLE_RATE` | `48000` | Sample rate do MP3 de saída |
 
-Falhas na remoção são logadas como warning e o áudio original é usado (sem interromper o pipeline).
+`SILENCE_PADDING_MS` foi removido — nunca foi consumido pela implementação.
 
-**Dependências:** `ffmpeg` (adicionado ao Dockerfile) — a implementação usa o filtro `silenceremove` via subprocess, sem `pydub`.
+**Três armadilhas que a implementação evita (todas cobertas por teste):**
+1. **`aresample` depois do `loudnorm` é obrigatório** — em single-pass o `loudnorm` emite 192 kHz independentemente da entrada. Sem o resample explícito o arquivo sai gigante sem ganho.
+2. **Trim antes de loudnorm** — o `loudnorm` mede o stream inteiro; silêncio de borda puxa a medição para baixo e o filtro compensa deixando a voz alta demais.
+3. **`-b:a` explícito** — sem ele o `libmp3lame` usa 128 kbps, rebaixando silenciosamente um source de 192 kbps a cada passada.
+
+Falhas no pós-processamento são logadas como warning e o áudio original é usado (sem interromper o pipeline).
+
+**Dependências:** `ffmpeg` (no Dockerfile) — filtros `silenceremove`, `highpass`, `loudnorm`, `aresample` via subprocess.
 
 ### Transcrição / legenda word-level (`src/tts_service/audio/transcribe.py`)
 
@@ -108,9 +142,11 @@ O consumo dessa legenda (offset de sincronia, hold entre palavras, fades) é res
 
 ## Testes
 
-`tests/test_generate.py` — 11 testes; edge-tts e MinIO sempre mockados; `REMOVE_SILENCE=false` no conftest (silence removal não afeta os testes do endpoint).
+`tests/test_generate.py` — 12 testes; edge-tts e MinIO sempre mockados; `REMOVE_SILENCE=false` **e `NORMALIZE_AUDIO=false`** no conftest, para que nenhum teste de endpoint chame ffmpeg.
 
-`tests/test_silence.py` — 10 testes; testa a função `remove_silence` diretamente com áudio gerado por `wave` + ffmpeg (`_make_mp3`) + 3 testes de integração com o endpoint. Requer `ffmpeg` instalado.
+`tests/test_postprocess.py` — 20 testes (era `test_silence.py`); áudio gerado por `wave` + ffmpeg (`_make_mp3`, com `amplitude` para gerar material quiet/hot). Cobre a montagem da filter chain, o corte de silêncio, sample rate e bitrate de saída via `ffprobe`, a loudness medida via filtro `ebur128`, e 4 testes de integração com o endpoint. Requer `ffmpeg` **e `ffprobe`** instalados.
+
+`tests/test_azure.py` — 17 testes; `httpx.AsyncClient.post` sempre mockado, **nenhum acessa a rede**. Cobre derivação de locale, escape de XML no SSML, headers/URL/corpo da request, erro HTTP e corpo vazio, e a validação de config no boot (via `TTSEnvSettings()` direto, que relê o env).
 
 ⚠️ **Todo teste do endpoint que espera 201 precisa mockar `transcribe_to_srt` e `upload_bytes`** — use `_mock_transcription()` de `test_generate.py`. O `FAKE_MP3` do conftest é header + zeros; o Whisper real não decodifica isso e a rota devolve `502` na etapa de transcrição. Os testes ficaram quebrados exatamente assim quando a transcrição entrou na rota sem que os mocks fossem atualizados.
 

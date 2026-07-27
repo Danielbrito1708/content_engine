@@ -117,7 +117,7 @@ O schema é armazenado como JSONB no DB do orchestrador. Novos campos são adici
 
 ## Velocidade da Narração
 
-O `tts_service` acelera a narração via `TTS_RATE` (padrão `+15%`), repassado ao `edge_tts.Communicate(..., rate=...)`.
+O `tts_service` acelera a narração via `TTS_RATE` (padrão `+15%`). No provider `edge` vai para `edge_tts.Communicate(..., rate=...)`; no `azure`, para o `<prosody rate='...'>` do SSML. É o mesmo parâmetro nos dois casos, então trocar de provider não muda o ritmo da narração.
 
 **Por que no motor de voz, e não em pós-processamento.** Acelerar o MP3 depois de pronto (resample no `pydub`/ffmpeg) sobe o pitch junto e a voz vira "esquilo"; corrigir isso exige time-stretch, que introduz artefato. O `rate` do edge-tts é `prosody rate` do SSML — a Microsoft sintetiza já no ritmo pedido, com o pitch intacto e sem perda de qualidade. Custo zero: não há etapa de áudio extra no pipeline.
 
@@ -126,6 +126,38 @@ O `tts_service` acelera a narração via `TTS_RATE` (padrão `+15%`), repassado 
 **Ordem no pipeline.** O `rate` age na síntese, antes de tudo. Logo a remoção de silêncio e a transcrição já operam sobre o áudio acelerado, e o SRT sai com o timing certo sem nenhum ajuste — mesma razão pela qual a transcrição roda depois do corte de silêncio (ver "Legendas"). Nada no `blender_worker` muda: ele consome o par MP3+SRT como sempre.
 
 **Efeito na divisão em partes.** O limite de ~60s é de fala, não de texto, e narração mais rápida encurta o áudio para o mesmo roteiro. Mudar `TTS_RATE` muda de fato quantos roteiros cabem em um vídeo só. O LLM decide o corte a partir do texto, sem conhecer o `rate` — a estimativa dele fica conservadora quando o rate é positivo (divide roteiros que caberiam inteiros), o que é o lado seguro do erro. Deriva relevante só com valores agressivos (`> +30%`).
+
+---
+
+## Qualidade do Áudio da Narração
+
+**O teto era o provider.** O `edge-tts` tem o formato de saída hardcoded em `audio-24khz-48kbitrate-mono-mp3` (`edge_tts/communicate.py`) — não é parâmetro, é constante, porque o endpoint gratuito do Edge só serve esse formato. A 24 kHz de sample rate, nada acima de ~12 kHz existe no sinal: é matemática, não compressão. Era essa a causa da narração soar abafada, e nenhum pós-processamento recupera banda que nunca foi sintetizada.
+
+**Provider `azure`.** Azure Speech (Cognitive Services) expõe as **mesmas vozes neurais** do edge (`pt-BR-ThalitaNeural` etc.) via REST, com o formato de saída escolhido pelo cliente. Default `audio-48khz-192kbitrate-mono-mp3`. Decisão: é a menor mudança possível que resolve o problema — mesma voz, mesmo `TTS_RATE`, mesma interface `BaseTTSClient.generate(text) -> bytes`, mesma key MinIO. Só o transporte muda. O ElevenLabs resolveria também, mas trocaria a voz do canal e custa por caractere; o Azure tem free tier de 500k caracteres/mês.
+
+O `edge` continua registrado como fallback sem-configuração — útil em dev e quando não há key. Não é mais o padrão de produção.
+
+**Falha no boot, não na request.** `AZURE_SPEECH_KEY` e `AZURE_SPEECH_REGION` são validados em `TTSEnvSettings._check_provider_key` quando `TTS_PROVIDER=azure`. Mesma razão do `TTS_RATE`: config errada tem que derrubar o start, não virar `502` no meio de um pipeline run que já pagou LLM.
+
+**SSML é escapado.** O corpo da request é SSML, então um roteiro com `&` ou `<` produziria XML malformado e um `400` do Azure. `build_ssml` passa o texto por `xml.sax.saxutils.escape`. Roteiros vêm de LLM e do Reddit — assumir que não têm caractere especial é assumir errado.
+
+**Gerações lossy.** Cada round-trip MP3→MP3 é uma geração lossy nova. A cadeia tinha três (síntese → `remove_silence` → AAC do Blender), e a do meio era gratuita: o ffmpeg rodava sem `-b:a`, herdando o default de 128 kbps do `libmp3lame` — o que rebaixaria silenciosamente um source de 192 kbps a cada passada. Agora `process_audio` encoda uma vez só, com bitrate e sample rate explícitos, e **devolve os bytes intactos quando não há filtro a aplicar** (`REMOVE_SILENCE=false` + `NORMALIZE_AUDIO=false`), em vez de re-encodar por nada.
+
+---
+
+## Normalização de Loudness
+
+`process_audio` (`audio/postprocess.py`) substituiu `audio/silence.py`. Faz corte de silêncio e normalização de volume **na mesma passada de ffmpeg**, pela razão acima: duas passadas seriam duas gerações lossy.
+
+**Alvo −16 LUFS / −1.5 dBTP** (`LOUDNESS_TARGET_LUFS`, `NORMALIZE_AUDIO`). −16 LUFS é a referência das plataformas de vídeo: entregar no alvo evita que o normalizador do TikTok mexa no vídeo depois de publicado. Sem isso o nível era o que o motor de voz decidisse entregar — parte 2 mais baixa que parte 1 do mesmo vídeo, e a narração ora sumindo sob a trilha ora estourando acima dela.
+
+**Ordem: trim antes de loudnorm.** O `loudnorm` mede o stream inteiro; silêncio de cabeça e cauda puxa a loudness medida para baixo e o filtro compensa deixando a voz mais alta que o alvo. Cortar primeiro faz a medição ser só de fala. Garantido por teste (`test_chain_trims_before_normalizing`).
+
+**`aresample` obrigatório depois do `loudnorm`.** Em single-pass o `loudnorm` emite 192 kHz independentemente da entrada; sem o resample explícito o encoder herdaria essa taxa e o arquivo ficaria absurdamente maior sem ganho nenhum. É uma pegadinha do filtro, não uma escolha — também coberta por teste.
+
+**Highpass em 80 Hz.** Voz não tem conteúdo útil abaixo disso — só rumble e thump de plosiva, que consomem headroom que o `loudnorm` daria à voz.
+
+**Degrada em silêncio.** Falha no pós-processamento é logada como warning e o áudio original segue para o MinIO. Diferente da transcrição, que derruba a request com `502`: um áudio sem normalizar ainda produz vídeo; um SRT ausente, não.
 
 ---
 
@@ -351,7 +383,7 @@ Comentários são uma **capacidade opcional**, no Protocol separado `CommentCapa
 |---|---|
 | `orchestrator` | FastAPI + SQLAlchemy + PostgreSQL |
 | `llm_service` | FastAPI + OpenRouter / Claude API / Chutes AI (configurável por env) |
-| `tts_service` | FastAPI + edge-tts (→ ElevenLabs futuramente) |
+| `tts_service` | FastAPI + Azure Speech (padrão) / edge-tts (fallback) + ffmpeg (→ ElevenLabs futuramente) |
 | `blender_worker` | FastAPI + Blender 4.2 LTS + Pillow (existente) |
 | `tiktok_poster` | FastAPI + TikTok API |
 | `content_scout` | FastAPI + SQLAlchemy + PostgreSQL + httpx |
