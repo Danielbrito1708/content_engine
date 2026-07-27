@@ -218,7 +218,9 @@ O feed RSS **não carrega score**. Por isso pedimos `/r/{sub}/top/.rss?t=week`: 
 
 ### Rate limit
 
-Leitura não autenticada é limitada a aproximadamente **uma requisição por 40s** — a resposta traz `x-ratelimit-remaining: 0` e `x-ratelimit-reset: ~40` já na primeira chamada. Requisições em sequência fazem só o primeiro subreddit responder 200; o resto toma 429. Daí o espaçamento obrigatório entre subreddits (`request_delay_seconds`, padrão 60s — 45s ainda tomou 429 em teste real, a janela desliza). Cada subreddit extra custa uma janela por ciclo, então a lista deve conter só subs que rendem.
+Leitura não autenticada é limitada a aproximadamente **uma requisição por 40-60s** — a resposta traz `x-ratelimit-remaining: 0` e `x-ratelimit-reset: ~40` já na primeira chamada. Requisições em sequência fazem só o primeiro subreddit responder 200; o resto toma 429. Daí o espaçamento obrigatório (`request_delay_seconds`, padrão 60s — 45s ainda tomou 429 em teste real, a janela desliza). Cada subreddit extra custa uma janela por ciclo, então a lista deve conter só subs que rendem.
+
+O limite é **por cliente, não por endpoint**: um feed de comentários pedido logo depois de um feed de listagem toma 429 com `x-ratelimit-used: 1`, porque a listagem já gastou a janela. Todo tipo de requisição divide o mesmo orçamento, e por isso o espaçamento é centralizado num throttle único dentro de `RedditSource`.
 
 ### Seleção entre candidatos
 
@@ -250,9 +252,42 @@ O prompt é explícito em aprovar histórias pesadas — término, traição, br
 
 **Falha de moderação não é veredito.** `ModerationError` é distinto de `safe=false`: o candidato **não** é gravado em `seen_items`, o ciclo encerra, e a história continua disponível depois. Uma indisponibilidade não pode nem publicar sem checagem, nem queimar história boa em definitivo.
 
+### Enriquecimento com comentários
+
+O que o feed RSS entrega por entrada, medido: `author` (nome e URL da conta), `category` (o subreddit), `content` (corpo), `id` (fullname `t3_…`), `link`, `published` e `updated`. **Não** entrega score, número de comentários, thumbnail, flair, prêmios nem flag NSFW — nenhum deles existe no XML.
+
+O número de comentários é obtido do feed do próprio post (`/comments/{id36}/.rss`), que devolve a submissão como primeira entrada (`t3_`) seguida das respostas (`t1_`). Contar os `t1_` é a contagem. Ela é **piso, não censo**: respostas apagadas, removidas ou colapsadas não aparecem. Serve como sinal de repercussão, não como métrica exata — e não deve ser reportada como se fosse.
+
+**Por que contagem de comentários e não upvotes.** Os feeds não expõem voto em lugar nenhum — nem do post, nem dos comentários (verificado nos dois feeds). Quantas pessoas responderam é o proxy de engajamento disponível. É um sinal diferente do upvote, não um substituto: mede quem se sentiu compelido a escrever, o que num subreddit de desabafo tende a acompanhar história que mexeu com alguém.
+
+**Custo e onde ele cai.** O rate limit do Reddit é **por cliente, não por endpoint** — medido ao vivo, um feed de comentários pedido logo após um feed de listagem responde 429 com `x-ratelimit-used: 1`: a listagem já gastou a janela. Cada post enriquecido custa portanto uma janela inteira (~60s). Enriquecer todos os candidatos custaria ~45 min por ciclo, inviável.
+
+Por isso o enriquecimento roda **no mesmo ponto que a moderação**: só nos candidatos que já passaram tamanho, dedup e ordenação e estão prestes a ser publicados. Com `max_per_cycle = 2`, são ~2 minutos extras por ciclo. É desligável em `[scout] fetch_comments`.
+
+Como o limite é do cliente e não do método, o espaçamento vive num throttle compartilhado dentro de `RedditSource`, atravessado por toda requisição. Deixá-lo dentro de `fetch()` protegeria só as chamadas daquele método, e cada endpoint novo teria que reinventar o espaçamento.
+
+**"Não consultado" ≠ "zero comentários".** `comment_count` é nulo quando o item nunca foi enriquecido — todo candidato filtrado, e todo caso em que o feed falhou. Gravar `0` afirmaria que o post não teve reação alguma, o que é uma alegação diferente. Falha de enriquecimento nunca bloqueia a publicação: é um bônus, não um pré-requisito.
+
+**Bodies são amostra, contagem é o sinal.** Só as primeiras `max_comments_stored` (padrão 20) respostas têm o texto guardado, em `item_comments`. Tabela própria em vez de JSON em `seen_items` porque as perguntas interessantes são *entre* comentários — que autores reaparecem, que tamanho as reações têm — e isso é desconfortável contra JSON aninhado. Não há coluna de score, pelo motivo acima; `position` preserva a ordem da fonte, que é o único ranking disponível.
+
+**Capacidade opcional.** Comentários são um Protocol separado (`CommentCapableSource`), não parte de `Source`. Uma fonte sem comentários — ou cuja API os torne caros demais — continua sendo uma fonte válida; o scout testa a capacidade e pula o enriquecimento quando ela não existe.
+
+### Contrato com o orchestrador
+
+O metadata enviado em `POST /pipeline` ganha dois campos opcionais, ambos vindos do scout:
+
+| Campo | Origem | Quando está presente |
+|---|---|---|
+| `author` | `<author><name>` do feed | Sempre que a fonte expõe autor |
+| `comment_count` | contagem de `t1_` no feed do post | Só quando o enriquecimento rodou e teve sucesso |
+
+São aditivos e opcionais — o orchestrador e o `llm_service` seguem funcionando sem eles, e submissões manuais nunca os terão.
+
 ### Dedup e auditoria
 
 `seen_items` guarda **todo** candidato avaliado — inclusive os rejeitados, com o motivo. Serve a dois propósitos: impedir que a mesma história vire um segundo vídeo quando reaparece no top da semana seguinte, e permitir calibrar os limiares contra dados reais em vez de chute.
+
+Além do veredito, a linha guarda `author` e — para os enriquecidos — `comment_count` e as respostas em `item_comments`. Com o tempo isso vira a base para ranquear por evidência: repercussão no Reddit contra performance real no TikTok.
 
 ### Backpressure
 
@@ -269,6 +304,8 @@ Loop `asyncio` iniciado no `lifespan` do serviço, intervalo configurável. Não
 ### Adicionando fontes
 
 Toda fonte implementa o Protocol `Source` (`name` + `async fetch() -> list[Candidate]`) e devolve `Candidate` com `external_id` estável, que é a chave de dedup. Dedup, filtros, orçamento e backpressure tratam todas as fontes igualmente.
+
+Comentários são uma **capacidade opcional**, no Protocol separado `CommentCapableSource` (`async fetch_comments(candidate) -> CommentThread | None`). Implementar é opcional: o scout detecta a capacidade e simplesmente não enriquece quem não a tem. `None` significa "não deu para consultar" e é distinto de uma thread vazia, que significa "não teve resposta".
 
 ---
 

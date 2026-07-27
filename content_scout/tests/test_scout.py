@@ -8,7 +8,7 @@ from src.content_scout.clients.llm import ModerationClient, ModerationError, Ver
 from src.content_scout.clients.orchestrator import OrchestratorClient
 from src.content_scout.db.models import SeenItem, SeenStatus
 from src.content_scout.scout import interleave_by_origin, run_cycle
-from src.content_scout.sources.base import Candidate
+from src.content_scout.sources.base import Candidate, Comment, CommentThread
 from src.core import settings
 
 
@@ -456,3 +456,191 @@ async def test_seen_endpoint_filters_by_status(client, submissions, set_active_r
     body = resp.json()
     assert [i["external_id"] for i in body] == ["t3_short"]
     assert body[0]["skip_reason"] == "too_short:10"
+
+
+# --------------------------------------------------------------------------
+# Comment enrichment
+# --------------------------------------------------------------------------
+
+
+class FakeCommentSource(FakeSource):
+    """A source that also answers for comments, like RedditSource does."""
+
+    def __init__(self, candidates, thread=None, fail=False):
+        super().__init__(candidates)
+        self._thread = thread
+        self._fail = fail
+        self.asked: list[str] = []
+
+    async def fetch_comments(self, candidate):
+        self.asked.append(candidate.external_id)
+        if self._fail:
+            raise RuntimeError("boom")
+        return self._thread
+
+
+def _thread(total: int, bodies: int | None = None) -> CommentThread:
+    bodies = total if bodies is None else bodies
+    return CommentThread(
+        total=total,
+        comments=[
+            Comment(
+                external_id=f"t1_c{i}",
+                author=f"/u/user{i}",
+                text=f"reação {i}",
+                position=i,
+                published="2026-07-24T13:32:20+00:00",
+            )
+            for i in range(bodies)
+        ],
+    )
+
+
+@pytest.fixture
+def comments_cfg(monkeypatch):
+    def _set(fetch_comments=True, max_comments_stored=20):
+        monkeypatch.setattr(settings.CONFIG.scout, "fetch_comments", fetch_comments)
+        monkeypatch.setattr(settings.CONFIG.scout, "max_comments_stored", max_comments_stored)
+    _set()
+    return _set
+
+
+async def test_enrichment_stores_count_and_bodies(
+    submissions, set_active_runs, budget, comments_cfg, session
+):
+    source = FakeCommentSource([_candidate("t3_a")], thread=_thread(3))
+
+    report = await run_cycle([source])
+
+    assert report.comments_fetched == 1
+    assert source.asked == ["t3_a"]
+
+    row = (await _seen_rows(session))[0]
+    assert row.comment_count == 3
+    assert [c.external_id for c in row.comments] == ["t1_c0", "t1_c1", "t1_c2"]
+    assert row.comments[0].author == "/u/user0"
+    assert row.comments[0].position == 0
+
+
+async def test_comment_count_reaches_the_orchestrator(
+    submissions, set_active_runs, budget, comments_cfg
+):
+    await run_cycle([FakeCommentSource([_candidate("t3_a")], thread=_thread(121))])
+    assert submissions[0]["metadata"]["comment_count"] == 121
+
+
+async def test_stored_bodies_are_capped_but_the_count_is_not(
+    submissions, set_active_runs, budget, comments_cfg, session
+):
+    """The count is the signal; the bodies are only a sample of the thread."""
+    comments_cfg(max_comments_stored=2)
+    await run_cycle([FakeCommentSource([_candidate("t3_a")], thread=_thread(50))])
+
+    row = (await _seen_rows(session))[0]
+    assert row.comment_count == 50
+    assert len(row.comments) == 2
+
+
+async def test_enrichment_can_be_turned_off(
+    submissions, set_active_runs, budget, comments_cfg, session
+):
+    """Each fetch costs a rate-limit window, so the cost has to be opt-out."""
+    comments_cfg(fetch_comments=False)
+    source = FakeCommentSource([_candidate("t3_a")], thread=_thread(3))
+
+    report = await run_cycle([source])
+
+    assert source.asked == []
+    assert report.comments_fetched == 0
+    assert (await _seen_rows(session))[0].comment_count is None
+
+
+async def test_source_without_comment_support_is_skipped(
+    submissions, set_active_runs, budget, comments_cfg, session
+):
+    """Comment support is optional — a plain Source must still submit fine."""
+    report = await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert report.submitted == 1
+    assert report.comments_fetched == 0
+    assert (await _seen_rows(session))[0].comment_count is None
+
+
+async def test_unavailable_comments_do_not_block_submission(
+    submissions, set_active_runs, budget, comments_cfg, session
+):
+    """A 429 on the comment feed is not a reason to drop a story.
+
+    ``None`` must land as NULL rather than 0 — the post was never counted, and
+    recording a zero would claim it drew no reaction at all.
+    """
+    source = FakeCommentSource([_candidate("t3_a")], thread=None)
+
+    report = await run_cycle([source])
+
+    assert report.submitted == 1
+    assert report.comments_fetched == 0
+    row = (await _seen_rows(session))[0]
+    assert row.comment_count is None
+    assert row.comments == []
+
+
+async def test_enrichment_failure_does_not_end_the_cycle(
+    submissions, set_active_runs, budget, comments_cfg, session
+):
+    source = FakeCommentSource([_candidate("t3_a")], fail=True)
+
+    report = await run_cycle([source])
+
+    assert report.submitted == 1
+    assert (await _seen_rows(session))[0].comment_count is None
+
+
+async def test_filtered_candidates_are_never_enriched(
+    submissions, set_active_runs, budget, comments_cfg, session
+):
+    """Enrichment costs a window per item — spending it on rejects is the whole
+    thing the ordering exists to avoid."""
+    source = FakeCommentSource(
+        [_candidate("t3_short", chars=10), _candidate("t3_ok")], thread=_thread(2)
+    )
+
+    await run_cycle([source])
+
+    assert source.asked == ["t3_ok"]
+    rows = {r.external_id: r for r in await _seen_rows(session)}
+    assert rows["t3_short"].comment_count is None
+    assert rows["t3_ok"].comment_count == 2
+
+
+async def test_author_is_recorded_from_the_candidate(
+    submissions, set_active_runs, budget, comments_cfg, session
+):
+    candidate = Candidate(
+        source="reddit",
+        external_id="t3_a",
+        origin="r/desabafos",
+        title="T",
+        text="a" * 1000,
+        url="https://reddit.com/t3_a",
+        extra={"author": "/u/fulano"},
+    )
+    await run_cycle([FakeSource([candidate])])
+
+    assert (await _seen_rows(session))[0].author == "/u/fulano"
+
+
+async def test_seen_endpoint_exposes_comments(
+    client, submissions, set_active_runs, budget, comments_cfg, monkeypatch
+):
+    monkeypatch.setattr(
+        "src.content_scout.scout.build_sources",
+        lambda: [FakeCommentSource([_candidate("t3_a")], thread=_thread(7, bodies=2))],
+    )
+    await client.post("/scout/run")
+
+    body = (await client.get("/scout/seen")).json()
+
+    assert body[0]["comment_count"] == 7
+    assert len(body[0]["comments"]) == 2
+    assert body[0]["comments"][0]["text"] == "reação 0"

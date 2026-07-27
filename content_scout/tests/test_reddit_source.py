@@ -1,6 +1,12 @@
 import pytest
 
-from src.content_scout.sources.reddit import RedditSource, clean_body, parse_feed
+from src.content_scout.sources.base import Candidate
+from src.content_scout.sources.reddit import (
+    RedditSource,
+    clean_body,
+    parse_comments,
+    parse_feed,
+)
 
 pytestmark = pytest.mark.no_db
 
@@ -232,5 +238,193 @@ async def test_fetch_spaces_requests_apart(monkeypatch):
 
     await source.fetch()
 
-    # Three subreddits, two gaps — and never before the first request.
-    assert slept == [45, 45]
+    # Three subreddits, two gaps — and never before the first request. Each gap is
+    # the time *remaining* in the window, so it lands at or just under the delay:
+    # whatever the previous request already spent is not slept through twice.
+    assert len(slept) == 2
+    assert all(0 < s <= 45 for s in slept)
+
+
+# --------------------------------------------------------------------------
+# Comments
+# --------------------------------------------------------------------------
+
+COMMENT_BODY = (
+    "&lt;div class=\"md\"&gt;&lt;p&gt;Melhor coisa que te aconteceu, deixa "
+    "ir.&lt;/p&gt;&lt;/div&gt;"
+)
+
+
+def _comment_entry(entry_id: str, author: str, content: str) -> str:
+    return f"""
+  <entry>
+    <author><name>{author}</name></author>
+    <content type="html">{content}</content>
+    <id>{entry_id}</id>
+    <link href="https://www.reddit.com/r/desabafos/comments/abc/x/{entry_id}/"/>
+    <updated>2026-07-24T13:32:20+00:00</updated>
+    <title>{author} on Um título</title>
+  </entry>"""
+
+
+def test_parse_feed_captures_author():
+    feed = _feed(_entry("t3_abc123", "Um título", REAL_CONTENT))
+    assert parse_feed(feed, "desabafos")[0].extra["author"] == "/u/someone"
+
+
+def test_parse_comments_skips_the_post_itself():
+    """The comment feed leads with the submission; it is not a reaction to itself."""
+    feed = _feed(
+        _entry("t3_abc123", "Um título", REAL_CONTENT),
+        _comment_entry("t1_c1", "/u/alguem", COMMENT_BODY),
+    )
+    thread = parse_comments(feed)
+    assert thread.total == 1
+    assert [c.external_id for c in thread.comments] == ["t1_c1"]
+
+
+def test_parse_comments_extracts_fields_in_order():
+    feed = _feed(
+        _entry("t3_abc123", "T", REAL_CONTENT),
+        _comment_entry("t1_c1", "/u/um", COMMENT_BODY),
+        _comment_entry("t1_c2", "/u/dois", COMMENT_BODY),
+    )
+    thread = parse_comments(feed)
+
+    assert thread.total == 2
+    first, second = thread.comments
+    assert first.author == "/u/um"
+    assert first.position == 0
+    assert first.published == "2026-07-24T13:32:20+00:00"
+    assert "Melhor coisa que te aconteceu" in first.text
+    assert second.position == 1
+
+
+def test_parse_comments_counts_deleted_but_does_not_store_them():
+    """A removed reply still happened — it counts, but there is no body to keep."""
+    feed = _feed(
+        _comment_entry("t1_vivo", "/u/um", COMMENT_BODY),
+        _comment_entry("t1_morto", "/u/dois", "&lt;div&gt;&lt;/div&gt;"),
+    )
+    thread = parse_comments(feed)
+
+    assert thread.total == 2
+    assert [c.external_id for c in thread.comments] == ["t1_vivo"]
+
+
+def test_parse_comments_empty_feed():
+    thread = parse_comments(_feed())
+    assert thread.total == 0
+    assert thread.comments == []
+
+
+def _source(**kwargs) -> RedditSource:
+    defaults = dict(
+        base_url="https://www.reddit.com",
+        subreddits=["desabafos"],
+        time_filter="week",
+        limit_per_subreddit=5,
+        user_agent="test",
+        request_delay=0,
+    )
+    return RedditSource(**{**defaults, **kwargs})
+
+
+def test_comments_url_uses_id36_short_form():
+    """Permalinks embed an accented slug; the id36 form sidesteps escaping."""
+    assert (
+        _source().comments_url("t3_1v5b1jo")
+        == "https://www.reddit.com/comments/1v5b1jo/.rss"
+    )
+
+
+def test_comments_url_applies_limit_when_configured():
+    assert _source(comments_limit=100).comments_url("t3_abc") == (
+        "https://www.reddit.com/comments/abc/.rss?limit=100"
+    )
+
+
+def _candidate(external_id: str = "t3_abc") -> Candidate:
+    return Candidate(
+        source="reddit",
+        external_id=external_id,
+        origin="r/desabafos",
+        title="T",
+        text="corpo",
+        url="https://www.reddit.com/r/desabafos/comments/abc/x/",
+    )
+
+
+async def test_fetch_comments_returns_thread(monkeypatch):
+    import httpx
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(
+            200,
+            text=_feed(
+                _entry("t3_abc", "T", REAL_CONTENT),
+                _comment_entry("t1_c1", "/u/um", COMMENT_BODY),
+            ),
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    thread = await _source().fetch_comments(_candidate())
+    assert thread.total == 1
+    assert thread.comments[0].author == "/u/um"
+
+
+async def test_fetch_comments_returns_none_when_rate_limited(monkeypatch):
+    """``None`` is not an empty thread: a 429 must not be recorded as zero replies."""
+    import httpx
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(
+            429, headers={"x-ratelimit-reset": "58"}, request=httpx.Request("GET", url)
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    assert await _source().fetch_comments(_candidate()) is None
+
+
+async def test_fetch_comments_survives_malformed_xml(monkeypatch):
+    import httpx
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(200, text="<not-xml", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    assert await _source().fetch_comments(_candidate()) is None
+
+
+async def test_comment_fetch_shares_the_feed_throttle(monkeypatch):
+    """The rate limit is per client, not per endpoint.
+
+    Measured live: a comment feed requested right after a listing answers 429 with
+    ``x-ratelimit-used: 1`` — the listing had already spent the window. So the
+    comment request has to wait even though ``fetch`` is the one that ran before.
+    """
+    import httpx
+
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(
+            200,
+            text=_feed(_entry("t3_abc", "T", REAL_CONTENT)),
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr("src.content_scout.sources.reddit.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    source = _source(subreddits=["a"], request_delay=60)
+    await source.fetch()
+    assert slept == []  # first request of the client's life, nothing to wait for
+
+    await source.fetch_comments(_candidate())
+    assert len(slept) == 1 and 0 < slept[0] <= 60

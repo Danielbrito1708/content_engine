@@ -16,6 +16,17 @@ class ScoutRunResponse(BaseModel):
     moderation_unavailable: bool
     active_runs: int
     submitted_ids: list[str]
+    comments_fetched: int
+
+
+class ItemCommentResponse(BaseModel):
+    external_id: str
+    author: str | None
+    text: str
+    position: int
+    published: str | None
+
+    model_config = {"from_attributes": True}
 
 
 class SeenItemResponse(BaseModel):
@@ -26,9 +37,13 @@ class SeenItemResponse(BaseModel):
     title: str
     url: str
     char_count: int
+    author: str | None
+    #: ``None`` means the item was never enriched, not that it drew no replies.
+    comment_count: int | None
     status: SeenStatus
     skip_reason: str | None
     pipeline_run_id: uuid.UUID | None
     created_at: datetime
+    comments: list[ItemCommentResponse] = []
 
     model_config = {"from_attributes": True}

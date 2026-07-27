@@ -8,9 +8,14 @@ from sqlalchemy import func, select
 from src.content_scout.clients.llm import ModerationClient, ModerationError
 from src.content_scout.clients.orchestrator import OrchestratorClient
 from src.content_scout.db.engine import AsyncSessionLocal
-from src.content_scout.db.models import SeenItem, SeenStatus
+from src.content_scout.db.models import ItemComment, SeenItem, SeenStatus
 from src.content_scout.filters import evaluate
-from src.content_scout.sources.base import Candidate, Source
+from src.content_scout.sources.base import (
+    Candidate,
+    CommentCapableSource,
+    CommentThread,
+    Source,
+)
 from src.content_scout.sources.reddit import RedditSource
 from src.core import settings
 
@@ -28,6 +33,7 @@ class ScoutReport:
     moderation_unavailable: bool = False
     active_runs: int = 0
     submitted_ids: list[str] = field(default_factory=list)
+    comments_fetched: int = 0
 
 
 def build_sources() -> list[Source]:
@@ -47,6 +53,7 @@ def build_sources() -> list[Source]:
             user_agent=settings.env.user_agent,
             timeout=cfg.request_timeout,
             request_delay=cfg.request_delay_seconds,
+            comments_limit=cfg.comments_limit,
         )
     ]
 
@@ -94,6 +101,24 @@ async def _submitted_per_origin(session) -> dict[str, int]:
     return {origin: count for origin, count in result.all()}
 
 
+async def _fetch_thread(
+    sources_by_name: dict[str, Source], candidate: Candidate
+) -> CommentThread | None:
+    """Reactions to a candidate, or ``None`` when unavailable.
+
+    Sources that do not implement the comment capability simply yield ``None`` —
+    enrichment is optional by design, so adding a source never requires it.
+    """
+    source = sources_by_name.get(candidate.source)
+    if not isinstance(source, CommentCapableSource):
+        return None
+    try:
+        return await source.fetch_comments(candidate)
+    except Exception as exc:  # noqa: BLE001 — enrichment is a bonus, never a blocker
+        log.warning("scout_comments_failed", external_id=candidate.external_id, error=str(exc))
+        return None
+
+
 async def _known_ids(session, external_ids: list[str]) -> set[str]:
     if not external_ids:
         return set()
@@ -120,6 +145,10 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
     for source in sources:
         candidates.extend(await source.fetch())
     report.fetched = len(candidates)
+
+    # Candidates carry their source's name, not the object; enrichment needs the
+    # object back to ask it for comments.
+    sources_by_name = {source.name: source for source in sources}
 
     orchestrator = OrchestratorClient()
 
@@ -191,18 +220,50 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 )
                 continue
 
+            # Comment enrichment costs a full rate-limit window per candidate, so
+            # it runs here for the same reason moderation does: only for posts
+            # that are actually about to be published, a couple per cycle instead
+            # of one per fetched post.
+            thread = (
+                await _fetch_thread(sources_by_name, candidate)
+                if scout_cfg.fetch_comments
+                else None
+            )
+            if thread is not None:
+                report.comments_fetched += 1
+
+            metadata = candidate.to_metadata()
+            if thread is not None:
+                metadata["comment_count"] = thread.total
+
             try:
                 run_id = await orchestrator.create_pipeline(
-                    script=candidate.text, metadata=candidate.to_metadata()
+                    script=candidate.text, metadata=metadata
                 )
             except Exception as exc:  # noqa: BLE001 — one bad submit must not end the cycle
                 log.warning("scout_submit_failed", external_id=candidate.external_id, error=str(exc))
-                session.add(_seen_row(candidate, SeenStatus.failed, skip_reason=str(exc)[:255]))
+                session.add(
+                    _seen_row(
+                        candidate,
+                        SeenStatus.failed,
+                        skip_reason=str(exc)[:255],
+                        thread=thread,
+                        max_comments=scout_cfg.max_comments_stored,
+                    )
+                )
                 continue
 
             report.submitted += 1
             report.submitted_ids.append(candidate.external_id)
-            session.add(_seen_row(candidate, SeenStatus.submitted, pipeline_run_id=run_id))
+            session.add(
+                _seen_row(
+                    candidate,
+                    SeenStatus.submitted,
+                    pipeline_run_id=run_id,
+                    thread=thread,
+                    max_comments=scout_cfg.max_comments_stored,
+                )
+            )
             log.info(
                 "scout_submitted",
                 external_id=candidate.external_id,
@@ -216,7 +277,15 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
 
 
 def _seen_row(candidate: Candidate, status: SeenStatus, skip_reason: str | None = None,
-              pipeline_run_id=None) -> SeenItem:
+              pipeline_run_id=None, thread: CommentThread | None = None,
+              max_comments: int = 0) -> SeenItem:
+    """Build the audit row, with comment enrichment when it was gathered.
+
+    ``comment_count`` stays ``None`` for candidates that were never enriched —
+    filtered ones never are — so the column distinguishes "no replies" from "not
+    looked at". Only the first ``max_comments`` bodies are kept: the count is the
+    signal, the bodies are a sample.
+    """
     return SeenItem(
         source=candidate.source,
         external_id=candidate.external_id,
@@ -224,9 +293,21 @@ def _seen_row(candidate: Candidate, status: SeenStatus, skip_reason: str | None 
         title=candidate.title[:500],
         url=candidate.url,
         char_count=candidate.char_count,
+        author=candidate.extra.get("author") or None,
+        comment_count=thread.total if thread is not None else None,
         status=status,
         skip_reason=skip_reason,
         pipeline_run_id=pipeline_run_id,
+        comments=[
+            ItemComment(
+                external_id=c.external_id,
+                author=c.author or None,
+                text=c.text,
+                position=c.position,
+                published=c.published or None,
+            )
+            for c in (thread.comments[:max_comments] if thread is not None else [])
+        ],
     )
 
 
@@ -248,6 +329,7 @@ async def scout_loop() -> None:
                 filtered=report.filtered,
                 unsafe=report.unsafe,
                 submitted=report.submitted,
+                comments_fetched=report.comments_fetched,
                 no_capacity=report.skipped_no_capacity,
                 moderation_unavailable=report.moderation_unavailable,
             )
