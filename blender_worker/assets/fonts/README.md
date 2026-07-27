@@ -1,17 +1,13 @@
 # Fontes das legendas
 
-As legendas do vídeo (`scripts/edit_video.py`) usam **Futura Bold** como fonte padrão.
+As legendas do vídeo (`scripts/edit_video.py`) usam **Futura Bold**, versionada aqui
+como `Futura-Bold.ttf`.
 
-Futura é uma fonte licenciada e **não é redistribuída neste repositório**. Para usá-la,
-coloque o arquivo aqui com um destes nomes:
+Esta pasta fica **dentro do build context do `blender_worker`** (o compose usa
+`build: ./blender_worker`), então o `COPY . .` do Dockerfile leva a fonte para dentro
+da imagem. Uma fonte na raiz do monorepo *não* chegaria no container.
 
-```
-assets/fonts/Futura-Bold.ttf
-assets/fonts/Futura-Bold.otf
-```
-
-O `COPY . .` do `Dockerfile` leva o arquivo para dentro da imagem automaticamente —
-basta rebuildar (`docker compose build blender_worker`).
+O nome do arquivo é case-sensitive no Linux: tem que ser exatamente `Futura-Bold.ttf`.
 
 ## Fallback
 
@@ -25,12 +21,13 @@ basta rebuildar (`docker compose build blender_worker`).
 Se nenhum existir, as strips ficam com a fonte embutida do Blender. Fonte ausente
 degrada o visual — nunca falha o render.
 
-## Alternativa livre
+## Trocar a fonte
 
-Se não tiver licença da Futura, [Jost*](https://github.com/indestructible-type/Jost)
-(SIL OFL) é o clone geométrico mais próximo. Baixe o `Jost-Bold.ttf`, coloque nesta
-pasta e aponte no `template.json`:
+Coloque o `.ttf` ou `.otf` aqui e aponte no `template.json`:
 
 ```json
-"subtitles": { "font_path": "assets/fonts/Jost-Bold.ttf" }
+"subtitles": { "font_path": "assets/fonts/OutraFonte.ttf" }
 ```
+
+Arquivos de fonte são marcados como `binary` no `.gitattributes` da raiz — sem isso
+o `core.autocrlf` do Windows pode corromper o arquivo no commit.

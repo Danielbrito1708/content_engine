@@ -143,7 +143,9 @@ Typeface, fill colour and outline for the word-level text strips. Default: **Fut
 
 `import_subtitles(..., style=None)` takes the resolved style; `main()` passes `resolve_subtitle_style(subs)`.
 
-**Font fallback chain** — `subtitles.font_path` → `assets/fonts/Futura-Bold.ttf` → `.otf` → `/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`. Futura is licensed and **not committed** — drop the file in `assets/fonts/` (see the README there); `COPY . .` puts it in the image. A missing font degrades the look, it never fails the render.
+**Font fallback chain** — `subtitles.font_path` → `assets/fonts/Futura-Bold.ttf` → `.otf` → `/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`. A missing font degrades the look, it never fails the render.
+
+**`Futura-Bold.ttf` is committed in `assets/fonts/`** — that path is inside the Docker build context (`build: ./blender_worker`), so `COPY . .` puts it in the image. A font at the **monorepo root would not reach the container** and the render would silently fall back to DejaVu. Filename is case-sensitive on Linux. Fonts and `.blend` files are marked `binary` in the root `.gitattributes` — the repo is developed on Windows with `core.autocrlf=true`, where a mis-detected binary gets newline-converted and breaks at render time.
 
 **Requires Blender 4.2+** — `use_outline`/`outline_color`/`outline_width` do not exist before 4.2 (the Dockerfile pins 4.2.20). Verified against the real RNA, not assumed.
 

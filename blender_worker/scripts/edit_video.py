@@ -19,11 +19,11 @@ SUBTITLE_Y = 0.05
 DEFAULT_RISE_OFFSET = 0.025
 DEFAULT_RISE_FRAMES = 4
 
-# Subtitle typography. Futura Bold is the design default, but it is a licensed
-# font and is not redistributed here — drop the file in assets/fonts/ (see the
-# README there). The chain falls through to DejaVu Sans Bold, installed in the
-# image via fonts-dejavu-core, so a missing Futura degrades the look instead of
-# failing the render.
+# Subtitle typography. Futura Bold is the design default and ships in
+# assets/fonts/ — that directory is inside the Docker build context, so the
+# image picks it up via COPY. The chain still falls through to DejaVu Sans Bold
+# (fonts-dejavu-core) so a checkout without the font degrades the look instead
+# of failing the render.
 _FONT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "fonts"
 )

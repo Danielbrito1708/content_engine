@@ -84,7 +84,7 @@ A altura da subida, a duração dela, o quanto a legenda pode "esperar" numa pau
 
 **Aparência do texto:** a legenda usa Futura Bold, em branco com contorno preto. O contorno existe porque o vídeo de fundo muda o tempo todo — sem ele, uma palavra branca passando por cima de uma cena clara simplesmente some. Com o contorno a legenda continua legível seja qual for o fundo, sem precisar de tarja ou caixa atrás do texto.
 
-Futura é uma fonte licenciada e não vem junto com o projeto: o arquivo precisa ser colocado na pasta de fontes do sistema. Se ele não estiver lá, a legenda é renderizada numa fonte alternativa parecida em vez de o vídeo falhar — o vídeo sai, só com o visual diferente do pretendido.
+O arquivo da fonte vive junto com o projeto, na pasta de fontes do serviço de montagem, e por isso vai junto para o ambiente onde o vídeo é renderizado. Se por algum motivo ele não estiver lá, a legenda é renderizada numa fonte alternativa em vez de o vídeo falhar — o vídeo sai, só com o visual diferente do pretendido.
 
 A fonte, o tamanho, a cor do texto, a cor do contorno e a espessura do contorno são todos ajustáveis no template, e o contorno pode ser desligado.
 
