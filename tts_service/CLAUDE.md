@@ -112,7 +112,7 @@ Substituiu `audio/silence.py`. Corta silêncios **e** normaliza loudness numa **
 **Três armadilhas que a implementação evita (todas cobertas por teste):**
 1. **`aresample` depois do `loudnorm` é obrigatório** — em single-pass o `loudnorm` emite 192 kHz independentemente da entrada. Sem o resample explícito o arquivo sai gigante sem ganho.
 2. **Trim antes de loudnorm** — o `loudnorm` mede o stream inteiro; silêncio de borda puxa a medição para baixo e o filtro compensa deixando a voz alta demais.
-3. **`-b:a` explícito** — sem ele o `libmp3lame` usa 128 kbps, rebaixando silenciosamente um source de 192 kbps a cada passada.
+3. **`-b:a` explícito** — sem ele o ffmpeg escolhe um default do `libmp3lame` a partir do sample rate. Medido: **64 kbps** para 48 kHz mono e **32 kbps** para 24 kHz mono. Um source de 192 kbps seria esmagado a um terço a cada passada.
 
 Falhas no pós-processamento são logadas como warning e o áudio original é usado (sem interromper o pipeline).
 

@@ -103,8 +103,9 @@ def process_audio(
             [
                 "ffmpeg", "-y", "-i", in_path,
                 "-af", ",".join(filters),
-                # Explicit encode settings: ffmpeg's libmp3lame default is 128 kbps, which
-                # would quietly downgrade a 192 kbps source on every pass.
+                # Explicit encode settings. Without -b:a, ffmpeg picks a libmp3lame default
+                # from the sample rate — measured at 64 kbps for 48 kHz mono, which would
+                # quietly crush a 192 kbps source to a third of its bitrate on every pass.
                 "-c:a", "libmp3lame",
                 "-b:a", bitrate,
                 "-ar", str(sample_rate),
