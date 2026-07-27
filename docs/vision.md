@@ -77,6 +77,31 @@ pending
 
 Cada parte de uma série tem seu próprio sub-estado. O orchestrador só avança para o agendamento quando todas as partes estão `render_done`.
 
+### `scheduling` é um estado de espera, não de erro
+
+Quando o `tiktok_poster` responde `429 buffer_queue_full`, o run **permanece** em `scheduling` com os vídeos renderizados intactos. Não é falha: nada está errado com o run, só não há vaga na fila naquele minuto. Antes o 429 virava exceção e queimava o run inteiro — descartando LLM, TTS, Whisper e render já pagos por causa de uma condição temporária.
+
+Isso fecha o elo de backpressure que faltava. O scout conta `scheduling` como capacidade ocupada, então a ingestão se segura sozinha enquanto a fila do Buffer está cheia. Sem isso as taxas não fechavam: o scout ingere até 2 runs/hora (48/dia) e o Buffer publica 3 posts/dia — a diferença virava run falho depois do render.
+
+`_schedule()` é idempotente: parte com `scheduled_at` preenchido é pulada, então re-oferecer um run nunca republica o que já tem vaga. `retry_pending_schedules()`, no `maintenance_loop`, drena os runs parados a cada `[pipeline] retry_interval_seconds` (900s).
+
+### Recuperação de runs órfãos no boot
+
+O pipeline roda em `BackgroundTasks` do FastAPI, que morre com o processo. Um run interrompido no meio ficava `processing` para sempre, e como o scout lê esse estado como capacidade ocupada, **cinco runs órfãos paravam a ingestão em definitivo** — em silêncio.
+
+`recover_interrupted_runs()` roda no `lifespan`, **antes** de aceitar a primeira request: qualquer estado ativo no boot é, por definição, sem dono, porque nenhuma task sobrevive a um restart.
+
+- Todas as partes com `video_key` → o run só deve uma chamada de agendamento: é retomado.
+- Qualquer outro caso → `failed` com `"interrompido por restart do orchestrator"`.
+
+Re-executar o pipeline do topo seria a alternativa, e foi descartada: duplicaria as parts e pagaria LLM e narração de novo.
+
+### Retry de chamadas entre serviços
+
+`clients/http.py` centraliza a política: 3 tentativas, backoff exponencial (2s, 4s), apenas para erros de transporte e 5xx. **4xx nunca é repetido** — é resposta determinística, e isso inclui o `429` do poster, que é decisão de agendamento tratada acima, não erro para insistir.
+
+A razão é econômica: quando o render começa, o run já pagou LLM, síntese de voz e transcrição. Uma conexão caída ou um container ainda subindo não pode custar tudo isso.
+
 ---
 
 ## Classificação de Conteúdo
@@ -276,7 +301,19 @@ Um arquivo sem faixa de vídeo utilizável **ainda carrega** como movie strip: o
 
 Medido: um fundo de 90s sob narração de 68s renderizava 22s de ar morto depois da última palavra sair da tela. A regra anterior excluía apenas a música; a falha passou despercebida porque o fundo placeholder tinha um único frame e nunca era o mais longo.
 
-**O caso espelhado é deliberadamente não tratado.** Um bed *mais curto* que a narração deixa o final preto. Encurtar a timeline até o fundo cortaria narração no meio da frase — o defeito está no asset e é lá que se corrige.
+**O caso espelhado é resolvido esticando o bed, não encurtando a timeline.** Um bed *mais curto* que a narração deixava o final preto — medido: clipe de 45s sob narração de 71s, 26s de preto com legenda por cima e nenhum erro. Encurtar a timeline até o fundo cortaria narração no meio da frase, então quem cede é o bed: `background_repeats()` calcula os frames de início das cópias necessárias e `extend_background()` as deposita encostadas, sem sobreposição (strips sobrepostas o Blender realoca de canal) e sem vão (um vão é um frame preto).
+
+Isso *era* documentado como problema de asset, e era, enquanto todo render compartilhava um único arquivo longo escolhido a dedo. Com o fundo vindo de uma biblioteca de clipes curtos, um clipe menor que a narração passou a ser o caso normal — a regra mudou porque o desenho mudou.
+
+`MAX_BACKGROUND_REPEATS` (60) limita o caso degenerado: um arquivo quase vazio pediria milhares de strips. Passando disso o final volta a ficar preto, que é o comportamento antigo.
+
+### Rotação de fundo (`orchestrator/backgrounds.py`)
+
+`pick_background(keys, run_id, part_number)` escolhe o clipe de cada parte entre os objetos publicados sob `[template] background_prefix`.
+
+**Determinístico, não aleatório.** Duas razões: uma parte re-renderizada depois de um restart tem que voltar com a mesma imagem, senão o retry produz silenciosamente um vídeo diferente do que já foi revisado; e a semente inclui o número da parte, então as partes de uma mesma série — publicadas em sequência, onde a repetição seria mais visível — caem em clipes diferentes. A semente é `sha256(run_id:part)`, não `hash()`, que é salgado por processo e mudaria a cada restart.
+
+**Fallback preservado.** Prefixo vazio ou sem objetos cai no `background_video_key` único de antes. Uma biblioteca não preenchida degrada para o comportamento antigo em vez de falhar na última etapa.
 
 ---
 
@@ -407,13 +444,47 @@ A razão é a fila do Buffer, que segura 10 posts: ingerir mais rápido do que s
 
 ### Periodicidade
 
-Loop `asyncio` iniciado no `lifespan` do serviço, intervalo configurável. Não precisa de scheduler durável — diferente do retry do Buffer — porque `seen_items` torna o ciclo idempotente: um restart no pior caso repete uma passagem que não encontra nada novo.
+Loop `asyncio` iniciado no `lifespan` do serviço, intervalo configurável. Não precisa de scheduler durável porque `seen_items` torna o ciclo idempotente: um restart no pior caso repete uma passagem que não encontra nada novo.
+
+### Um ciclo por vez
+
+`run_cycle` é serializado por um lock de processo. Quem chega no meio de um ciclo recebe um relatório vazio com `already_running=True` em vez de esperar minutos ou — pior — correr em paralelo.
+
+**O que dois ciclos simultâneos causavam,** medido ao vivo: o loop periódico dispara um ciclo no startup, e um `POST /scout/run` logo depois de um deploy corria junto com ele. Duas consequências, ambas observadas:
+
+1. **Espaçamento do Reddit pela metade** (34s em vez de 60), e os dois ciclos tomando 429. O throttle era criado por instância de `RedditSource`, e `build_sources()` cria uma nova a cada ciclo — então ele espaçava requisições *dentro* de um ciclo e mais nada. Agora o `_Throttle` é estado de processo (`shared_throttle()`), porque o limite do Reddit é por cliente, não por objeto.
+2. **`UniqueViolationError` em `seen_items.external_id`**, derrubando o ciclo com 500. O dedup é check-then-insert, e os dois ciclos passaram pela mesma leitura antes de qualquer escrita.
+
+### Gravação por linha, não em lote
+
+O commit em lote no fim do ciclo era o que transformava o conflito acima em perda de dados: um único duplicado desfazia **todas** as linhas do ciclo, inclusive as `submitted` cujos `pipeline_run` já existiam no orchestrador. Essas histórias voltavam a aparecer como inéditas no ciclo seguinte e seriam publicadas duas vezes. Medido: 4 runs criados, 2 registrados.
+
+`_record()` grava e commita cada linha na hora, tolerando `IntegrityError` (o candidato já foi registrado por outro escritor) em vez de propagar. A linha `submitted` é gravada imediatamente após a submissão, com o `run_id` em mãos — nada que falhe depois pode apagar o registro de uma história que já está no pipeline.
 
 ### Adicionando fontes
 
 Toda fonte implementa o Protocol `Source` (`name` + `async fetch() -> list[Candidate]`) e devolve `Candidate` com `external_id` estável, que é a chave de dedup. Dedup, filtros, orçamento e backpressure tratam todas as fontes igualmente.
 
 Comentários são uma **capacidade opcional**, no Protocol separado `CommentCapableSource` (`async fetch_comments(candidate) -> CommentThread | None`). Implementar é opcional: o scout detecta a capacidade e simplesmente não enriquece quem não a tem. `None` significa "não deu para consultar" e é distinto de uma thread vazia, que significa "não teve resposta".
+
+---
+
+## Operação 24h
+
+O alvo é uma máquina ligada o tempo todo, sem ninguém olhando. O que o `docker-compose.yml` garante:
+
+**`restart: unless-stopped` em todos os serviços**, via a âncora `x-runtime`. Sem isso, um container que morre — ou um reboot do host — deixa o serviço fora do ar até alguém reparar. `unless-stopped` e não `always` para que uma parada deliberada continue valendo depois do reboot.
+
+**Log limitado** (`max-size: 10m`, `max-file: 3`) e `log_level = INFO` em todos os `config.ini`. Em `DEBUG` cada chamada de boto3 e httpx despeja cabeçalhos completos de request e response: o log do `blender_worker` gerava megabytes por render, e o driver `json-file` sem limite não descarta nada. Numa máquina que roda meses, é o disco que acaba primeiro.
+
+**Cache do Whisper em volume** (`whisper_cache` em `/root/.cache/huggingface`). Os pesos (~420 MB) são baixados no primeiro uso e iam para a camada gravável do container: todo recreate baixava de novo, e um restart com o HuggingFace fora do ar deixava o serviço incapaz de transcrever — sem SRT, o render não acontece.
+
+**O que continua sendo responsabilidade de fora do compose:**
+
+- O Docker Desktop no Windows exige sessão de usuário logada; um daemon Linux (VM ou WSL como serviço) é o alvo certo para 24h.
+- Espaço em disco: as imagens somam ~36 GB e o build cache cresce sem limite (`docker builder prune`).
+- Backup do Postgres e retenção dos `outputs/` no R2 — nada é apagado hoje.
+- Alerta de falha: um run `failed` não notifica ninguém.
 
 ---
 
@@ -448,37 +519,16 @@ O orchestrador armazena as keys MinIO de cada artefato no `pipeline_run` para pa
 
 Features planejadas, ainda não implementadas. Cada entrada descreve o problema, o comportamento proposto e o que precisa mudar — o suficiente para uma sessão futura implementar sem redescobrir o contexto.
 
-### Fila de espera quando o Buffer está cheio
+### Fila de espera quando o Buffer está cheio — **implementado**
 
-**Problema.** O Buffer free aceita no máximo 10 posts agendados por vez (`config.ini [posting] buffer_queue_limit`). Quando o limite é atingido, `POST /schedule` no `tiktok_poster` responde `429` com `{"error": "buffer_queue_full"}`, o orchestrador marca o `pipeline_run` como `failed` e o vídeo — já renderizado, já pago em tempo de LLM, TTS e render — fica parado. A recuperação hoje é manual: esperar a fila baixar e resubmeter.
+Fila cheia deixou de ser falha terminal. O `429 buffer_queue_full` mantém o run em `scheduling` com os vídeos intactos, e `retry_pending_schedules()` (no `maintenance_loop`) reoferece a cada `[pipeline] retry_interval_seconds`. Detalhes e razões em "Estado do Pipeline → `scheduling` é um estado de espera".
 
-Isso é o único ponto do pipeline onde uma condição **temporária e esperada** produz uma falha terminal. Com 2–3 posts/dia e séries de múltiplas partes, a fila enche em poucos dias de operação normal.
+**Duas decisões diferem do que este backlog previa:**
 
-**Comportamento proposto.** Fila cheia deixa de ser falha e passa a ser espera:
+- **Sem estado `awaiting_slot`.** `scheduling` já significa exatamente isso — "renderizado, aguardando o poster" — e já era contado como capacidade ocupada pelo scout, que é o efeito que se queria. Um valor novo no enum exigiria migration e um segundo estado com a mesma semântica.
+- **Sem scheduler durável.** O pré-requisito registrado aqui (Celery/APScheduler) não foi necessário porque o retry é idempotente e o estado vive no Postgres, não na memória: `recover_interrupted_runs()` reconcilia no boot e o loop periódico faz o resto. Um restart no meio custa uma varredura repetida, não um run perdido.
 
-- O orchestrador ganha o estado `awaiting_slot` — o run terminou render, tem os vídeos no MinIO, e só aguarda vaga no Buffer. Distinto de `failed`: nada deu errado.
-- Um worker periódico varre os runs em `awaiting_slot` (ordem FIFO por `created_at`) e retenta o agendamento. Ao conseguir, o run segue para `scheduled` normalmente.
-- Séries são atômicas: só agenda se houver vaga para **todas** as partes restantes. Agendar a parte 1 e deixar a parte 2 na espera publica um cliffhanger sem continuação.
-- O intervalo de varredura é configurável; algo na ordem de horas é suficiente — a fila só abre quando o Buffer publica.
-
-**O que muda:**
-
-| Onde | Mudança |
-|---|---|
-| `orchestrator/db/models.py` | novo valor `awaiting_slot` em `PipelineStatus` + migration |
-| `orchestrator/worker.py` | `_schedule` trata `429 buffer_queue_full` como `awaiting_slot`, não `failed` |
-| `orchestrator` (novo) | worker de retry periódico varrendo `awaiting_slot` |
-| `tiktok_poster/api/routes/schedule.py` | expor vagas livres na resposta do `429`, para o orchestrador decidir sobre séries sem tentativa e erro |
-| `docs/product.md` | reescrever "Fila cheia" na Feature 6 — deixa de ser falha |
-
-**Pré-requisito.** O retry periódico exige um agendador que sobreviva a restart do container. Hoje o orchestrador usa `BackgroundTasks`, que não serve — a mesma limitação já registrada como tech debt no `blender_worker`. Resolver os dois juntos (fila real: Celery + Redis, ou APScheduler com store no Postgres).
-
-**Alternativas consideradas.**
-
-- **Buffer pago** — resolve por dinheiro (limite muito maior), não resolve o caso de a fila encher mesmo assim. Vale como mitigação, não como solução.
-- **Publicar direto na TikTok Content Posting API** — elimina o Buffer e o limite de fila, mas troca um problema por outro: OAuth, refresh de token, e o agendamento passa a ser responsabilidade nossa. Ver "TikTok API" em Decisões em Aberto. A fila de espera é útil de qualquer forma, porque o limite de ritmo (posts/dia) continua existindo.
-
-**Critério de aceite.** Submeter runs além do limite da fila: nenhum vai para `failed`, todos ficam em `awaiting_slot`, e cada um é agendado sozinho conforme a fila abre — sem resubmissão manual e sem perder a ordem.
+**O que ainda falta: atomicidade de série.** Hoje as partes são agendadas uma a uma; se a fila fechar entre a parte 1 e a 2, a parte 1 fica agendada e a 2 espera a próxima varredura. Como as partes são agendadas em dias consecutivos e o retry roda a cada 15 min, a janela é pequena, mas existe — e publicar um cliffhanger sem continuação é pior que atrasar a série inteira. Resolver exige que o `tiktok_poster` exponha as vagas livres na resposta do `429`, para o orchestrador decidir antes de começar.
 
 ---
 

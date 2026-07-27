@@ -71,6 +71,8 @@ Lê o feed Atom `/r/{sub}/top/.rss?t={janela}&limit={n}` de cada subreddit confi
 
 ⚠️ **O rate limit é por cliente, não por endpoint.** Medido: feed de comentários logo após feed de listagem responde 429 com `x-ratelimit-used: 1` — a listagem já gastou a janela. Por isso o espaçamento mora num `_Throttle` compartilhado que **toda** requisição atravessa; se estivesse dentro de `fetch()`, cada endpoint novo teria que reinventá-lo.
 
+⚠️ **O throttle é estado de processo, não de instância** — `shared_throttle(delay)`. `build_sources()` cria uma `RedditSource` nova a cada ciclo, então um throttle por instância espaçava requisições *dentro* de um ciclo e nada mais. `delay` é reconfigurado a cada construção (último a escrever vence), o que mantém a suíte em 0 em vez de herdar os 60s de produção. O fixture autouse `fresh_throttle` zera `_last` entre testes — sem ele cada teste herdaria o timer do anterior e esperaria de verdade (a suíte levava 4 minutos).
+
 ⚠️ **Custo: uma janela (~60s) por post enriquecido.** Enriquecer todos os candidatos custaria ~45 min/ciclo. Roda só nos que vão ser publicados — mesmo ponto da moderação —, ou seja ~2/ciclo. Desligável em `[scout] fetch_comments`.
 
 ⚠️ **`comment_count IS NULL` ≠ `0`.** Nulo = nunca consultado (todo filtrado, e toda falha de feed). Zero seria a afirmação de que o post não teve reação. Falha de enriquecimento nunca impede a publicação.
@@ -121,12 +123,22 @@ Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando
 
 `scout_loop()` — driver periódico iniciado no `lifespan` do FastAPI. Não precisa de scheduler durável: `seen_items` torna o ciclo idempotente, então um restart no pior caso repete uma passagem que não acha nada novo. O loop sobrevive a qualquer exceção de ciclo.
 
+**Um ciclo por vez.** `run_cycle` é serializado por `_cycle_lock` (lock de processo). Quem chega no meio recebe `ScoutReport(already_running=True)` na hora, em vez de esperar minutos ou correr em paralelo.
+
+⚠️ **Dois ciclos simultâneos eram destrutivos**, e acontecia sozinho: o loop dispara um ciclo no startup, e um `POST /scout/run` logo após um deploy corria junto. Medido ao vivo — espaçamento do Reddit caindo para 34s com 429 nos dois, e `UniqueViolationError` em `seen_items.external_id` derrubando o ciclo com 500 **depois** de já ter criado runs no orchestrador (4 runs criados, 2 registrados).
+
+**`_record(session, row)`** grava e commita cada linha na hora, tolerando `IntegrityError`. O commit em lote no fim era o que transformava um duplicado em perda de dados: desfazia todas as linhas do ciclo, inclusive `submitted` cujos runs já existiam — e essas histórias voltariam como inéditas no ciclo seguinte, virando vídeo duplicado.
+
+**`sources=[]` significa "nenhuma fonte".** `run_cycle` testa `is None`, não truthiness — a versão anterior caía em `build_sources()` e transformava um chamador pedindo nada em tráfego real para o Reddit.
+
 ### Endpoints (`src/content_scout/api/routes/scout.py`)
 
 - `POST /scout/run` — roda um ciclo agora, síncrono, e devolve os contadores. Feito para calibrar filtros vendo o resultado na hora.
 - `GET /scout/seen?status=&limit=&offset=` — trilha de auditoria; filtre por `filtered` para ver o que foi rejeitado e por quê.
 
-**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`.
+**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `already_running`.
+
+`already_running=true` (com todos os contadores em zero) significa que já havia um ciclo em andamento e esta chamada não fez nada — não é erro.
 
 `GET /scout/seen` devolve também `author`, `comment_count` (nulo = não consultado) e `comments[]` com `external_id`, `author`, `text`, `position`, `published`.
 

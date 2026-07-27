@@ -30,6 +30,7 @@ resolve_subtitle_style = edit_video.resolve_subtitle_style
 apply_text_style = edit_video.apply_text_style
 check_movie_strip = edit_video.check_movie_strip
 content_end_frame = edit_video.content_end_frame
+background_repeats = edit_video.background_repeats
 fit_font_size = edit_video.fit_font_size
 
 
@@ -453,3 +454,39 @@ def test_apply_text_style_falls_back_to_the_style_size_without_an_override():
     style = resolve_subtitle_style({"font_size": 190}, exists=NO_FONTS)
     apply_text_style(strip, style, font=None)
     assert strip.font_size == 190
+
+
+# ── background bed coverage ────────────────────────────────────────────────
+
+def test_background_is_repeated_until_it_covers_the_narration():
+    """A 45s clip (1350 frames) under a 71s narration (2151 frames) left 26s of
+    black tail. One more copy carries the bed to frame 2700, past the end."""
+    starts = background_repeats(clip_frames=1350, first_start=1, needed_end=2151)
+    assert starts == [1351]
+
+
+def test_background_long_enough_is_never_repeated():
+    assert background_repeats(clip_frames=3600, first_start=1, needed_end=2151) == []
+
+
+def test_repeats_start_exactly_where_the_previous_copy_ends():
+    """Overlapping strips get auto-moved to another channel by Blender, and a
+    gap is a black frame — the seam has to be exact."""
+    clip = 100
+    starts = background_repeats(clip_frames=clip, first_start=1, needed_end=450)
+    assert starts == [101, 201, 301, 401]
+    assert all(b - a == clip for a, b in zip(starts, starts[1:]))
+
+
+def test_exact_fit_needs_no_repeat():
+    # Clip covers frames 1..1350; the narration ends on the last covered frame.
+    assert background_repeats(clip_frames=1350, first_start=1, needed_end=1350) == []
+
+
+def test_degenerate_clip_is_bounded_instead_of_looping_forever():
+    starts = background_repeats(clip_frames=2, first_start=1, needed_end=1_000_000)
+    assert len(starts) == edit_video.MAX_BACKGROUND_REPEATS
+
+
+def test_a_clip_with_no_frames_asks_for_nothing():
+    assert background_repeats(clip_frames=0, first_start=1, needed_end=900) == []

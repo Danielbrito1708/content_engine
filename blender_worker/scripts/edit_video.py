@@ -22,6 +22,12 @@ DEFAULT_MAX_HOLD_SECONDS = 0.4
 # and belongs in an image strip, not here.
 MIN_MOVIE_FRAMES = 2
 
+# Ceiling on how many times the background clip may be laid end to end to cover
+# the narration. A well-sized clip needs one or two repeats; a number this far
+# above that only bounds the degenerate case, where a near-empty file would
+# otherwise ask Blender for thousands of strips.
+MAX_BACKGROUND_REPEATS = 60
+
 # Resting position of the subtitle, as a fraction of frame height (0 = bottom,
 # 0.5 = dead centre). Paired with align_y = "CENTER" below, so this is the
 # position of the text's own middle, not of its baseline — 0.5 puts the word in
@@ -339,14 +345,51 @@ def content_end_frame(strips, bed_channels, fallback):
     Pure — takes any objects with `channel` and `frame_final_end`, so the rule is
     testable without Blender.
 
-    A bed *shorter* than the narration is the mirror case and is deliberately
-    not handled here: the tail goes black, which is an asset problem to fix in
-    the asset, not a length the timeline should silently shrink to.
+    A bed *shorter* than the narration is the mirror case, and the timeline still
+    must not shrink to it — the fix is to make the bed longer, which is what
+    `background_repeats` does before the render.
     """
     content = [s for s in strips if s.channel not in bed_channels]
     if not content:
         return fallback
     return max(s.frame_final_end for s in content)
+
+
+def background_repeats(clip_frames, first_start, needed_end, max_repeats=MAX_BACKGROUND_REPEATS):
+    """Start frames for the extra background copies needed to reach `needed_end`.
+
+    The background is a bed: it is however long its file happens to be, and the
+    narration decides where the video ends. When the bed runs out first the tail
+    renders **black** — no error, no warning, a video that looks finished and is
+    not. Measured: a 45s clip under a 71s narration produced 26s of black with
+    subtitles still popping over it.
+
+    That used to be filed as an asset problem, and it was, while every render
+    shared one long hand-picked file. With backgrounds now drawn from a library
+    of clips, a clip shorter than the narration is the normal case, not a
+    mistake — so the timeline covers it by repeating the clip.
+
+    Pure — takes frame numbers, so the arithmetic is testable without Blender.
+    `max_repeats` bounds the pathological case (a two-frame file would otherwise
+    ask for thousands of strips); past it the tail goes black as before.
+    """
+    if clip_frames < 1:
+        return []
+
+    starts = []
+    next_start = first_start + clip_frames
+    while next_start <= needed_end and len(starts) < max_repeats:
+        starts.append(next_start)
+        next_start += clip_frames
+    return starts
+
+
+def extend_background(vse, path, channel, strip, needed_end):
+    """Lay extra copies of the background clip until `needed_end` is covered."""
+    starts = background_repeats(strip.frame_duration, strip.frame_start, needed_end)
+    for start in starts:
+        add_movie_strip(vse, path, channel, start)
+    return len(starts)
 
 
 def apply_volume_fade(strip, start_frame, fade_start_frame, end_frame, start_volume):
@@ -481,7 +524,7 @@ def main():
     for strip in vse.sequences_all:
         strip.select = False
 
-    add_movie_strip(vse, assets["video"], channels["video"], t["intro_start"] + 1)
+    background = add_movie_strip(vse, assets["video"], channels["video"], t["intro_start"] + 1)
 
     music_strip = add_sound_strip(vse, assets["music"], channels["music"], t["intro_start"] + 1)
     music_strip.volume = 0.2
@@ -510,6 +553,11 @@ def main():
     bed_channels = {channels["music"], channels["video"]}
     last_frame = content_end_frame(vse.sequences_all, bed_channels, timing["frame_end"])
     scene.frame_end = last_frame
+
+    # After the length is fixed, never before: the repeats are on a bed channel
+    # and so are invisible to content_end_frame either way, but laying them first
+    # would make the covering depend on a number that has not been decided yet.
+    extend_background(vse, assets["video"], channels["video"], background, last_frame)
 
     if "music_fade_out" in t:
         apply_volume_fade(
