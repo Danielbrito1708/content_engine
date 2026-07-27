@@ -616,7 +616,14 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
   "background": {
     "color": [25, 25, 25, 230],
     "radius": 16,
-    "padding": { "top": 20, "right": 20, "bottom": 20, "left": 20 }
+    "padding": { "top": 20, "right": 20, "bottom": 20, "left": 20 },
+    "shadow": {
+      "enabled": true,
+      "color": [0, 0, 0, 150],
+      "blur": 14,
+      "spread": 0,
+      "offset": { "x": 0, "y": 8 }
+    }
   },
   "assets": [
     {
@@ -637,17 +644,34 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
 
 | Campo | Descrição |
 |---|---|
-| `canvas.width` | Largura fixa em pixels |
+| `canvas.width` | Largura fixa do **card** em pixels — com sombra ligada o PNG sai mais largo (ver abaixo) |
 | `background.color` | RGBA (0–255 cada canal) |
 | `background.radius` | Raio das bordas arredondadas em pixels |
 | `background.padding` | Distância entre a borda do retângulo e o conteúdo interno |
+| `background.shadow.enabled` | Liga a sombra projetada. Padrão `false` — guides sem o bloco renderizam como antes |
+| `background.shadow.color` | RGBA da sombra; o alpha controla a intensidade |
+| `background.shadow.blur` | Desvio-padrão do desfoque em pixels; `0` dá uma cópia deslocada de borda dura |
+| `background.shadow.spread` | Cresce (ou encolhe, se negativo) a sombra além do card antes do desfoque |
+| `background.shadow.offset` | Para que lado a sombra cai. `y` positivo = luz vindo de cima |
 | `assets[].id` | Identificador; usado para mapear ao `assets` do request |
 | `assets[].size` | Tamanho que o asset ocupará — a imagem é redimensionada |
 | `assets[].position` | Posição relativa ao canto superior-esquerdo da área de padding |
 | `text.font_path` | Caminho absoluto para o arquivo `.ttf` |
 | `text.offset` | Posição do bloco de texto relativa ao canto superior-esquerdo da área de padding |
 
-**Altura do canvas:** calculada dinamicamente: `padding.top + max(maior_asset_height, altura_texto) + padding.bottom`.
+**Altura do card:** calculada dinamicamente: `padding.top + max(maior_asset_height, altura_texto) + padding.bottom`.
+
+### Sombra projetada
+
+Uma sombra desfocada e deslocada ocupa espaço **fora** da caixa do card, então o canvas cresce e o card é desenhado recuado para dentro dessa margem — assets e texto acompanham o deslocamento. Desenhar a sombra dentro do canvas antigo cortaria o esmaecimento numa linha reta rente à borda.
+
+`shadow_margins(shadow) -> (left, top, right, bottom)` é a função pura que dá essa margem: `blur * 3 + spread`, ajustada pelo `offset` em cada lado (nunca negativa). O fator 3 vem de o `radius` do `GaussianBlur` do Pillow ser um desvio-padrão — ~3σ concentra >99% do peso do kernel, e o resto fica abaixo de um passo de alpha de 8 bits.
+
+Medido com os defaults do `comment_default.json` (blur 14, offset y 8): o mesmo texto sai **800×114** com a sombra desligada e **884×198** com ela ligada — margens 42/34/42/50.
+
+> **Contrato:** quem posiciona esse PNG num vídeo deve alinhá-lo pelo **centro**, não pelo canto. A margem transparente desloca o card em relação ao canto superior-esquerdo do arquivo.
+
+A sombra é clipada pela silhueta do card (`ImageChops.subtract` contra uma máscara do rounded rect). O fundo do card é translúcido (alpha 230), então uma sombra sem clip atravessaria e escureceria o card de forma desigual — mais forte do lado para onde o offset aponta. É o mesmo comportamento do `box-shadow` do CSS.
 
 ### Pipeline interno
 
@@ -658,8 +682,9 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
    - Usa minio_key do request.assets[id] se fornecido, senão usa o padrão do guide
    - Baixa bytes do MinIO (asyncio.to_thread)
    - Falha silenciosa se não encontrar — compositor pula assets ausentes
-4. Calcula altura do canvas com base no texto quebrado
+4. Calcula altura do card com base no texto quebrado e a margem da sombra
 5. Compõe imagem (Pillow):
+   - Sombra: rounded rect na cor da sombra → GaussianBlur → clip pela silhueta do card
    - Rounded rect com supersampling 4× para bordas suaves
    - Assets posicionados e redimensionados
    - Texto renderizado linha por linha

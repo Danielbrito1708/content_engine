@@ -4,7 +4,14 @@
   "background": {
     "color": [25, 25, 25, 230],
     "radius": 16,
-    "padding": { "top": 20, "right": 20, "bottom": 20, "left": 20 }
+    "padding": { "top": 20, "right": 20, "bottom": 20, "left": 20 },
+    "shadow": {
+      "enabled": true,
+      "color": [0, 0, 0, 150],
+      "blur": 14,
+      "spread": 0,
+      "offset": { "x": 0, "y": 8 }
+    }
   },
   "assets": [
     {

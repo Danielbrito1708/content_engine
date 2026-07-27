@@ -232,6 +232,10 @@ O visual do card é controlado por um arquivo de template que define: a largura 
 
 O texto do comentário é quebrado automaticamente em múltiplas linhas para caber na largura definida. A altura do card cresce de acordo com o texto — não há limite de caracteres imposto pelo sistema.
 
+O card também pode ter uma sombra projetada, que dá a sensação de que ele está flutuando sobre o vídeo em vez de estar colado nele. Dá para escolher a cor e a opacidade da sombra, o quanto ela é difusa, o quanto ela se espalha para além do card e para que lado ela cai — o padrão é uma sombra suave caindo para baixo, como se a luz viesse de cima. A sombra é opcional: templates que não a configuram continuam produzindo exatamente a mesma imagem de antes.
+
+Quando a sombra está ligada, a imagem gerada fica maior que o card, porque precisa de espaço transparente em volta para a sombra caber inteira sem ser cortada. O card em si não muda de tamanho, e a sombra nunca escurece o próprio card por baixo — ela aparece só ao redor dele.
+
 O resultado é uma imagem PNG salva no storage, pronta para ser usada como asset em um vídeo.
 
 ---

@@ -174,18 +174,33 @@ Wraps text and computes block dimensions for the image compositor.
 
 Composes a comment card image (rounded rect background + positioned assets + wrapped text) and returns PNG bytes. No DB or MinIO required at call time — callers are responsible for downloading assets and passing raw bytes.
 
-**Schema (Pydantic models for the template guide JSON):** `CommentGuide`, `Canvas`, `Background`, `Padding`, `AssetSpec`, `Size`, `Position`, `TextSpec`.
+**Schema (Pydantic models for the template guide JSON):** `CommentGuide`, `Canvas`, `Background`, `Padding`, `Shadow`, `AssetSpec`, `Size`, `Position`, `TextSpec`.
 
 **Public API:**
 - `load_guide(path: Path) -> CommentGuide` — parses a guide JSON file from disk.
 - `load_font(guide, root_dir) -> FreeTypeFont` — loads the TrueType font referenced by the guide.
 - `compose(guide, text, asset_images, font, line_spacing=4) -> bytes` — renders and returns raw PNG bytes. `asset_images` is `dict[str, bytes]` keyed by asset `id`; missing ids are silently skipped. Canvas height grows automatically to fit text and assets.
+- `shadow_margins(shadow) -> (left, top, right, bottom)` — transparent padding the blurred shadow needs around the card. Pure, so the geometry is tested without rendering.
 
-**Canvas height rule:** `padding.top + max(tallest_asset_spec_height, text_block_height) + padding.bottom`.
+**Card size rule:** `padding.top + max(tallest_asset_spec_height, text_block_height) + padding.bottom`.
 
-**Template:** `templates/comment_default.json` — reference guide (800px wide, avatar slot + text). Uses `font_path: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"` (installed via `fonts-dejavu-core` apt package in the Dockerfile — available in the container, but needs to be installed locally for dev outside Docker).
+**Template:** `templates/comment_default.json` — reference guide (800px wide, avatar slot + text, drop shadow on). Uses `font_path: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"` (installed via `fonts-dejavu-core` apt package in the Dockerfile — available in the container, but needs to be installed locally for dev outside Docker).
 
-- Tests: `tests/test_image_composer.py` (9 tests, no DB/MinIO required).
+- Tests: `tests/test_image_composer.py` (23 tests, no DB/MinIO required).
+
+### Card drop shadow (`src/blender_worker/image/composer.py`)
+
+Optional `background.shadow` block in the guide: `enabled` (default `False`), `color` RGBA, `blur`, `spread`, `offset` `{x, y}`. `comment_default.json` ships it on — black at 150/255, blur 14, offset y 8.
+
+**`guide.canvas.width` is the width of the *card*, not of the PNG.** A blurred, offset shadow falls outside the card's box, so the canvas grows by `shadow_margins()` on each side and the card is drawn inset at that origin — assets and text shift with it. Drawing the shadow inside the old canvas would clip the falloff into a hard line along the border. Measured: 800×114 with the shadow off → 884×198 with the shipped defaults. **Callers must position the PNG by its centre, not its corner**, or the transparent margin displaces the card.
+
+**Margin is `blur * BLUR_EXTENT` (3×) plus spread, adjusted by offset.** Pillow's `GaussianBlur` radius *is* the standard deviation, and ~3σ holds >99% of the kernel weight — past it the contribution is under one 8-bit alpha step. `test_shadow_does_not_clip_at_canvas_edge` asserts the whole canvas border is alpha 0, so a smaller constant fails loudly instead of degrading quietly.
+
+**The shadow is clipped to outside the card's silhouette** (`ImageChops.subtract` against a rounded-rect occluder mask). The card background is translucent (alpha 230), so an unclipped shadow shows through it and darkens the card unevenly — strongest where the offset points. CSS `box-shadow` clips the same way.
+
+**Off by default in the schema** so every guide written before this feature renders byte-identical geometry; only the shipped template opts in.
+
+- `_rounded_rect(size, radius, color, scale=4)` returns the supersampled rounded rectangle; `_draw_rounded_rect(...)` composites it at a `dest`. Both are used for the card and for the shadow shape.
 
 ### Image render endpoint (`src/blender_worker/api/routes/images.py`)
 

@@ -270,6 +270,26 @@ Medido: um fundo de 90s sob narração de 68s renderizava 22s de ar morto depois
 
 ---
 
+## Cards de comentário (`blender_worker`)
+
+O `POST /images/render` compõe um PNG estilo "comentário do TikTok" com Pillow (não Blender): retângulo arredondado, assets posicionados e texto quebrado automaticamente. O layout inteiro vem de um guide JSON versionado em `blender_worker/templates/`, então ajustar o visual não é mudança de código.
+
+### Sombra projetada
+
+Bloco `background.shadow` no guide: `enabled`, `color` (RGBA), `blur`, `spread` e `offset` (x, y). O padrão do `comment_default.json` é uma sombra preta a 150/255, blur 14, sem spread, caindo 8px para baixo — luz vindo de cima, que é a convenção que o olho lê como "o card está sobre o vídeo" em vez de "o card é parte do vídeo".
+
+**O canvas cresce; o card não.** Uma sombra borrada e deslocada ocupa espaço *fora* da caixa do card. `shadow_margins()` calcula quanto de padding transparente cada lado precisa e o canvas nasce com o card já deslocado para dentro dessa margem. A alternativa — desenhar a sombra dentro do canvas atual — cortaria o esmaecimento numa linha reta rente à borda, que é justamente o artefato que denuncia uma sombra falsa.
+
+Consequência de contrato: `canvas.width` do guide é a largura do **card**, não a do PNG. Com sombra ligada o arquivo sai maior (medido: 800×114 → 884×198 com blur 14 / offset y 8). Quem posiciona esse PNG no vídeo deve alinhá-lo pelo centro, não pelo canto, ou a margem transparente desloca o card.
+
+**A margem é `blur × 3`.** O `radius` do `GaussianBlur` do Pillow é um desvio-padrão, e ~3σ concentra >99% do peso do kernel — além disso a contribuição fica abaixo de um passo de alpha de 8 bits, ou seja, invisível. Margem menor economizaria pixels ao custo de reintroduzir o corte.
+
+**A sombra é clipada pela silhueta do card.** O fundo do card é translúcido (alpha 230 no template), então uma sombra desenhada por baixo atravessaria e escureceria o card de forma desigual — mais forte do lado para onde o offset aponta. O `box-shadow` do CSS clipa da mesma forma, e é nele que o card se espelha.
+
+**Desligada por padrão no schema.** `Shadow.enabled` é `False`, então todo guide escrito antes desta feature continua produzindo bytes com a mesma geometria de sempre. Só o `comment_default.json` liga a sombra explicitamente.
+
+---
+
 ## Agendamento (tiktok_poster)
 
 - Ritmo: 2 posts por dia.
