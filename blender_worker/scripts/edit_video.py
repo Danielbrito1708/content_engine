@@ -38,9 +38,10 @@ DEFAULT_FONT_SIZE = None
 DEFAULT_TEXT_COLOR = (1.0, 1.0, 1.0, 1.0)
 DEFAULT_OUTLINE_COLOR = (0.0, 0.0, 0.0, 1.0)
 # Blender's own default (0.05) is a hairline that disappears over a bright
-# frame; 0.12 is the thinnest width that still separates white text from a
-# light background without reading as a sticker.
-DEFAULT_OUTLINE_WIDTH = 0.12
+# frame. 0.24 is the upper bound that still holds the letterforms: past ~0.30
+# the outline blobs merge between adjacent glyphs and the counters of round
+# letters start closing, which costs legibility at word-per-frame speed.
+DEFAULT_OUTLINE_WIDTH = 0.24
 
 
 def parse_args():

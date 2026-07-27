@@ -149,7 +149,7 @@ Typeface, fill colour and outline for the word-level text strips. Default: **Fut
 
 **Requires Blender 4.2+** — `use_outline`/`outline_color`/`outline_width` do not exist before 4.2 (the Dockerfile pins 4.2.20). Verified against the real RNA, not assumed.
 
-**Defaults and why:** `outline_width` is 0.12, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame. `font_size` has no default so the strip keeps the size Blender gave it. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
+**Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 140, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
 
 - Tests: `tests/test_subtitles.py` (35 tests total, marked `no_db` — no docker compose, no Blender needed).
 
