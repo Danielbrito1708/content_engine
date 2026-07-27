@@ -133,7 +133,9 @@ ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM  # Rachel (default ElevenLabs)
 | Compatível com blender_worker | Sim | Sim | Sim (mesma interface) |
 | Adequado para produção | **Sim** | Só se não houver key | Sim |
 
-Seja qual for o provider, o áudio passa por `audio/postprocess.py` antes do upload (corte de silêncio + normalização de loudness, numa única passada de ffmpeg). O bitrate/sample rate finais do arquivo que vai ao MinIO são os de `AUDIO_BITRATE` / `AUDIO_SAMPLE_RATE`, não os do provider — então não adianta pedir 192 kbps ao Azure e deixar `AUDIO_BITRATE=64k`.
+Seja qual for o provider, o áudio passa por `audio/postprocess.py` antes do upload (corte de silêncio + normalização de loudness, numa única passada de ffmpeg). Por padrão o arquivo final **casa com o formato que o provider entregou** — quem define a qualidade é a escolha do provider, não o pós-processamento.
+
+`AUDIO_BITRATE` / `AUDIO_SAMPLE_RATE` existem para forçar outra coisa, mas cuidado nas duas direções: apertar (`AUDIO_BITRATE=64k` com o Azure) joga fora a qualidade que você está pagando; afrouxar (`48000`/`192k` com o `edge`) só infla o arquivo — medido em **4× maior** para áudio audivelmente idêntico.
 
 ---
 

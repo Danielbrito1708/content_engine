@@ -15,7 +15,11 @@ from unittest.mock import AsyncMock, patch
 
 from tests.conftest import SAMPLE_REQUEST
 from tests.test_generate import _mock_transcription
-from src.tts_service.audio.postprocess import build_filter_chain, process_audio
+from src.tts_service.audio.postprocess import (
+    build_filter_chain,
+    probe_source,
+    process_audio,
+)
 
 _SAMPLE_RATE = 44100
 
@@ -56,6 +60,27 @@ def _make_mp3(*segments: tuple[str, int], amplitude: float = 1.0) -> bytes:
         os.unlink(wav_tmp.name)
         if os.path.exists(mp3_tmp):
             os.unlink(mp3_tmp)
+
+
+def _make_24khz_mp3(*segments: tuple[str, int]) -> bytes:
+    """Same shape as what the edge provider emits: 24 kHz / 48 kbps mono."""
+    src = _make_mp3(*segments)
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        f.write(src)
+        in_path = f.name
+    out_path = in_path + "_24k.mp3"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", in_path, "-ar", "24000", "-ac", "1",
+             "-c:a", "libmp3lame", "-b:a", "48k", out_path],
+            capture_output=True, check=True,
+        )
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        os.unlink(in_path)
+        if os.path.exists(out_path):
+            os.unlink(out_path)
 
 
 def _with_tempfile(audio_bytes: bytes, fn):
@@ -212,6 +237,57 @@ def test_output_respects_configured_bitrate():
     result = process_audio(audio_bytes, trim_silence=False, normalize=True, bitrate="192k")
     bit_rate = int(_probe(result)["format"]["bit_rate"])
     assert 170_000 < bit_rate < 210_000
+
+
+# --- matching the source (the default) ---
+
+def test_probe_source_reads_rate_and_bitrate():
+    audio_bytes = _make_mp3(("tone", 1000))
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        f.write(audio_bytes)
+        path = f.name
+    try:
+        rate, bitrate = probe_source(path)
+    finally:
+        os.unlink(path)
+    assert rate == _SAMPLE_RATE
+    assert bitrate.endswith("k")
+
+
+def test_probe_source_falls_back_on_unreadable_input():
+    # Corrupt input must not crash the pipeline — it degrades to the fallback.
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        f.write(b"not audio at all")
+        path = f.name
+    try:
+        assert probe_source(path) == (48000, "192k")
+    finally:
+        os.unlink(path)
+
+
+def test_defaults_do_not_upsample_a_24khz_source():
+    # The edge provider emits 24 kHz; forcing 48 kHz added no bandwidth and measured
+    # 3.5x larger, so matching the source is the default.
+    src = _make_24khz_mp3(("tone", 2000))
+    assert _sample_rate(src) == 24000
+    result = process_audio(src, trim_silence=False, normalize=True)
+    assert _sample_rate(result) == 24000
+
+
+def test_defaults_do_not_inflate_bitrate():
+    src = _make_24khz_mp3(("tone", 2000))
+    src_bitrate = int(_probe(src)["format"]["bit_rate"])
+    result = process_audio(src, trim_silence=False, normalize=True)
+    out_bitrate = int(_probe(result)["format"]["bit_rate"])
+    assert out_bitrate < src_bitrate * 1.5
+
+
+def test_explicit_values_still_override_the_source():
+    src = _make_24khz_mp3(("tone", 2000))
+    result = process_audio(
+        src, trim_silence=False, normalize=True, sample_rate=48000, bitrate="192k"
+    )
+    assert _sample_rate(result) == 48000
 
 
 def test_normalize_raises_quiet_audio_toward_target():

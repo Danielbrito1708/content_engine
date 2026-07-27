@@ -93,7 +93,8 @@ Substituiu `audio/silence.py`. Corta silêncios **e** normaliza loudness numa **
 
 **Funções públicas:**
 - `build_filter_chain(*, trim_silence, min_silence_ms, silence_thresh_db, normalize, loudness_target_lufs, sample_rate) -> list[str]` — os filtros em ordem; lista vazia = nada a fazer
-- `process_audio(audio_bytes, *, trim_silence, min_silence_ms, silence_thresh_db, normalize, loudness_target_lufs, bitrate, sample_rate) -> bytes` — MP3 em bytes → MP3 em bytes. Puro. **Devolve o input intacto quando não há filtro**, em vez de re-encodar por nada.
+- `probe_source(path) -> tuple[int, str]` — `(sample_rate, bitrate)` da entrada via `ffprobe`. Entrada ilegível cai no fallback `(48000, "192k")` em vez de derrubar o pipeline
+- `process_audio(audio_bytes, *, trim_silence, min_silence_ms, silence_thresh_db, normalize, loudness_target_lufs, bitrate, sample_rate) -> bytes` — MP3 em bytes → MP3 em bytes. Puro. **Devolve o input intacto quando não há filtro**, em vez de re-encodar por nada. `bitrate` e `sample_rate` em `None` (padrão) = **casar com a fonte**.
 
 **Controle via env vars:**
 
@@ -104,8 +105,10 @@ Substituiu `audio/silence.py`. Corta silêncios **e** normaliza loudness numa **
 | `MIN_SILENCE_MS` | `500` | Duração mínima para um silêncio ser removido |
 | `NORMALIZE_AUDIO` | `true` | Habilita highpass + loudnorm |
 | `LOUDNESS_TARGET_LUFS` | `-16` | Alvo de loudness integrada (referência das plataformas de vídeo) |
-| `AUDIO_BITRATE` | `192k` | Bitrate do MP3 de saída |
-| `AUDIO_SAMPLE_RATE` | `48000` | Sample rate do MP3 de saída |
+| `AUDIO_BITRATE` | *(vazio = casa com a fonte)* | Força o bitrate do MP3 de saída |
+| `AUDIO_SAMPLE_RATE` | *(vazio = casa com a fonte)* | Força o sample rate do MP3 de saída |
+
+⚠️ **Não force esses dois para cima do que o provider entrega.** Reamostrar não adiciona banda. Medido no provider `edge` (fonte 24 kHz / 48 kbps): forçar 48 kHz / 192 kbps gerou um arquivo **4× maior** (270 KB vs 68 KB) com a mesma loudness (−16,5 vs −16,6 LUFS) e o mesmo espectro vazio acima de 13 kHz. O `/health` reporta `"source"` quando não há override.
 
 `SILENCE_PADDING_MS` foi removido — nunca foi consumido pela implementação.
 
@@ -144,7 +147,7 @@ O consumo dessa legenda (offset de sincronia, hold entre palavras, fades) é res
 
 `tests/test_generate.py` — 12 testes; edge-tts e MinIO sempre mockados; `REMOVE_SILENCE=false` **e `NORMALIZE_AUDIO=false`** no conftest, para que nenhum teste de endpoint chame ffmpeg.
 
-`tests/test_postprocess.py` — 20 testes (era `test_silence.py`); áudio gerado por `wave` + ffmpeg (`_make_mp3`, com `amplitude` para gerar material quiet/hot). Cobre a montagem da filter chain, o corte de silêncio, sample rate e bitrate de saída via `ffprobe`, a loudness medida via filtro `ebur128`, e 4 testes de integração com o endpoint. Requer `ffmpeg` **e `ffprobe`** instalados.
+`tests/test_postprocess.py` — 25 testes (era `test_silence.py`); áudio gerado por `wave` + ffmpeg (`_make_mp3`, com `amplitude` para material quiet/hot; `_make_24khz_mp3` para imitar a saída do `edge`). Cobre a montagem da filter chain, o corte de silêncio, sample rate e bitrate de saída via `ffprobe`, a loudness medida via filtro `ebur128`, o casamento com a fonte (não faz upsample) e 4 testes de integração com o endpoint. Requer `ffmpeg` **e `ffprobe`** instalados.
 
 `tests/test_azure.py` — 17 testes; `httpx.AsyncClient.post` sempre mockado, **nenhum acessa a rede**. Cobre derivação de locale, escape de XML no SSML, headers/URL/corpo da request, erro HTTP e corpo vazio, e a validação de config no boot (via `TTSEnvSettings()` direto, que relê o env).
 

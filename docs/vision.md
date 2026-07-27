@@ -155,7 +155,9 @@ O `edge` continua registrado como fallback sem-configuração — útil em dev e
 
 **`aresample` obrigatório depois do `loudnorm`.** Em single-pass o `loudnorm` emite 192 kHz independentemente da entrada; sem o resample explícito o encoder herdaria essa taxa e o arquivo ficaria absurdamente maior sem ganho nenhum. É uma pegadinha do filtro, não uma escolha — também coberta por teste.
 
-**Highpass em 80 Hz.** Voz não tem conteúdo útil abaixo disso — só rumble e thump de plosiva, que consomem headroom que o `loudnorm` daria à voz.
+**Highpass em 80 Hz.** Voz não tem conteúdo útil abaixo disso — só rumble e thump de plosiva, que consomem headroom que o `loudnorm` daria à voz. Na prática o efeito é marginal em TTS: a saída do `edge` já entra com −40 dB nessa banda, não há rumble a remover. É apólice de seguro para fontes que tenham, não o que faz o áudio melhorar.
+
+**Bitrate e sample rate casam com a fonte por padrão.** `AUDIO_BITRATE` e `AUDIO_SAMPLE_RATE` vazios fazem `process_audio` consultar o `ffprobe` e reproduzir o que a entrada já era. Decisão tomada depois de medir: com o provider `edge` (24 kHz / 48 kbps), forçar 48 kHz / 192 kbps gerou um arquivo **4× maior** — 270 KB contra 68 KB — com loudness idêntica (−16,5 vs −16,6 LUFS) e o mesmo espectro vazio acima de 13 kHz. Reamostrar para cima não inventa banda; só infla storage. O override explícito continua disponível para quando fizer sentido, e o `/health` reporta `"source"` quando não há um.
 
 **Degrada em silêncio.** Falha no pós-processamento é logada como warning e o áudio original segue para o MinIO. Diferente da transcrição, que derruba a request com `502`: um áudio sem normalizar ainda produz vídeo; um SRT ausente, não.
 

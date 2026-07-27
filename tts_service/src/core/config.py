@@ -52,8 +52,8 @@ class TTSEnvSettings(BaseModel):
     min_silence_ms: int
     normalize_audio: bool
     loudness_target_lufs: int
-    audio_bitrate: str
-    audio_sample_rate: int
+    audio_bitrate: str | None
+    audio_sample_rate: int | None
     whisper_model: str
     whisper_language: str
 
@@ -84,8 +84,14 @@ class TTSEnvSettings(BaseModel):
             "min_silence_ms": int(os.environ.get("MIN_SILENCE_MS", "500")),
             "normalize_audio": os.environ.get("NORMALIZE_AUDIO", "true").lower() == "true",
             "loudness_target_lufs": int(os.environ.get("LOUDNESS_TARGET_LUFS", "-16")),
-            "audio_bitrate": os.environ.get("AUDIO_BITRATE", "192k"),
-            "audio_sample_rate": int(os.environ.get("AUDIO_SAMPLE_RATE", "48000")),
+            # Unset means "match the source". Forcing a rate/bitrate above what the
+            # provider produced cannot add information, only file size.
+            "audio_bitrate": os.environ.get("AUDIO_BITRATE") or None,
+            "audio_sample_rate": (
+                int(os.environ["AUDIO_SAMPLE_RATE"])
+                if os.environ.get("AUDIO_SAMPLE_RATE")
+                else None
+            ),
             "whisper_model": os.environ.get("WHISPER_MODEL", "base"),
             "whisper_language": os.environ.get("WHISPER_LANGUAGE", "pt"),
         }

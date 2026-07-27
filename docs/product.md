@@ -132,6 +132,8 @@ O ajuste é ativo por padrão e pode ser desligado. O nível-alvo é configuráv
 
 Um detalhe invisível, mas que importa: o corte de silêncio, o ajuste de volume e a gravação do arquivo final acontecem todos de uma vez. Cada vez que um áudio é regravado ele perde um pouco de qualidade, e antes o sistema fazia isso mais vezes do que precisava — inclusive rebaixando a qualidade do arquivo sem que ninguém tivesse pedido. Agora, se não há nada a ajustar, o áudio é entregue exatamente como o motor de voz o produziu.
 
+Na mesma linha, o arquivo final guarda exatamente a qualidade que o motor de voz entregou — nem menos, nem mais. Pedir "mais qualidade" do que existe na gravação original não melhora nada: só ocupa espaço. Quem determina a qualidade da narração é a escolha do motor de voz, e nenhum ajuste posterior substitui isso.
+
 ---
 
 ## Feature 5 — Montagem e renderização do vídeo
