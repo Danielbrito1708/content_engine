@@ -1,10 +1,13 @@
 import configparser
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic import create_model
+
+_RATE_RE = re.compile(r"^[+-]\d+%$")
 
 
 def _infer_type(value: str) -> Any:
@@ -34,6 +37,7 @@ class TTSEnvSettings(BaseModel):
 
     tts_provider: str
     tts_voice: str
+    tts_rate: str
     minio_endpoint: str
     minio_access_key: str
     minio_secret_key: str
@@ -57,6 +61,7 @@ class TTSEnvSettings(BaseModel):
         return {
             "tts_provider": os.environ.get("TTS_PROVIDER", "edge"),
             "tts_voice": os.environ.get("TTS_VOICE", "pt-BR-ThalitaNeural"),
+            "tts_rate": os.environ.get("TTS_RATE", "+15%"),
             "minio_endpoint": os.environ["MINIO_ENDPOINT"],
             "minio_access_key": os.environ["MINIO_ACCESS_KEY"],
             "minio_secret_key": os.environ["MINIO_SECRET_KEY"],
@@ -70,6 +75,14 @@ class TTSEnvSettings(BaseModel):
             "whisper_model": os.environ.get("WHISPER_MODEL", "base"),
             "whisper_language": os.environ.get("WHISPER_LANGUAGE", "pt"),
         }
+
+    @model_validator(mode="after")
+    def _check_rate_format(self) -> "TTSEnvSettings":
+        if not _RATE_RE.match(self.tts_rate):
+            raise ValueError(
+                f"TTS_RATE must be a signed percentage like '+15%' or '-10%', got {self.tts_rate!r}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_provider_key(self) -> "TTSEnvSettings":

@@ -115,6 +115,20 @@ O schema é armazenado como JSONB no DB do orchestrador. Novos campos são adici
 
 ---
 
+## Velocidade da Narração
+
+O `tts_service` acelera a narração via `TTS_RATE` (padrão `+15%`), repassado ao `edge_tts.Communicate(..., rate=...)`.
+
+**Por que no motor de voz, e não em pós-processamento.** Acelerar o MP3 depois de pronto (resample no `pydub`/ffmpeg) sobe o pitch junto e a voz vira "esquilo"; corrigir isso exige time-stretch, que introduz artefato. O `rate` do edge-tts é `prosody rate` do SSML — a Microsoft sintetiza já no ritmo pedido, com o pitch intacto e sem perda de qualidade. Custo zero: não há etapa de áudio extra no pipeline.
+
+**Formato.** Percentual com sinal obrigatório (`+15%`, `-10%`, `+0%`). Validado no boot em `TTSEnvSettings._check_rate_format` — o edge-tts só rejeitaria o formato na hora de sintetizar, o que transformaria um erro de config em falha de request no meio do pipeline.
+
+**Ordem no pipeline.** O `rate` age na síntese, antes de tudo. Logo a remoção de silêncio e a transcrição já operam sobre o áudio acelerado, e o SRT sai com o timing certo sem nenhum ajuste — mesma razão pela qual a transcrição roda depois do corte de silêncio (ver "Legendas"). Nada no `blender_worker` muda: ele consome o par MP3+SRT como sempre.
+
+**Efeito na divisão em partes.** O limite de ~60s é de fala, não de texto, e narração mais rápida encurta o áudio para o mesmo roteiro. Mudar `TTS_RATE` muda de fato quantos roteiros cabem em um vídeo só. O LLM decide o corte a partir do texto, sem conhecer o `rate` — a estimativa dele fica conservadora quando o rate é positivo (divide roteiros que caberiam inteiros), o que é o lado seguro do erro. Deriva relevante só com valores agressivos (`> +30%`).
+
+---
+
 ## Legendas (word-level)
 
 **Origem.** A legenda é derivada do áudio, não do roteiro. O `tts_service` transcreve o MP3 já gerado (e já com silêncios removidos) via `faster-whisper` com `word_timestamps=True`, e emite um SRT com **uma entrada por palavra**. Decisão: o roteiro e a narração divergem (o TTS abrevia, o corte de silêncio desloca o tempo), então estimar timing por WPM sempre dessincroniza. Transcrever o artefato final é a única fonte de verdade.
