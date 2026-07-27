@@ -143,12 +143,12 @@ Executado em background após `POST /pipeline`. Coordena as três fases do pipel
 
 **`_run_tts(part)`:**
 1. Define `part.status = tts_running`, commit
-2. Chama `TTSClient().generate(text, run_id, part_number)` → retorna `audio_key`
-3. Salva `part.audio_key`, define `part.status = tts_done`, commit
+2. Chama `TTSClient().generate(text, run_id, part_number)` → retorna `(audio_key, srt_key)`
+3. Salva `part.audio_key` e `part.srt_key`, define `part.status = tts_done`, commit
 
 **`_run_render(part)`:**
 1. Define `part.status = render_pending`, commit
-2. Gera SRT via `text_to_srt(part.script)` e faz upload para `subs/{run_id}/part_{n}.srt`
+2. Usa `part.srt_key` — a legenda word-level que o `tts_service` transcreveu e subiu em `subs/{run_id}/part_{n}.srt`. O orchestrador não gera mais SRT.
 3. Chama `BlenderClient().create_video(background_video_key, music_key, voice_key, subtitle_key)` → `video_id`
 4. Chama `BlenderClient().create_job(video_id, BLENDER_TEMPLATE_ID)` → `job_id`
 5. Define `part.status = render_running`, salva `part.blender_job_id`, commit
@@ -256,30 +256,11 @@ Tabela: `pipeline_parts`
 
 ## 6. Utilitários
 
-### Gerador de SRT (`src/orchestrator/utils/srt.py`)
+### ~~Gerador de SRT~~ (`src/orchestrator/utils/srt.py`) — ⚠️ código morto
 
-```python
-def text_to_srt(text: str, words_per_minute: int = 150) -> bytes
-```
+`text_to_srt(text, words_per_minute=150)` gerava SRT com timing estimado (chunks de 8 palavras a 150 WPM). **Não é mais chamado por ninguém** — a legenda agora vem do `tts_service`, transcrita do áudio real com timestamp por palavra (ver `docs/vision.md` → "Legendas (word-level)"). O timing estimado dessincronizava porque o TTS não fala na velocidade assumida e a remoção de silêncios desloca tudo.
 
-Converte texto plano em formato SRT com timing estimado. Divide em chunks de 8 palavras e calcula a duração de cada chunk a 150 palavras/minuto.
-
-**Exemplo** (trecho com 3 chunks):
-```
-1
-00:00:00,000 --> 00:00:03,200
-Você sabia que a água quente
-
-2
-00:00:03,200 --> 00:00:06,400
-congela mais rápido que a fria?
-
-3
-00:00:06,400 --> 00:00:09,600
-Esse fenômeno é o efeito Mpemba.
-```
-
-Fórmula: `duration = len(chunk_words) * (60 / 150)` → ~0.4s por palavra.
+O arquivo (e `utils/__init__.py`) pode ser removido.
 
 ### Storage (`src/orchestrator/storage/client.py`)
 
@@ -287,7 +268,7 @@ Fórmula: `duration = len(chunk_words) * (60 / 150)` → ~0.4s por palavra.
 async def upload_bytes(bucket: str, key: str, data: bytes, content_type: str) -> None
 ```
 
-Upload não-bloqueante via `asyncio.to_thread` + boto3. Usado pelo worker para enviar o SRT ao MinIO/R2 antes de chamar o blender_worker.
+Upload não-bloqueante via `asyncio.to_thread` + boto3. Era usado para subir o SRT gerado localmente; com a legenda vindo do `tts_service`, hoje está sem uso real no worker (o import segue lá e é mockado em `tests/test_worker.py`).
 
 ---
 
@@ -332,7 +313,7 @@ music_key = assets/music.mp3
 | Worker — fase schedule | ✅ Implementado |
 | Modelos DB (`PipelineRun`, `PipelinePart`) | ✅ Implementado |
 | Migração inicial | ✅ Aplicada |
-| `text_to_srt` | ✅ Implementado |
+| `text_to_srt` | ⚠️ Código morto — substituído pela transcrição word-level do `tts_service` |
 
 ## O que ainda falta implementar
 

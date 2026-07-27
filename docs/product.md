@@ -72,7 +72,25 @@ O vídeo de fundo toca durante todo o tempo. A trilha sonora começa junto, com 
 
 **Legendas:**
 
-As legendas são geradas automaticamente a partir do roteiro. O sistema estima o tempo de cada trecho com base na velocidade média de fala, e as divide em blocos de até 8 palavras. Cada bloco aparece na tela com uma animação de entrada e saída suave.
+As legendas são geradas automaticamente a partir da narração — não do roteiro. O sistema escuta o áudio já pronto e descobre o momento exato em que cada palavra é dita, então a legenda acompanha de fato o que foi falado, e não uma estimativa de velocidade de fala.
+
+Na tela aparece uma palavra por vez, no ritmo da narração. Cada palavra fica visível até a próxima começar, para que não haja buracos entre elas. Quando a narração faz uma pausa mais longa, a legenda sai da tela em vez de deixar a última palavra pendurada — e volta suavemente quando a fala recomeça.
+
+**Animação de entrada:** cada palavra surge um pouco abaixo da posição final e sobe rapidamente até ela, desacelerando ao chegar. É um movimento curto — cerca de um oitavo de segundo — que dá um "pulo" a cada palavra e faz a legenda acompanhar o ritmo da fala em vez de só trocar o texto no lugar. Esse movimento vale para todas as palavras, inclusive as que vêm coladas umas nas outras.
+
+O aparecer e desaparecer suave (a transparência) fica reservado só para os momentos de pausa — entre palavras seguidas a troca é direta, porque desbotar a cada palavra lê como piscada.
+
+A altura da subida, a duração dela, o quanto a legenda pode "esperar" numa pausa antes de sair da tela e a duração do aparecer/desaparecer são todos ajustáveis no template.
+
+**Aparência do texto:** a legenda usa Futura Bold, em branco com contorno preto. O contorno existe porque o vídeo de fundo muda o tempo todo — sem ele, uma palavra branca passando por cima de uma cena clara simplesmente some. Com o contorno a legenda continua legível seja qual for o fundo, sem precisar de tarja ou caixa atrás do texto.
+
+O arquivo da fonte vive junto com o projeto, na pasta de fontes do serviço de montagem, e por isso vai junto para o ambiente onde o vídeo é renderizado. Se por algum motivo ele não estiver lá, a legenda é renderizada numa fonte alternativa em vez de o vídeo falhar — o vídeo sai, só com o visual diferente do pretendido.
+
+A fonte, o tamanho, a cor do texto, a cor do contorno e a espessura do contorno são todos ajustáveis no template, e o contorno pode ser desligado.
+
+**Velocidade do vídeo:**
+
+O vídeo final agora respeita a taxa de quadros definida no template. Antes, um ajuste herdado do arquivo de template fazia a montagem rodar dez vezes mais rápido do que o pretendido — o que desalinhava a narração, a trilha e as legendas do vídeo de fundo. O tempo de cada elemento agora corresponde ao tempo real.
 
 **Templates:**
 

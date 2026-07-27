@@ -63,7 +63,7 @@ The app requires a `.env` file at the project root. Copy from `.env.example` and
 - `schemas/image.py` — `ImageRenderRequest` and `ImageRenderResponse` Pydantic models.
 - `storage/client.py` — `get_s3_client()` returns a boto3 S3 client pointed at MinIO via env vars. Also has `download_file` and `upload_file` async helpers.
 - `worker.py` — `render_job(job_id)` async function: downloads all assets + template from MinIO into a tmpdir, runs Blender twice (assembly via `scripts/edit_video.py`, then render with `-a`), uploads the MP4 output, updates status to completed/failed. Called via FastAPI `BackgroundTasks`.
-- `scripts/edit_video.py` — Python script that runs **inside** Blender's interpreter (`blender -b template.blend -P edit_video.py -- job_config.json`). Sets up the VSE: movie strip (ch1), music strip at volume 0.2 with fade-out keyframes (ch2), voice strip at volume 1.0 (ch3), animated text subtitles from `.srt` (ch4). Saves `.blend` and sets render output to the MP4 path.
+- `scripts/edit_video.py` — Python script that runs **inside** Blender's interpreter (`blender -b template.blend -P edit_video.py -- job_config.json`). Sets up the VSE: movie strip (ch1), music strip at volume 0.2 with fade-out keyframes (ch2), voice strip at volume 1.0 (ch3), word-level text subtitles from `.srt` (ch4). Saves `.blend` and sets render output to the MP4 path. `bpy` is imported inside `main()` only, and `main()` is behind an `if __name__ == "__main__"` guard, so the pure helpers are importable (and tested) outside Blender.
 - `image/text.py` — word wrap + text block height calculation. See `## Features`.
 - `image/composer.py` — comment card compositor (rounded rect + assets + text → PNG bytes). Includes guide schema models. See `## Features`.
 
@@ -90,16 +90,68 @@ Assembles video assets in Blender VSE and renders to MP4. Triggered by `POST /jo
 8. Cleans up tmpdir
 
 **`scripts/edit_video.py` VSE layout:**
+- Scene — `fps = frame_rate` **and `fps_base = 1.0`**. Blender's effective fps is `fps / fps_base`, and `fps_base` comes from the `.blend` (the current `template.blend` is `6/0.1` = 60fps). Leaving it alone makes the scene run at `frame_rate / 0.1` — 10x off, which desyncs every frame-based timing and stretches sound strips 10x.
 - Ch1 — movie strip (video file), starts at `intro_start + 1`
 - Ch2 — music strip, volume 0.2; if `music_fade_out` in timing: keyframed fade from 0.2 → 0.0 between `music_fade_out` and `frame_end`
 - Ch3 — voice strip, volume 1.0, starts at `speech_start + 1`
-- Ch4 — animated text subtitles from `.srt`; each entry has 3-frame opacity fade in/out
+- Ch4 — word-level text subtitles from `.srt` — see **Word-level subtitles** and **Subtitle typography** below
 
-**`template.json` format:** see `docs/vision.md` — `frame_rate`, `frame_end`, `channels` (ch numbers), `timing` (frame offsets including optional `music_fade_out`).
+**`template.json` format:** see `docs/vision.md` — `frame_rate`, `frame_end`, `channels` (ch numbers), `timing` (frame offsets including optional `music_fade_out`), optional `subtitles` block.
 
 **Blender binary:** configured in `config.ini [blender] bin` → `/usr/local/bin/blender` (symlink to Blender 4.2 LTS in Docker).
 
 - Tests: `tests/test_worker.py` (3 tests; Blender not required — subprocess and I/O are fully mocked).
+
+### Word-level subtitles (`scripts/edit_video.py`)
+
+The `.srt` produced by `tts_service` has **one entry per word** (Whisper `word_timestamps=True`). One text strip is created per entry on the subtitles channel.
+
+**Public API (pure, no `bpy` — importable outside Blender):**
+- `parse_srt(path) -> list[(start_ts, end_ts, text)]`
+- `ts_to_frame(timestamp, frame_rate) -> int` — rounds to the nearest frame
+- `build_subtitle_timeline(entries, frame_rate, frame_offset=0, fade_frames=3, max_hold_seconds=0.4, rise_frames=4) -> list[dict]` — returns specs with `start`, `end`, `text`, `fade_in`, `fade_out`, `rise` (all in frames)
+
+`import_subtitles(scene, vse, srt_path, channel, frame_rate, frame_offset=0, fade_frames=3, max_hold_seconds=0.4, rise_frames=4, rise_offset=0.025) -> int` consumes the specs and creates the strips; returns the strip count. It needs `scene` because strip keyframes live on the scene's action, not on the strip.
+
+**Timeline rules** (why each exists is in root `docs/vision.md`):
+- `frame_offset` — SRT timestamps are relative to the narration audio, so `main()` passes `speech_start + 1`. Without it subtitles run ahead by the length of the intro.
+- Each word is held until the next one starts, capped at `max_hold_seconds` past its own end — so a word doesn't linger through a real pause.
+- Strip ends are clamped to the next start: never overlapping (overlapping strips get auto-moved to another channel by Blender).
+- Minimum duration 1 frame; words landing on the same frame are merged into one strip (never dropped).
+- Fades apply only at the edge of a real gap and on the first/last strip — fading between adjacent words reads as flicker. `fade_frames` is capped at ⅓ of the strip so short words can't get inverted `blend_alpha` keyframes. `fade_frames: 0` disables fades.
+- **Rise (entrance animation)** — every word starts `rise_offset` below `SUBTITLE_Y` and animates up to it over `rise` frames, `SINE`/`EASE_OUT`. Unlike the fade this applies to *every* word: it's what makes each word read as a distinct pop even between back-to-back words, without touching opacity. Capped at `duration - 1` so the word reaches rest before the strip ends. Interpolation is pinned explicitly (`_set_easing`) because new keyframes otherwise inherit the developer's Blender preferences.
+
+**Template config** (optional block in `template.json`):
+```json
+"subtitles": { "fade_frames": 3, "max_hold_seconds": 0.4, "rise_frames": 4, "rise_offset": 0.025 }
+```
+`rise_offset` is a fraction of frame height (0.025 ≈ 48px at 1080×1920); `rise_frames: 0` disables the animation. Resting position is `SUBTITLE_Y = 0.05`.
+
+- Tests: `tests/test_subtitles.py` (16 tests, marked `no_db` — no docker compose, no Blender needed).
+
+### Subtitle typography (`scripts/edit_video.py`)
+
+Typeface, fill colour and outline for the word-level text strips. Default: **Futura Bold, white with a black outline**.
+
+**Public API (pure, no `bpy`):**
+- `resolve_font_path(configured=None, candidates=DEFAULT_FONT_CANDIDATES, exists=os.path.exists) -> str | None` — first font file that exists. `exists` is injectable for tests.
+- `resolve_subtitle_style(config=None, exists=os.path.exists) -> dict` — reads the `subtitles` block into `{font_path, font_size, color, use_outline, outline_color, outline_width}`. Colours accept `[r,g,b]` or `[r,g,b,a]`; wrong channel counts raise `ValueError`. `outline_width` is clamped to 0..1.
+
+**bpy-side:**
+- `load_subtitle_font(font_path) -> VectorFont | None` — `bpy.data.fonts.load(..., check_existing=True)`. Called **once** in `import_subtitles`, outside the strip loop — a video has hundreds of word strips and per-strip loading would duplicate the datablock.
+- `apply_text_style(strip, style, font=None)` — assigns to the strip. `font=None` leaves `strip.font` alone; `font_size=None` leaves the size alone.
+
+`import_subtitles(..., style=None)` takes the resolved style; `main()` passes `resolve_subtitle_style(subs)`.
+
+**Font fallback chain** — `subtitles.font_path` → `assets/fonts/Futura-Bold.ttf` → `.otf` → `/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`. A missing font degrades the look, it never fails the render.
+
+**`Futura-Bold.ttf` is committed in `assets/fonts/`** — that path is inside the Docker build context (`build: ./blender_worker`), so `COPY . .` puts it in the image. A font at the **monorepo root would not reach the container** and the render would silently fall back to DejaVu. Filename is case-sensitive on Linux. Fonts and `.blend` files are marked `binary` in the root `.gitattributes` — the repo is developed on Windows with `core.autocrlf=true`, where a mis-detected binary gets newline-converted and breaks at render time.
+
+**Requires Blender 4.2+** — `use_outline`/`outline_color`/`outline_width` do not exist before 4.2 (the Dockerfile pins 4.2.20). Verified against the real RNA, not assumed.
+
+**Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 140, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
+
+- Tests: `tests/test_subtitles.py` (35 tests total, marked `no_db` — no docker compose, no Blender needed).
 
 ### Image text rendering (`src/blender_worker/image/text.py`)
 
@@ -149,7 +201,7 @@ Composes a comment card image (rounded rect background + positioned assets + wra
 - Tests live in `tests/` and mirror the module being tested (e.g., `tests/test_jobs.py` for `api/routes/jobs.py`).
 - Cover both the happy path and error/edge cases (404s, failures, missing data).
 - Tests are integration tests — they run against the real DB and MinIO (docker compose must be up).
-- Exception: pure computation modules (e.g., `image/text.py`) don't need docker compose — test them directly.
+- Exception: pure computation modules (e.g., `image/text.py`, the subtitle timeline in `scripts/edit_video.py`) don't need docker compose — test them directly. Mark those files with `pytestmark = pytest.mark.no_db` so the autouse `clean_db` teardown skips its DB connection.
 - Run with `poetry run pytest`. All tests must pass before any work is considered done.
 - Event loop config: `asyncio_mode = "auto"`, `asyncio_default_fixture_loop_scope = "session"`, `asyncio_default_test_loop_scope = "session"` — do not change these; the async SQLAlchemy engine requires a single shared loop per session.
 

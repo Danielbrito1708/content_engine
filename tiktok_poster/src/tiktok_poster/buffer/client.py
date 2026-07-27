@@ -79,8 +79,9 @@ class BufferClient:
                     schedulingType: automatic,
                     mode: customScheduled,
                     dueAt: $dueAt,
-                    assets: { videos: [{ url: $videoUrl }] }
+                    assets: { video: { url: $videoUrl } }
                 }) {
+                    __typename
                     ... on PostActionSuccess { post { id dueAt } }
                     ... on MutationError { message }
                 }
@@ -93,8 +94,15 @@ class BufferClient:
                 "videoUrl": video_url,
             },
         )
-        result = data.get("data", {}).get("createPost", {})
+        errors = data.get("errors")
+        if errors:
+            raise RuntimeError(f"Buffer createPost failed: {errors[0].get('message')}")
+        result = data.get("data", {}).get("createPost") or {}
+        if result.get("__typename") == "MutationError" or result.get("message"):
+            raise RuntimeError(f"Buffer createPost rejected: {result.get('message')}")
         post_id = result.get("post", {}).get("id", "")
+        if not post_id:
+            raise RuntimeError(f"Buffer createPost returned no post id: {data}")
         return {"updates": [{"id": post_id}]}
 
     async def verify_connection(self) -> bool:

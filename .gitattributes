@@ -1,0 +1,9 @@
+# Binary assets — never run newline conversion on these.
+# The repo is developed on Windows with core.autocrlf=true; without these
+# rules git relies on content heuristics to spot binaries, and a font or a
+# .blend mangled by CRLF conversion fails at render time, not at commit time.
+*.ttf  binary
+*.otf  binary
+*.blend binary
+*.mp4  binary
+*.mp3  binary

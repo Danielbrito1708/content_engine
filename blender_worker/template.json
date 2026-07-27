@@ -7,6 +7,17 @@
       "voice": 3,
       "subtitles": 4
     },
+    "subtitles": {
+      "fade_frames": 3,
+      "max_hold_seconds": 0.4,
+      "rise_frames": 4,
+      "rise_offset": 0.025,
+      "font_size": 140,
+      "color": [1.0, 1.0, 1.0, 1.0],
+      "use_outline": true,
+      "outline_color": [0.0, 0.0, 0.0, 1.0],
+      "outline_width": 0.24
+    },
     "timing": {
       "intro_start": 0,
       "intro_end": 90,
