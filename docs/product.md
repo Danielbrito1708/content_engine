@@ -82,6 +82,12 @@ O aparecer e desaparecer suave (a transparência) fica reservado só para os mom
 
 A altura da subida, a duração dela, o quanto a legenda pode "esperar" numa pausa antes de sair da tela e a duração do aparecer/desaparecer são todos ajustáveis no template.
 
+**Aparência do texto:** a legenda usa Futura Bold, em branco com contorno preto. O contorno existe porque o vídeo de fundo muda o tempo todo — sem ele, uma palavra branca passando por cima de uma cena clara simplesmente some. Com o contorno a legenda continua legível seja qual for o fundo, sem precisar de tarja ou caixa atrás do texto.
+
+Futura é uma fonte licenciada e não vem junto com o projeto: o arquivo precisa ser colocado na pasta de fontes do sistema. Se ele não estiver lá, a legenda é renderizada numa fonte alternativa parecida em vez de o vídeo falhar — o vídeo sai, só com o visual diferente do pretendido.
+
+A fonte, o tamanho, a cor do texto, a cor do contorno e a espessura do contorno são todos ajustáveis no template, e o contorno pode ser desligado.
+
 **Velocidade do vídeo:**
 
 O vídeo final agora respeita a taxa de quadros definida no template. Antes, um ajuste herdado do arquivo de template fazia a montagem rodar dez vezes mais rápido do que o pretendido — o que desalinhava a narração, a trilha e as legendas do vídeo de fundo. O tempo de cada elemento agora corresponde ao tempo real.

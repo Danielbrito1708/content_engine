@@ -136,6 +136,16 @@ O SRT vai para `subs/{run_id}/part_{n}.srt` e o orchestrador só repassa a key �
 - **Rise nunca maior que `duração - 1`** — a palavra precisa chegar à posição de repouso antes da strip acabar.
 - **Interpolação fixada explicitamente** — keyframes novos herdam a preferência do Blender de quem executa (`keyframe_new_interpolation_type`); um dev com `CONSTANT` configurado veria um pulo em vez da subida. `_set_easing` grava `SINE`/`EASE_OUT` nos pontos após inserir.
 
+**Tipografia.** A fonte, a cor e o contorno são resolvidos uma vez por job em `resolve_subtitle_style()` (função pura, sem `bpy`) e aplicados a cada strip por `apply_text_style()`.
+
+- **Futura Bold como padrão, com fallback em cadeia** — Futura é licenciada e não é redistribuída no repo. `resolve_font_path()` testa, em ordem: `subtitles.font_path` do template → `assets/fonts/Futura-Bold.ttf` → `.otf` → `DejaVuSans-Bold.ttf` (pacote `fonts-dejavu-core`, já na imagem). Se nada existir, retorna `None` e a strip fica com a fonte embutida do Blender. Decisão: fonte ausente é problema de estilo, não motivo para falhar um render que já consumiu LLM, TTS e transcrição — degrada o visual, nunca o job.
+- **Datablock carregado uma vez** — `bpy.data.fonts.load(..., check_existing=True)` fora do loop. Um vídeo tem centenas de strips word-level; carregar por strip criaria centenas de datablocks duplicados no `.blend`.
+- **Branco com contorno preto** — o fundo é vídeo em movimento, então não há cor de texto que funcione sozinha: texto branco desaparece em cena clara. O contorno resolve isso sem tarja/caixa atrás do texto, que roubaria área da tela num formato vertical.
+- **`outline_width` padrão 0.12, não 0.05** — 0.05 é o padrão do Blender e renderiza como um fio de cabelo que some sobre fundo claro. 0.12 é a menor espessura que ainda separa o texto do fundo sem virar contorno de adesivo. O valor é clampado em 0..1 na leitura do template (o Blender clampa em silêncio; clampar aqui evita que um valor errado renderize como outra coisa).
+- **`font_size` não tem padrão** — quando ausente, o tamanho que o Blender deu à strip é preservado. Tipografia e corpo são decisões separadas; definir um padrão aqui redimensionaria todo render existente.
+- **Requer Blender 4.2+** — `use_outline`/`outline_color`/`outline_width` só existem a partir do 4.2 (versão fixada no Dockerfile). Em build anterior o script levanta `AttributeError` em vez de descartar o contorno silenciosamente: legenda sem contorno é ilegível, então falhar alto é o comportamento correto.
+- **View transform importa** — o `template.blend` usa `Standard`, então branco 1.0 sai branco 1.0. Sob `AgX` (padrão de fábrica do Blender) o mesmo branco renderiza em ~0.78 e o contorno perde contraste. Um template novo precisa manter `Standard`.
+
 **Configuração** — bloco opcional `subtitles` no `template.json`:
 
 ```json
@@ -143,9 +153,17 @@ O SRT vai para `subs/{run_id}/part_{n}.srt` e o orchestrador só repassa a key �
   "fade_frames": 3,
   "max_hold_seconds": 0.4,
   "rise_frames": 4,
-  "rise_offset": 0.025
+  "rise_offset": 0.025,
+  "font_path": "assets/fonts/Futura-Bold.ttf",
+  "font_size": 90,
+  "color": [1.0, 1.0, 1.0, 1.0],
+  "use_outline": true,
+  "outline_color": [0.0, 0.0, 0.0, 1.0],
+  "outline_width": 0.12
 }
 ```
+
+Cores aceitam `[r, g, b]` ou `[r, g, b, a]` (alfa assume 1.0); qualquer outro número de canais levanta `ValueError` na leitura do template, não no meio do render.
 
 `fade_frames: 0` desliga o fade (corte seco); `rise_frames: 0` desliga a subida.
 

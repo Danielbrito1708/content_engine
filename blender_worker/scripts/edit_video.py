@@ -19,6 +19,29 @@ SUBTITLE_Y = 0.05
 DEFAULT_RISE_OFFSET = 0.025
 DEFAULT_RISE_FRAMES = 4
 
+# Subtitle typography. Futura Bold is the design default, but it is a licensed
+# font and is not redistributed here — drop the file in assets/fonts/ (see the
+# README there). The chain falls through to DejaVu Sans Bold, installed in the
+# image via fonts-dejavu-core, so a missing Futura degrades the look instead of
+# failing the render.
+_FONT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "fonts"
+)
+DEFAULT_FONT_CANDIDATES = (
+    os.path.join(_FONT_DIR, "Futura-Bold.ttf"),
+    os.path.join(_FONT_DIR, "Futura-Bold.otf"),
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+)
+# None means "leave the size Blender gave the strip" — the size is a separate
+# concern from the typeface and changing it would resize every existing render.
+DEFAULT_FONT_SIZE = None
+DEFAULT_TEXT_COLOR = (1.0, 1.0, 1.0, 1.0)
+DEFAULT_OUTLINE_COLOR = (0.0, 0.0, 0.0, 1.0)
+# Blender's own default (0.05) is a hairline that disappears over a bright
+# frame; 0.12 is the thinnest width that still separates white text from a
+# light background without reading as a sticker.
+DEFAULT_OUTLINE_WIDTH = 0.12
+
 
 def parse_args():
     argv = sys.argv
@@ -113,6 +136,76 @@ def build_subtitle_timeline(
     return specs
 
 
+def resolve_font_path(configured=None, candidates=DEFAULT_FONT_CANDIDATES, exists=os.path.exists):
+    """First font file that actually exists: configured path, then the defaults.
+
+    Returns None when none of them is present, in which case the caller leaves
+    Blender's built-in font in place. A missing font file is a styling problem,
+    not a reason to fail a render that is otherwise complete.
+    """
+    for path in ([configured] if configured else []) + list(candidates):
+        if path and exists(path):
+            return path
+    return None
+
+
+def _parse_color(value, fallback):
+    """Accept [r, g, b] or [r, g, b, a] from JSON as an RGBA tuple."""
+    if value is None:
+        return fallback
+    channels = [float(c) for c in value]
+    if len(channels) == 3:
+        channels.append(1.0)
+    if len(channels) != 4:
+        raise ValueError(f"Subtitle color needs 3 or 4 channels, got {len(channels)}")
+    return tuple(channels)
+
+
+def resolve_subtitle_style(config=None, exists=os.path.exists):
+    """Build the text-strip style dict from the template's `subtitles` block.
+
+    Pure — no bpy — so the whole resolution (font fallback included) is
+    testable outside Blender.
+    """
+    config = config or {}
+    return {
+        "font_path": resolve_font_path(config.get("font_path"), exists=exists),
+        "font_size": config.get("font_size", DEFAULT_FONT_SIZE),
+        "color": _parse_color(config.get("color"), DEFAULT_TEXT_COLOR),
+        "use_outline": config.get("use_outline", True),
+        "outline_color": _parse_color(config.get("outline_color"), DEFAULT_OUTLINE_COLOR),
+        # Blender clamps outline_width to 0..1; clamping here keeps a bad
+        # template value from silently rendering as something else.
+        "outline_width": min(1.0, max(0.0, float(config.get("outline_width", DEFAULT_OUTLINE_WIDTH)))),
+    }
+
+
+def load_subtitle_font(font_path):
+    """Load the font datablock once so every strip shares it."""
+    if not font_path:
+        return None
+    import bpy
+
+    return bpy.data.fonts.load(font_path, check_existing=True)
+
+
+def apply_text_style(strip, style, font=None):
+    """Apply typeface, fill colour and outline to one text strip.
+
+    The outline properties require Blender 4.2+ (the version pinned in the
+    Dockerfile); on older builds this raises rather than silently dropping the
+    outline, which is what keeps the subtitles readable over bright video.
+    """
+    if font is not None:
+        strip.font = font
+    if style["font_size"]:
+        strip.font_size = style["font_size"]
+    strip.color = style["color"]
+    strip.use_outline = style["use_outline"]
+    strip.outline_color = style["outline_color"]
+    strip.outline_width = style["outline_width"]
+
+
 def setup_vse(scene):
     if not scene.sequence_editor:
         scene.sequence_editor_create()
@@ -175,6 +268,7 @@ def import_subtitles(
     max_hold_seconds=DEFAULT_MAX_HOLD_SECONDS,
     rise_frames=DEFAULT_RISE_FRAMES,
     rise_offset=DEFAULT_RISE_OFFSET,
+    style=None,
 ):
     specs = build_subtitle_timeline(
         parse_srt(srt_path),
@@ -184,6 +278,10 @@ def import_subtitles(
         max_hold_seconds,
         rise_frames,
     )
+
+    style = style or resolve_subtitle_style()
+    # Loaded once, outside the loop: one datablock shared by every word strip.
+    font = load_subtitle_font(style["font_path"])
 
     for i, spec in enumerate(specs):
         strip = vse.sequences.new_effect(
@@ -198,6 +296,7 @@ def import_subtitles(
         strip.align_y = "BOTTOM"
         strip.location[1] = SUBTITLE_Y
         strip.blend_alpha = 1.0
+        apply_text_style(strip, style, font)
 
         if spec["rise"] and rise_offset:
             strip.location[1] = SUBTITLE_Y - rise_offset
@@ -271,6 +370,7 @@ def main():
         max_hold_seconds=subs.get("max_hold_seconds", DEFAULT_MAX_HOLD_SECONDS),
         rise_frames=subs.get("rise_frames", DEFAULT_RISE_FRAMES),
         rise_offset=subs.get("rise_offset", DEFAULT_RISE_OFFSET),
+        style=resolve_subtitle_style(subs),
     )
 
     # Set frame_end to the last frame where a content strip exists.

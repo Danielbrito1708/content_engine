@@ -94,7 +94,7 @@ Assembles video assets in Blender VSE and renders to MP4. Triggered by `POST /jo
 - Ch1 — movie strip (video file), starts at `intro_start + 1`
 - Ch2 — music strip, volume 0.2; if `music_fade_out` in timing: keyframed fade from 0.2 → 0.0 between `music_fade_out` and `frame_end`
 - Ch3 — voice strip, volume 1.0, starts at `speech_start + 1`
-- Ch4 — word-level text subtitles from `.srt` — see **Word-level subtitles** below
+- Ch4 — word-level text subtitles from `.srt` — see **Word-level subtitles** and **Subtitle typography** below
 
 **`template.json` format:** see `docs/vision.md` — `frame_rate`, `frame_end`, `channels` (ch numbers), `timing` (frame offsets including optional `music_fade_out`), optional `subtitles` block.
 
@@ -128,6 +128,28 @@ The `.srt` produced by `tts_service` has **one entry per word** (Whisper `word_t
 `rise_offset` is a fraction of frame height (0.025 ≈ 48px at 1080×1920); `rise_frames: 0` disables the animation. Resting position is `SUBTITLE_Y = 0.05`.
 
 - Tests: `tests/test_subtitles.py` (16 tests, marked `no_db` — no docker compose, no Blender needed).
+
+### Subtitle typography (`scripts/edit_video.py`)
+
+Typeface, fill colour and outline for the word-level text strips. Default: **Futura Bold, white with a black outline**.
+
+**Public API (pure, no `bpy`):**
+- `resolve_font_path(configured=None, candidates=DEFAULT_FONT_CANDIDATES, exists=os.path.exists) -> str | None` — first font file that exists. `exists` is injectable for tests.
+- `resolve_subtitle_style(config=None, exists=os.path.exists) -> dict` — reads the `subtitles` block into `{font_path, font_size, color, use_outline, outline_color, outline_width}`. Colours accept `[r,g,b]` or `[r,g,b,a]`; wrong channel counts raise `ValueError`. `outline_width` is clamped to 0..1.
+
+**bpy-side:**
+- `load_subtitle_font(font_path) -> VectorFont | None` — `bpy.data.fonts.load(..., check_existing=True)`. Called **once** in `import_subtitles`, outside the strip loop — a video has hundreds of word strips and per-strip loading would duplicate the datablock.
+- `apply_text_style(strip, style, font=None)` — assigns to the strip. `font=None` leaves `strip.font` alone; `font_size=None` leaves the size alone.
+
+`import_subtitles(..., style=None)` takes the resolved style; `main()` passes `resolve_subtitle_style(subs)`.
+
+**Font fallback chain** — `subtitles.font_path` → `assets/fonts/Futura-Bold.ttf` → `.otf` → `/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`. Futura is licensed and **not committed** — drop the file in `assets/fonts/` (see the README there); `COPY . .` puts it in the image. A missing font degrades the look, it never fails the render.
+
+**Requires Blender 4.2+** — `use_outline`/`outline_color`/`outline_width` do not exist before 4.2 (the Dockerfile pins 4.2.20). Verified against the real RNA, not assumed.
+
+**Defaults and why:** `outline_width` is 0.12, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame. `font_size` has no default so the strip keeps the size Blender gave it. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
+
+- Tests: `tests/test_subtitles.py` (35 tests total, marked `no_db` — no docker compose, no Blender needed).
 
 ### Image text rendering (`src/blender_worker/image/text.py`)
 

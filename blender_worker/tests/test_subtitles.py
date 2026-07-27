@@ -26,6 +26,8 @@ edit_video = _load_script()
 build_subtitle_timeline = edit_video.build_subtitle_timeline
 parse_srt = edit_video.parse_srt
 ts_to_frame = edit_video.ts_to_frame
+resolve_subtitle_style = edit_video.resolve_subtitle_style
+apply_text_style = edit_video.apply_text_style
 
 
 def _entry(start, end, text):
@@ -202,3 +204,108 @@ def test_blank_entries_are_skipped():
     specs = build_subtitle_timeline(entries, 30)
     assert len(specs) == 1
     assert specs[0]["text"] == "palavra"
+
+
+# --- font resolution ------------------------------------------------------
+
+FUTURA_TTF = edit_video.DEFAULT_FONT_CANDIDATES[0]
+DEJAVU_BOLD = edit_video.DEFAULT_FONT_CANDIDATES[-1]
+
+
+def _exists(*present):
+    """Fake os.path.exists that only knows about the given paths."""
+    known = set(present)
+    return lambda path: path in known
+
+
+NO_FONTS = _exists()
+
+
+def test_configured_font_path_wins_over_the_defaults():
+    style = resolve_subtitle_style(
+        {"font_path": "/fonts/custom.ttf"}, exists=_exists("/fonts/custom.ttf", FUTURA_TTF)
+    )
+    assert style["font_path"] == "/fonts/custom.ttf"
+
+
+def test_futura_is_the_default_when_present():
+    assert resolve_subtitle_style({}, exists=_exists(FUTURA_TTF))["font_path"] == FUTURA_TTF
+
+
+def test_falls_back_to_dejavu_when_futura_is_absent():
+    assert resolve_subtitle_style({}, exists=_exists(DEJAVU_BOLD))["font_path"] == DEJAVU_BOLD
+
+
+def test_missing_configured_font_falls_through_instead_of_raising():
+    style = resolve_subtitle_style({"font_path": "/gone.ttf"}, exists=_exists(DEJAVU_BOLD))
+    assert style["font_path"] == DEJAVU_BOLD
+
+
+def test_no_font_available_resolves_to_none():
+    # Blender's built-in font is used; a missing file must not fail the render.
+    assert resolve_subtitle_style({}, exists=NO_FONTS)["font_path"] is None
+
+
+# --- text style -----------------------------------------------------------
+
+
+def test_default_style_is_white_with_a_black_outline():
+    style = resolve_subtitle_style({}, exists=NO_FONTS)
+    assert style["color"] == (1.0, 1.0, 1.0, 1.0)
+    assert style["use_outline"] is True
+    assert style["outline_color"] == (0.0, 0.0, 0.0, 1.0)
+    assert style["outline_width"] > 0
+
+
+def test_rgb_color_gets_an_opaque_alpha():
+    assert resolve_subtitle_style({"color": [1, 0, 0]}, exists=NO_FONTS)["color"] == (1.0, 0.0, 0.0, 1.0)
+
+
+def test_color_with_wrong_channel_count_raises():
+    with pytest.raises(ValueError):
+        resolve_subtitle_style({"color": [1, 0]}, exists=NO_FONTS)
+
+
+def test_outline_width_is_clamped_to_blenders_range():
+    assert resolve_subtitle_style({"outline_width": 5}, exists=NO_FONTS)["outline_width"] == 1.0
+    assert resolve_subtitle_style({"outline_width": -1}, exists=NO_FONTS)["outline_width"] == 0.0
+
+
+def test_outline_can_be_disabled_from_the_template():
+    assert resolve_subtitle_style({"use_outline": False}, exists=NO_FONTS)["use_outline"] is False
+
+
+def test_font_size_is_left_alone_unless_configured():
+    # Typeface and size are separate concerns — defaulting size would resize
+    # every existing render.
+    assert resolve_subtitle_style({}, exists=NO_FONTS)["font_size"] is None
+
+
+class _FakeStrip:
+    """Stand-in for a Blender TextSequence — records what gets assigned."""
+
+
+def test_apply_text_style_sets_typeface_colour_and_outline():
+    strip = _FakeStrip()
+    font = object()
+    apply_text_style(strip, resolve_subtitle_style({}, exists=NO_FONTS), font=font)
+    assert strip.font is font
+    assert strip.color == (1.0, 1.0, 1.0, 1.0)
+    assert strip.use_outline is True
+    assert strip.outline_color == (0.0, 0.0, 0.0, 1.0)
+
+
+def test_apply_text_style_without_a_font_leaves_the_strip_font_untouched():
+    strip = _FakeStrip()
+    apply_text_style(strip, resolve_subtitle_style({}, exists=NO_FONTS), font=None)
+    assert not hasattr(strip, "font")
+
+
+def test_apply_text_style_only_sets_size_when_configured():
+    strip = _FakeStrip()
+    apply_text_style(strip, resolve_subtitle_style({}, exists=NO_FONTS), font=None)
+    assert not hasattr(strip, "font_size")
+
+    sized = _FakeStrip()
+    apply_text_style(sized, resolve_subtitle_style({"font_size": 90}, exists=NO_FONTS), font=None)
+    assert sized.font_size == 90
