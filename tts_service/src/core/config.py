@@ -42,12 +42,18 @@ class TTSEnvSettings(BaseModel):
     minio_access_key: str
     minio_secret_key: str
     minio_bucket: str
+    azure_speech_key: str | None
+    azure_speech_region: str | None
+    azure_output_format: str
     elevenlabs_api_key: str | None
     elevenlabs_voice_id: str | None
     remove_silence: bool
     silence_thresh_db: int
     min_silence_ms: int
-    silence_padding_ms: int
+    normalize_audio: bool
+    loudness_target_lufs: int
+    audio_bitrate: str | None
+    audio_sample_rate: int | None
     whisper_model: str
     whisper_language: str
 
@@ -66,12 +72,26 @@ class TTSEnvSettings(BaseModel):
             "minio_access_key": os.environ["MINIO_ACCESS_KEY"],
             "minio_secret_key": os.environ["MINIO_SECRET_KEY"],
             "minio_bucket": os.environ.get("MINIO_BUCKET", "blender-jobs"),
+            "azure_speech_key": os.environ.get("AZURE_SPEECH_KEY"),
+            "azure_speech_region": os.environ.get("AZURE_SPEECH_REGION"),
+            "azure_output_format": os.environ.get(
+                "AZURE_OUTPUT_FORMAT", "audio-48khz-192kbitrate-mono-mp3"
+            ),
             "elevenlabs_api_key": os.environ.get("ELEVENLABS_API_KEY"),
             "elevenlabs_voice_id": os.environ.get("ELEVENLABS_VOICE_ID"),
             "remove_silence": os.environ.get("REMOVE_SILENCE", "true").lower() == "true",
             "silence_thresh_db": int(os.environ.get("SILENCE_THRESH_DB", "-40")),
             "min_silence_ms": int(os.environ.get("MIN_SILENCE_MS", "500")),
-            "silence_padding_ms": int(os.environ.get("SILENCE_PADDING_MS", "100")),
+            "normalize_audio": os.environ.get("NORMALIZE_AUDIO", "true").lower() == "true",
+            "loudness_target_lufs": int(os.environ.get("LOUDNESS_TARGET_LUFS", "-16")),
+            # Unset means "match the source". Forcing a rate/bitrate above what the
+            # provider produced cannot add information, only file size.
+            "audio_bitrate": os.environ.get("AUDIO_BITRATE") or None,
+            "audio_sample_rate": (
+                int(os.environ["AUDIO_SAMPLE_RATE"])
+                if os.environ.get("AUDIO_SAMPLE_RATE")
+                else None
+            ),
             "whisper_model": os.environ.get("WHISPER_MODEL", "base"),
             "whisper_language": os.environ.get("WHISPER_LANGUAGE", "pt"),
         }
@@ -86,6 +106,11 @@ class TTSEnvSettings(BaseModel):
 
     @model_validator(mode="after")
     def _check_provider_key(self) -> "TTSEnvSettings":
+        if self.tts_provider == "azure":
+            if not self.azure_speech_key:
+                raise ValueError("AZURE_SPEECH_KEY is required when TTS_PROVIDER=azure")
+            if not self.azure_speech_region:
+                raise ValueError("AZURE_SPEECH_REGION is required when TTS_PROVIDER=azure")
         if self.tts_provider == "elevenlabs":
             if not self.elevenlabs_api_key:
                 raise ValueError("ELEVENLABS_API_KEY is required when TTS_PROVIDER=elevenlabs")

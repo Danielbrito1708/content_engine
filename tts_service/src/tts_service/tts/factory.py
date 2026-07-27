@@ -9,8 +9,14 @@ def get_tts_client() -> BaseTTSClient:
         from src.tts_service.tts.edge import EdgeTTSClient
         return EdgeTTSClient()
 
+    if provider == "azure":
+        from src.tts_service.tts.azure import AzureTTSClient
+        return AzureTTSClient()
+
     if provider == "elevenlabs":
         from src.tts_service.tts.elevenlabs import ElevenLabsClient
         return ElevenLabsClient()
 
-    raise ValueError(f"Unknown TTS_PROVIDER: {provider!r}. Use 'edge' or 'elevenlabs'.")
+    raise ValueError(
+        f"Unknown TTS_PROVIDER: {provider!r}. Use 'edge', 'azure' or 'elevenlabs'."
+    )

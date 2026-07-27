@@ -148,8 +148,18 @@ async def test_factory_unknown_raises(monkeypatch):
         factory.get_tts_client()
 
 
-async def test_edge_client_uses_env_voice(monkeypatch):
-    monkeypatch.setenv("TTS_VOICE", "pt-BR-AntonioNeural")
+async def test_edge_client_accepts_explicit_voice():
     from src.tts_service.tts.edge import EdgeTTSClient
-    c = EdgeTTSClient()
-    assert c._voice == "pt-BR-AntonioNeural"
+    assert EdgeTTSClient(voice="pt-BR-AntonioNeural")._voice == "pt-BR-AntonioNeural"
+
+
+async def test_edge_client_falls_back_to_configured_voice(monkeypatch):
+    # settings.env is frozen and built once at bootstrap, so setenv() cannot reach it —
+    # swapping the module-level `settings` is the only way to vary the default.
+    from src.tts_service.tts import edge
+    monkeypatch.setattr(
+        edge,
+        "settings",
+        SimpleNamespace(env=SimpleNamespace(tts_voice="pt-BR-FranciscaNeural", tts_rate="+0%")),
+    )
+    assert edge.EdgeTTSClient()._voice == "pt-BR-FranciscaNeural"

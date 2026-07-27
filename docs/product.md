@@ -100,7 +100,9 @@ Com o roteiro pronto, o sistema gera a narração em áudio. O texto é transfor
 
 A voz padrão é feminina, jovem e adequada para o estilo TikTok brasileiro. É possível configurar outras vozes, inclusive masculinas, dependendo do tipo de conteúdo. Para roteiros divididos em partes, cada parte recebe seu próprio arquivo de áudio separado.
 
-O sistema suporta dois motores de voz: um gratuito, baseado na tecnologia da Microsoft, que funciona sem nenhuma configuração extra; e o ElevenLabs, pago, que oferece qualidade superior e controle mais fino sobre a voz. A escolha entre eles é feita por configuração, sem alterar nada no fluxo de produção.
+O sistema suporta três motores de voz. O primeiro é gratuito e funciona sem nenhuma configuração extra, mas entrega o áudio numa qualidade fixa e baixa — é a razão pela qual a narração soava abafada, como se viesse de um rádio. O segundo é o Azure, que usa exatamente as mesmas vozes do gratuito, só que numa qualidade muito superior: é o motor recomendado e o padrão de produção. O terceiro é o ElevenLabs, ainda não implementado, para quando fizer sentido pagar por vozes mais expressivas. A escolha entre eles é feita por configuração, sem alterar nada no fluxo de produção.
+
+Trocar o motor gratuito pelo Azure não muda a voz nem o ritmo da narração — é a mesma locutora, gravada com muito mais definição. O que muda é a nitidez: os agudos da fala, que simplesmente não existiam no áudio anterior, passam a estar lá. Em compensação, o Azure exige uma conta e uma chave de acesso; sem elas o sistema se recusa a subir, em vez de descobrir o problema no meio de uma produção.
 
 A narração sai acelerada em relação ao ritmo natural da voz. O padrão é 15% mais rápido — o suficiente para dar o ritmo apressado que o formato do TikTok pede, sem que a fala soe artificial ou fique difícil de acompanhar. A voz continua com o tom normal: ela fala mais rápido, não fica mais aguda, porque a aceleração é feita pelo próprio motor de voz e não por acelerar o arquivo depois de pronto.
 
@@ -115,6 +117,22 @@ Antes de usar o áudio no vídeo, o sistema remove automaticamente os silêncios
 Pausas naturais entre palavras e frases — as que existem para dar ritmo à fala — são preservadas. Só os silêncios acima de 500 milissegundos são removidos. O resultado é um áudio mais compacto e dinâmico, sem cortes bruscos.
 
 Esse comportamento é ativo por padrão, mas pode ser desligado. Os limiares (quanto silêncio é considerado silêncio, qual é o mínimo para remoção) são configuráveis.
+
+---
+
+## Feature 4.1 — Volume padronizado da narração
+
+O corte de silêncios agora vem acompanhado de um ajuste de volume. Todas as narrações saem no mesmo nível de audição, independentemente da voz escolhida, do motor usado ou do conteúdo do roteiro. Antes, cada áudio tinha o volume que o motor de voz decidisse entregar — o que fazia uma parte 2 soar mais baixa que a parte 1 do mesmo vídeo, e a narração ora sumir sob a trilha sonora, ora estourar acima dela.
+
+O nível escolhido é o mesmo que as plataformas de vídeo usam como referência, então o TikTok não precisa mexer no volume do vídeo depois de publicado — o que evita que ele abaixe a narração inteira só porque um trecho ficou alto demais.
+
+Junto com isso, o sistema descarta os graves muito baixos que a voz não usa e que só ocupam espaço no áudio. O resultado é uma narração mais presente, sem que ela fique estridente.
+
+O ajuste é ativo por padrão e pode ser desligado. O nível-alvo é configurável para quem quiser uma narração mais discreta ou mais agressiva.
+
+Um detalhe invisível, mas que importa: o corte de silêncio, o ajuste de volume e a gravação do arquivo final acontecem todos de uma vez. Cada vez que um áudio é regravado ele perde um pouco de qualidade, e antes o sistema fazia isso mais vezes do que precisava — inclusive rebaixando a qualidade do arquivo sem que ninguém tivesse pedido. Agora, se não há nada a ajustar, o áudio é entregue exatamente como o motor de voz o produziu.
+
+Na mesma linha, o arquivo final guarda exatamente a qualidade que o motor de voz entregou — nem menos, nem mais. Pedir "mais qualidade" do que existe na gravação original não melhora nada: só ocupa espaço. Quem determina a qualidade da narração é a escolha do motor de voz, e nenhum ajuste posterior substitui isso.
 
 ---
 
@@ -216,9 +234,11 @@ O resultado é uma imagem PNG salva no storage, pronta para ser usada como asset
 
 O sistema é configurável em vários aspectos sem precisar alterar o código:
 
-**Voz:** qual voz e qual motor de TTS usar. Padrão: voz feminina jovem brasileira, motor gratuito da Microsoft.
+**Voz:** qual voz e qual motor de TTS usar. Padrão: voz feminina jovem brasileira, motor Azure (o gratuito continua disponível para quem não quiser configurar uma chave, ao custo da qualidade).
 
 **Velocidade da narração:** quanto mais rápido (ou mais devagar) a voz fala em relação ao ritmo natural dela. Padrão: 15% mais rápido.
+
+**Volume da narração:** o nível de audição padronizado de todas as narrações, e a opção de desligar essa padronização.
 
 **Remoção de silêncio:** se deve remover silêncios, qual é o limiar de volume para considerar algo silêncio, e qual é a duração mínima de silêncio para remover.
 

@@ -102,7 +102,7 @@ Externamente (localhost), cada um usa a porta mapeada acima.
 - `blender_worker` — implementado (MVP completo: API, DB, Blender pipeline, image compositor)
 - `orchestrator` — planejado, em implementação
 - `llm_service` — planejado
-- `tts_service` — planejado
+- `tts_service` — implementado (providers `azure`/`edge`, corte de silêncio + normalização de loudness, transcrição word-level)
 - `tiktok_poster` — planejado
 - `content_scout` — implementado (fonte Reddit via RSS; YouTube previsto como minerador de tema)
 
