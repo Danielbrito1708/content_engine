@@ -32,7 +32,7 @@ async def generate(body: GenerateRequest) -> GenerateResponse:
                 process_audio,
                 audio_bytes,
                 trim_silence=settings.env.remove_silence,
-                min_silence_ms=settings.env.min_silence_ms,
+                max_pause_ms=settings.env.max_pause_ms,
                 silence_thresh_db=settings.env.silence_thresh_db,
                 normalize=settings.env.normalize_audio,
                 loudness_target_lufs=settings.env.loudness_target_lufs,

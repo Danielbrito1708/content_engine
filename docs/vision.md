@@ -163,6 +163,34 @@ O `edge` continua registrado como fallback sem-configuração — útil em dev e
 
 ---
 
+## Corte de silêncio: `max_pause_ms` é um teto, não um gatilho
+
+O parâmetro foi lido errado desde o início. `MIN_SILENCE_MS=500` parecia significar "só remove silêncios acima de 500ms", mas o `silenceremove` do ffmpeg **copia o áudio até que `stop_duration` de silêncio já tenha passado**, e só então para de copiar. O número é ao mesmo tempo o limiar de detecção **e a quantidade de silêncio que fica para trás**.
+
+Consequência: pausa de 1,5s e pausa de 3,0s saíam **as duas com 0,52s**. A narração continuava soando esburacada não apesar do corte, mas por causa dele — todo intervalo longo era normalizado para meio segundo de nada. Medido num clipe de 7,5s com as duas pausas.
+
+Por isso o parâmetro foi renomeado para `max_pause_ms` e o default caiu de 500 para **200**: uma pausa menor que o teto passa intacta, toda pausa maior sai em exatamente `max_pause_ms`. `MIN_SILENCE_MS` continua sendo aceito como alias depreciado — sempre foi o mesmo número, e ignorá-lo mudaria em silêncio um `.env` já calibrado.
+
+**`stop_silence` não é usado de propósito.** Ele *soma* ao que é preservado (medido: `0.1` deixou 0,62s de pausa residual), então só consegue alongar pausas — sob um teto baixo, esticaria uma pausa para além do comprimento original.
+
+Seis testes fixam esse comportamento em `test_postprocess.py`, incluindo o caso "o teto nunca alonga uma pausa".
+
+### CLI de calibragem (`tts_service/scripts/cut_silence.py`)
+
+Limiar de silêncio é escolha empírica: `-40dB` corta bem uma voz e come o começo das palavras de outra. Sem uma forma de rodar avulso, testar um valor exigia editar env var, subir o serviço, disparar um pipeline run e esperar TTS + Whisper + render — para então ouvir o resultado. O CLI reduz o ciclo a um comando sobre um arquivo local, e reporta duração antes/depois e percentual cortado, que é o número que diz se o ajuste foi longe demais.
+
+**Um único ponto de verdade.** O CLI chama o mesmo `process_audio` da rota `/generate` — não reimplementa a cadeia de filtros. Um limiar calibrado no terminal descreve exatamente o que a produção vai fazer; se fossem dois códigos, a calibragem mediria a ferramenta em vez do pipeline. Pela mesma razão a normalização de loudness fica **ligada por padrão**, como em produção; `--no-normalize` existe para isolar o efeito do corte quando se quer ouvir só ele.
+
+Decisões do CLI:
+
+- **Nunca escreve por cima sem `--force`.** A saída padrão é `<nome>.trimmed.mp3` ao lado da entrada, e uma segunda rodada com os mesmos parâmetros aborta em vez de sobrescrever. Calibrar é rodar o mesmo arquivo várias vezes; perder silenciosamente o resultado anterior estragaria justamente a comparação.
+- **Saída igual à entrada é recusada.** O original é o insumo da próxima tentativa — cortar em cima dele acumularia cortes de rodadas anteriores e o número reportado deixaria de significar o que diz.
+- **`--dry-run` processa de verdade.** Roda o ffmpeg e mede, só não grava. Um dry-run que apenas estimasse o corte não responderia à pergunta que se está fazendo.
+- **Falha de um arquivo não derruba o lote.** Vários arquivos por invocação, erro reportado por arquivo e código de saída diferente de zero no fim. Exceção: ffmpeg ausente do PATH aborta na hora — repetir o mesmo erro por arquivo não informa nada.
+- **Relatório em ASCII.** O repo é desenvolvido no Windows, onde o console é cp1252 e um `→` no `print` levanta `UnicodeEncodeError` no meio da execução. Verificado ao vivo: a versão com seta Unicode passava nos testes (o capsys captura em UTF-8) e quebrava no terminal real.
+
+---
+
 ## Legendas (word-level)
 
 **Origem.** A legenda é derivada do áudio, não do roteiro. O `tts_service` transcreve o MP3 já gerado (e já com silêncios removidos) via `faster-whisper` com `word_timestamps=True`, e emite um SRT com **uma entrada por palavra**. Decisão: o roteiro e a narração divergem (o TTS abrevia, o corte de silêncio desloca o tempo), então estimar timing por WPM sempre dessincroniza. Transcrever o artefato final é a única fonte de verdade.
