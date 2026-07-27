@@ -131,9 +131,13 @@ The `.srt` produced by `tts_service` has **one entry per word** (Whisper `word_t
 
 **Template config** (optional block in `template.json`):
 ```json
-"subtitles": { "fade_frames": 3, "max_hold_seconds": 0.4, "rise_frames": 4, "rise_offset": 0.025 }
+"subtitles": { "fade_frames": 3, "max_hold_seconds": 0.4, "rise_frames": 4, "rise_offset": 0.025, "y_position": 0.5 }
 ```
-`rise_offset` is a fraction of frame height (0.025 ≈ 48px at 1080×1920); `rise_frames: 0` disables the animation. Resting position is `SUBTITLE_Y = 0.05`.
+`rise_offset` is a fraction of frame height (0.025 ≈ 48px at 1080×1920); `rise_frames: 0` disables the animation.
+
+**Vertical position** — `y_position` (default `0.5`, dead centre) is a fraction of frame height, clamped to 0..1 because an off-frame value renders as subtitles silently missing rather than as an error. Strips use `align_y = "CENTER"`, so the value positions the text's own middle: the same number means the same place for a tall word and a short one. `0.05` restores the old bottom-anchored look.
+
+⚠️ **`template.json` lives in the bucket, not in the repo.** `render_job` downloads `templates/template.json` from MinIO/R2 — editing the repo copy changes nothing until it is uploaded. These two drifted: the repo declared `font_size: 140` while the deployed template had no typography block at all, so every render used Blender's built-in 60 (measured from the rendered glyphs: 33px for "ano" against 104px at size 190). `font_size` is the only property with no code default, which is exactly why it was the one that silently regressed — font, colour and outline kept working from `DEFAULT_*`, so nothing looked broken.
 
 - Tests: `tests/test_subtitles.py` (16 tests, marked `no_db` — no docker compose, no Blender needed).
 
@@ -156,6 +160,14 @@ Typeface, fill colour and outline for the word-level text strips. Default: **Fut
 **`Futura-Bold.ttf` is committed in `assets/fonts/`** — that path is inside the Docker build context (`build: ./blender_worker`), so `COPY . .` puts it in the image. A font at the **monorepo root would not reach the container** and the render would silently fall back to DejaVu. Filename is case-sensitive on Linux. Fonts and `.blend` files are marked `binary` in the root `.gitattributes` — the repo is developed on Windows with `core.autocrlf=true`, where a mis-detected binary gets newline-converted and breaks at render time.
 
 **Requires Blender 4.2+** — `use_outline`/`outline_color`/`outline_width` do not exist before 4.2 (the Dockerfile pins 4.2.20). Verified against the real RNA, not assumed.
+
+**Per-word auto-fit** — `fit_font_size(text, font_size, max_width, measure, min_size=60)` treats `font_size` as a **ceiling**, not a fixed value: short words render at exactly that size and only the ones that would overrun the frame are scaled down, floored at `MIN_AUTOFIT_FONT_SIZE`. `SUBTITLE_SIDE_MARGIN` (0.04) keeps 4% of the width clear on each side.
+
+Without it, raising the body size clips long words, and the clipping is **silent** — Blender does not wrap a single word and reports nothing. Measured at 1080px wide: `"procedimento,"` already occupied 1037 of 1080px at size 140, and at 170+ it ran off both edges. On a real 178-word narration, size 190 needs fitting on only 13 words (7%), the longest landing at 133.
+
+`make_text_measurer(font_path)` builds the measuring callable from `blf`, the same rasteriser the VSE text strip uses; it returns `None` when the font cannot be loaded, and the caller then skips auto-fit rather than measuring with a typeface it will not render. Verified against a real render: blf reports 1046px for `"procedimento,"` at 140 where the rendered bounding box (outline included) is 1037px — it errs slightly wide, the safe direction for a fits-on-screen test.
+
+`fit_font_size` is pure (the measurer is injected), so the rule is tested without Blender.
 
 **Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 140, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
 
