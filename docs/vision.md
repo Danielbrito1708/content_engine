@@ -117,11 +117,31 @@ O schema é armazenado como JSONB no DB do orchestrador. Novos campos são adici
 
 ## Velocidade da Narração
 
-O `tts_service` acelera a narração via `TTS_RATE` (padrão `+15%`). No provider `edge` vai para `edge_tts.Communicate(..., rate=...)`; no `azure`, para o `<prosody rate='...'>` do SSML. É o mesmo parâmetro nos dois casos, então trocar de provider não muda o ritmo da narração.
+Definida no `template.json`, no bloco `narration.rate` (padrão `+15%`), e aplicada pelo `tts_service`. No provider `edge` vai para `edge_tts.Communicate(..., rate=...)`; no `azure`, para o `<prosody rate='...'>` do SSML. É o mesmo parâmetro nos dois casos, então trocar de provider não muda o ritmo da narração.
+
+**Por que no template, e não só em env var.** Velocidade de fala é decisão de design do formato, igual à tipografia da legenda e ao timing da edição — que já moram no `template.json`. Um template de drama quer narração pausada; um de curiosidades quer ritmo acelerado. Com env var, trocar de formato exigiria redeploy do `tts_service` e o valor seria global para todos os templates ao mesmo tempo.
+
+**Como o rate chega ao TTS.** O `template.json` vive no MinIO e hoje só era lido pelo `blender_worker` **na hora do render** — tarde demais, já que o TTS roda antes. A cadeia:
+
+```
+template.json (narration.rate)
+  └→ blender_worker: GET /templates/{id}/config   (baixa do MinIO, devolve o JSON parseado)
+      └→ orchestrator: _narration_rate()          (1× por run, em _process_all_parts)
+          └→ tts_service: POST /generate {rate}   (override do TTS_RATE)
+              └→ provider ativo (edge: Communicate(rate=...) | azure: <prosody rate>)
+```
+
+Decisão: o orchestrador **não lê o MinIO nem parseia `template.json`**. O `blender_worker` é dono dos templates, então serve o config por HTTP. Isso evita duplicar o parsing e o conhecimento de bucket/key em dois serviços. O endpoint expõe o `template.json` inteiro, não só `narration` — outros campos vão precisar do mesmo caminho.
+
+**Precedência:** `narration.rate` do template → `TTS_RATE` do `tts_service` → `+15%`. O env var deixa de ser a fonte primária e vira fallback: cobre templates sem o bloco `narration` (compatibilidade) e chamadas diretas ao `tts_service` fora do pipeline.
+
+**Degradação.** Falha ao ler o config — template sem bloco, blender_worker fora do ar, JSON inválido — cai no `TTS_RATE` com warning, sem derrubar o run. Narração é estética; o render, não. Mesmo critério da remoção de silêncio (degrada) versus a transcrição (derruba).
+
+**Validação em um lugar só.** A regex `^[+-]\d+%$` mora no `tts_service` (`validate_rate`), usada tanto no boot (env var) quanto no campo da request (`422`). O orchestrador repassa o valor sem validar — duplicar a regra criaria duas fontes de verdade que divergem com o tempo.
 
 **Por que no motor de voz, e não em pós-processamento.** Acelerar o MP3 depois de pronto (resample no `pydub`/ffmpeg) sobe o pitch junto e a voz vira "esquilo"; corrigir isso exige time-stretch, que introduz artefato. O `rate` do edge-tts é `prosody rate` do SSML — a Microsoft sintetiza já no ritmo pedido, com o pitch intacto e sem perda de qualidade. Custo zero: não há etapa de áudio extra no pipeline.
 
-**Formato.** Percentual com sinal obrigatório (`+15%`, `-10%`, `+0%`). Validado no boot em `TTSEnvSettings._check_rate_format` — o edge-tts só rejeitaria o formato na hora de sintetizar, o que transformaria um erro de config em falha de request no meio do pipeline.
+**Formato.** Percentual com sinal obrigatório (`+15%`, `-10%`, `+0%` desliga). O edge-tts só rejeitaria o formato na hora de sintetizar, o que transformaria um erro de config em falha de request no meio do pipeline — daí a validação antecipada nos dois pontos de entrada.
 
 **Ordem no pipeline.** O `rate` age na síntese, antes de tudo. Logo a remoção de silêncio e a transcrição já operam sobre o áudio acelerado, e o SRT sai com o timing certo sem nenhum ajuste — mesma razão pela qual a transcrição roda depois do corte de silêncio (ver "Legendas"). Nada no `blender_worker` muda: ele consome o par MP3+SRT como sempre.
 

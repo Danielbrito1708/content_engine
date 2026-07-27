@@ -54,6 +54,25 @@ async def _refine(session, run: PipelineRun) -> None:
     log.info("script refined", run_id=str(run.id), parts=run.parts_count)
 
 
+async def _narration_rate() -> str | None:
+    """`narration.rate` from the template, or None to let the tts_service decide.
+
+    A template without a narration block — or an unreachable blender_worker — is not
+    worth failing a run over: the pipeline falls back to the tts_service's TTS_RATE.
+    """
+    template_id = uuid.UUID(settings.env.blender_template_id)
+    try:
+        config = await BlenderClient().get_template_config(template_id)
+    except Exception as exc:
+        log.warning("could not read template config, using tts_service default rate", error=str(exc))
+        return None
+
+    rate = (config.get("narration") or {}).get("rate")
+    if rate is None:
+        log.info("template has no narration.rate, using tts_service default")
+    return rate
+
+
 async def _process_all_parts(session, run: PipelineRun) -> None:
     run.status = PipelineStatus.processing
     await session.commit()
@@ -63,15 +82,18 @@ async def _process_all_parts(session, run: PipelineRun) -> None:
     )
     parts = result.scalars().all()
 
+    # Fetched once per run: the template is the same for every part.
+    rate = await _narration_rate()
+
     for part in parts:
-        await _run_tts(session, part, run)
+        await _run_tts(session, part, run, rate)
         await _run_render(session, part, run)
 
     log.info("all parts processed", run_id=str(run.id))
 
 
-async def _run_tts(session, part: PipelinePart, run: PipelineRun) -> None:
-    log.info("generating audio", run_id=str(run.id), part=part.part_number)
+async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | None = None) -> None:
+    log.info("generating audio", run_id=str(run.id), part=part.part_number, rate=rate)
     part.status = PartStatus.tts_running
     await session.commit()
 
@@ -79,6 +101,7 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun) -> None:
         text=part.script,
         run_id=str(run.id),
         part_number=part.part_number,
+        rate=rate,
     )
 
     part.audio_key = audio_key

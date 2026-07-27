@@ -1,6 +1,9 @@
 {
     "frame_rate": 30,
     "frame_end": 900,
+    "narration": {
+      "rate": "+15%"
+    },
     "channels": {
       "video": 1,
       "music": 2,

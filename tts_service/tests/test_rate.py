@@ -1,11 +1,12 @@
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.core import settings
 from src.core.config import TTSEnvSettings
 from src.tts_service.tts.edge import EdgeTTSClient
+from tests.conftest import FAKE_MP3, SAMPLE_REQUEST
 
 
 def _fake_communicate(chunks):
@@ -86,6 +87,101 @@ def test_invalid_rate_rejected(monkeypatch, bad):
 def test_rate_defaults_when_env_absent(monkeypatch):
     monkeypatch.delenv("TTS_RATE", raising=False)
     assert TTSEnvSettings().tts_rate == "+15%"
+
+
+# ── rate por request (vem do template.json) ──────────────────────
+
+
+def _patched_endpoint():
+    """Patches the endpoint's TTS + upload so only the rate plumbing is under test."""
+    return (
+        patch("src.tts_service.api.routes.generate.get_tts_client"),
+        patch("src.tts_service.api.routes.generate.upload_audio", new_callable=AsyncMock),
+    )
+
+
+async def test_request_rate_overrides_env(client):
+    factory_p, upload_p = _patched_endpoint()
+    with factory_p as mock_factory, upload_p:
+        mock_factory.return_value.generate = AsyncMock(return_value=FAKE_MP3)
+        await client.post("/generate", json={**SAMPLE_REQUEST, "rate": "+40%"})
+
+    assert mock_factory.call_args.kwargs["rate"] == "+40%"
+
+
+async def test_absent_request_rate_falls_back_to_env(client):
+    factory_p, upload_p = _patched_endpoint()
+    with factory_p as mock_factory, upload_p:
+        mock_factory.return_value.generate = AsyncMock(return_value=FAKE_MP3)
+        await client.post("/generate", json=SAMPLE_REQUEST)
+
+    assert mock_factory.call_args.kwargs["rate"] == settings.env.tts_rate
+
+
+async def test_request_rate_accepts_negative(client):
+    factory_p, upload_p = _patched_endpoint()
+    with factory_p as mock_factory, upload_p:
+        mock_factory.return_value.generate = AsyncMock(return_value=FAKE_MP3)
+        await client.post("/generate", json={**SAMPLE_REQUEST, "rate": "-25%"})
+
+    assert mock_factory.call_args.kwargs["rate"] == "-25%"
+
+
+async def test_explicit_null_rate_falls_back_to_env(client):
+    factory_p, upload_p = _patched_endpoint()
+    with factory_p as mock_factory, upload_p:
+        mock_factory.return_value.generate = AsyncMock(return_value=FAKE_MP3)
+        await client.post("/generate", json={**SAMPLE_REQUEST, "rate": None})
+
+    assert mock_factory.call_args.kwargs["rate"] == settings.env.tts_rate
+
+
+@pytest.mark.parametrize("bad", ["15%", "+15", "rapido", "+1.5%", ""])
+async def test_invalid_request_rate_returns_422(client, bad):
+    resp = await client.post("/generate", json={**SAMPLE_REQUEST, "rate": bad})
+    assert resp.status_code == 422
+
+
+async def test_invalid_request_rate_never_reaches_tts(client):
+    factory_p, upload_p = _patched_endpoint()
+    with factory_p as mock_factory, upload_p:
+        await client.post("/generate", json={**SAMPLE_REQUEST, "rate": "muito rapido"})
+
+    mock_factory.assert_not_called()
+
+
+# ── factory ──────────────────────────────────────────────────────
+
+
+def test_factory_forwards_rate(monkeypatch):
+    monkeypatch.setenv("TTS_PROVIDER", "edge")
+    from src.tts_service.tts.factory import get_tts_client
+    assert get_tts_client(rate="+35%")._rate == "+35%"
+
+
+def test_factory_without_rate_uses_env(monkeypatch):
+    monkeypatch.setenv("TTS_PROVIDER", "edge")
+    from src.tts_service.tts.factory import get_tts_client
+    assert get_tts_client()._rate == settings.env.tts_rate
+
+
+def test_factory_forwards_rate_to_azure():
+    """The template's rate must survive a provider switch, not just work on edge."""
+    from types import SimpleNamespace
+
+    from src.tts_service.tts import factory
+
+    stub = SimpleNamespace(env=SimpleNamespace(tts_provider="azure"))
+    with patch.object(factory, "settings", stub):
+        client = factory.get_tts_client(rate="+35%")
+
+    assert client._rate == "+35%"
+
+
+def test_azure_ssml_carries_the_rate():
+    from src.tts_service.tts.azure import build_ssml
+    ssml = build_ssml("olá", "pt-BR-ThalitaNeural", "+35%")
+    assert "<prosody rate='+35%'>" in ssml
 
 
 # ── health ───────────────────────────────────────────────────────
