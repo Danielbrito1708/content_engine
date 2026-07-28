@@ -193,7 +193,7 @@ Composes a comment card image (rounded rect background + positioned assets + wra
 
 **`canvas.supersample`** renders the whole card at N× and downsamples once with LANCZOS (the font is re-derived via `font_variant`). It is *not* what makes edges smooth — FreeType already antialiases glyphs and `_rounded_rect` already supersamples corners 4×. It is an extra uniformity pass; `supersample: 1` is a valid, faster choice. Tests assert antialiasing is present at both settings rather than claiming the knob creates it.
 
-**Template:** `templates/comment_default.json` — 1080 canvas, 880 card at x=60, white opaque background, black **Arial Black** at 36px, 72px avatar slot on top, soft shadow. `font_path` is `assets/fonts/Arial-Black.ttf` — vendored, because the image only ships `fonts-dejavu-core` (see `assets/fonts/README.md`).
+**Template:** `templates/comment_default.json` — 1080 canvas, 880 card at x=60, white opaque background, black **Arial Bold** at 36px, 72px avatar slot on top, soft shadow. `font_path` is `assets/fonts/Arial-Bold.ttf` — vendored, because the image only ships `fonts-dejavu-core` (see `assets/fonts/README.md`). `Arial-Black.ttf` is vendored alongside it as a heavier alternative; it is also *wider*, so the same text wraps to more lines and the card grows taller.
 
 - Tests: `tests/test_image_composer.py` (37 tests, marked `no_db`).
 

@@ -369,11 +369,19 @@ def test_load_guide_without_shadow_block_defaults_to_disabled(tmp_path):
 
 
 def test_shipped_template_matches_the_requested_look():
-    """The design brief: 1080 wide, white card, black Arial Black text, avatar on top."""
+    """The design brief: 1080 wide, white card, black Arial Bold text, avatar on top."""
     guide = load_guide(Path(__file__).parents[1] / "templates" / "comment_default.json")
 
     assert guide.canvas.width == 1080
     assert guide.background.color == (255, 255, 255, 255)
     assert guide.text.color == (0, 0, 0, 255)
-    assert guide.text.font_path.endswith("Arial-Black.ttf")
+    assert guide.text.font_path.endswith("Arial-Bold.ttf")
     assert [a.id for a in guide.assets] == ["avatar"]
+
+
+def test_shipped_template_font_is_vendored():
+    """A font_path pointing at nothing renders in DejaVu, or blows up at request time."""
+    root = Path(__file__).parents[1]
+    guide = load_guide(root / "templates" / "comment_default.json")
+
+    assert (root / guide.text.font_path).is_file()

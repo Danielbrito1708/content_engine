@@ -27,7 +27,7 @@
     }
   ],
   "text": {
-    "font_path": "assets/fonts/Arial-Black.ttf",
+    "font_path": "assets/fonts/Arial-Bold.ttf",
     "size": 36,
     "color": [0, 0, 0, 255],
     "offset": { "x": 0, "y": 0 },

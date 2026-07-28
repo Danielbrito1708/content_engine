@@ -571,7 +571,7 @@ Exemplos de acesso: `settings.CONFIG.blender.bin`, `settings.CONFIG.storage.buck
 
 ### Descrição
 
-Gera uma imagem PNG no estilo "card de comentário": fundo branco com bordas arredondadas, avatar no topo e texto em Arial Black com quebra de linha automática. O layout é controlado por um arquivo de guide JSON versionado no repositório. O PNG gerado é salvo no storage.
+Gera uma imagem PNG no estilo "card de comentário": fundo branco com bordas arredondadas, avatar no topo e texto em Arial Bold com quebra de linha automática. O layout é controlado por um arquivo de guide JSON versionado no repositório. O PNG gerado é salvo no storage.
 
 **O PNG tem sempre 1080 de largura** — a mesma do frame do TikTok — e altura variável conforme o texto. O card é uma caixa mais estreita posicionada dentro desse frame, deslocada para a esquerda; o restante fica transparente. A imagem é feita para ser aplicada sobre o vídeo em largura cheia, sem cálculo de posição do lado de quem consome.
 
@@ -641,7 +641,7 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
     }
   ],
   "text": {
-    "font_path": "assets/fonts/Arial-Black.ttf",
+    "font_path": "assets/fonts/Arial-Bold.ttf",
     "size": 36,
     "color": [0, 0, 0, 255],
     "offset": { "x": 0, "y": 0 },

@@ -5,13 +5,27 @@ Duas fontes são versionadas aqui, para dois consumidores diferentes:
 | Arquivo | Usada por | Onde é apontada |
 |---|---|---|
 | `Futura-Bold.ttf` | legendas do vídeo (`scripts/edit_video.py`) | `subtitles.font_path` do `template.json` |
-| `Arial-Black.ttf` | texto do comment card (`image/composer.py`) | `text.font_path` do guide em `templates/` |
+| `Arial-Bold.ttf` | texto do comment card (`image/composer.py`) | `text.font_path` do guide em `templates/` |
+| `Arial-Black.ttf` | peso alternativo do comment card, não usado pelo template atual | — |
 
-**Arial Black não existe na imagem Docker.** O Dockerfile instala só `fonts-dejavu-core`;
-a família Arial vem do pacote `ttf-mscorefonts-installer`, que exige aceite de EULA e baixa
+**A família Arial não existe na imagem Docker.** O Dockerfile instala só `fonts-dejavu-core`;
+Arial vem do pacote `ttf-mscorefonts-installer`, que exige aceite de EULA e baixa
 de fora no build. Versionar o `.ttf` aqui é o que faz o card renderizar igual em qualquer
-máquina. É uma fonte proprietária da Microsoft — a mesma consideração de licença que já
+máquina. São fontes proprietárias da Microsoft — a mesma consideração de licença que já
 vale para a Futura.
+
+## Peso do comment card
+
+O template usa **Arial Bold**. A **Black** continua versionada como alternativa: é mais
+grossa *e mais larga*, então com o mesmo texto ela quebra em mais linhas e o card fica
+mais alto. Trocar é uma linha no guide:
+
+```json
+"text": { "font_path": "assets/fonts/Arial-Black.ttf" }
+```
+
+Arial Bold e Regular pesam ~1 MB cada (a Black, 167 KB) — se um dia isso incomodar no
+repo, dá para subsetar os glifos.
 
 As legendas do vídeo (`scripts/edit_video.py`) usam **Futura Bold**, versionada aqui
 como `Futura-Bold.ttf`.

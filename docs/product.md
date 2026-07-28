@@ -226,7 +226,7 @@ Também é possível listar todos os pipelines já criados, com paginação, par
 
 ## Feature 8 — Geração de cards de comentário
 
-Além dos vídeos, o sistema consegue gerar imagens no estilo "card de comentário do TikTok" — fundo branco com bordas arredondadas, avatar no topo e o texto do comentário logo abaixo, em letra preta bem grossa (Arial Black). Esse tipo de imagem é muito usado como overlay em vídeos de reação ou para dar contexto a uma história.
+Além dos vídeos, o sistema consegue gerar imagens no estilo "card de comentário do TikTok" — fundo branco com bordas arredondadas, avatar no topo e o texto do comentário logo abaixo, em letra preta grossa (Arial Bold). Esse tipo de imagem é muito usado como overlay em vídeos de reação ou para dar contexto a uma história.
 
 A imagem sai sempre com a mesma largura do vídeo do TikTok, e só a altura muda conforme o tamanho do texto. Dentro dessa moldura, o card em si é mais estreito e fica encostado mais à esquerda: o lado direito da tela do TikTok é ocupado pelos botões de curtir, comentar e compartilhar, então o card precisa dar espaço para eles. O resto da moldura é transparente, o que permite aplicar a imagem sobre o vídeo inteiro sem ninguém precisar calcular posição.
 
