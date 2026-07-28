@@ -1,57 +1,37 @@
-"""Corte da frase gancho do início da parte 1.
+"""Se a parte já abre com a frase gancho.
 
-O gancho é narrado sozinho na abertura, sobre o card, e é **literalmente** a
-primeira frase da parte 1 — narrar a parte inteira faria o vídeo dizer a mesma
-frase duas vezes seguidas, justamente nos segundos em que a retenção se decide.
+O gancho é narrado em arquivo próprio para abrir o vídeo sobre o card. Numa
+parte que **já começa** por ele — a parte 1, por construção — esse arquivo
+sobra: quem diz a frase é a narração da própria parte, e montar os dois faria o
+vídeo repetir a frase logo em seguida.
 
-Puro: entra texto, sai texto. Quem chama decide o que fazer quando não dá para
-cortar.
+Puro: entram dois textos, sai um booleano.
 """
 import unicodedata
 
 
-def strip_hook(script: str, hook: str) -> str | None:
-    """O roteiro sem a frase gancho na frente, ou ``None`` se ela não estiver lá.
+def opens_with_hook(script: str, hook: str) -> bool:
+    """``True`` se ``script`` começa pela frase ``hook``.
 
-    Compara ignorando espaços em branco, maiúsculas e forma de acentuação. As
-    duas strings são normalizadas para NFC **inteiras**, não caractere a
-    caractere: em NFD o til de `manhã` é um caractere separado do `a`, então uma
-    comparação por caractere não teria nem o mesmo número de posições dos dois
-    lados. O texto devolvido é o roteiro em NFC, do ponto em que o gancho
-    termina — fora o prefixo cortado, nada é reescrito.
+    Compara ignorando espaço em branco, caixa e forma de acentuação. As duas
+    strings são normalizadas para NFC **inteiras**, não caractere a caractere:
+    em NFD o til de `manhã` é um caractere separado do `a`, então uma comparação
+    por caractere não teria nem o mesmo número de posições dos dois lados.
 
-    Devolve ``None`` — e não o roteiro intacto — quando:
-
-    - não há gancho, ou o roteiro não começa por ele (modelo não copiou a frase
-      literalmente, como o prompt pede);
-    - sobra só espaço em branco depois do corte (a parte inteira era o gancho).
-
-    Nos dois casos quem chama tem de saber que o corte não aconteceu, para
-    registrar o motivo: o vídeo sai com a frase repetida, que é o defeito que
-    esta função existe para evitar, e isso não pode acontecer em silêncio.
+    O prompt manda copiar a frase literalmente da primeira frase da parte 1, e é
+    isso que acontece na prática — a tolerância cobre diferença de serialização,
+    não uma reescrita. Um gancho reescrito pelo modelo dá ``False``, e o vídeo
+    volta a abrir com a narração separada, que é o comportamento seguro: a frase
+    é dita uma vez de um jeito ou de outro.
     """
-    if not hook or not hook.strip() or not script:
-        return None
+    if not script or not hook or not hook.strip():
+        return False
 
-    script = unicodedata.normalize("NFC", script)
+    script_chars = (c for c in unicodedata.normalize("NFC", script) if not c.isspace())
     hook_chars = [c.casefold() for c in unicodedata.normalize("NFC", hook) if not c.isspace()]
-    if not hook_chars:
-        return None
 
-    matched = 0
-    cut = None
-    for index, char in enumerate(script):
-        if char.isspace():
-            continue
-        if char.casefold() != hook_chars[matched]:
-            return None
-        matched += 1
-        if matched == len(hook_chars):
-            cut = index + 1
-            break
-
-    if cut is None:  # roteiro acaba no meio do gancho
-        return None
-
-    remainder = script[cut:].lstrip()
-    return remainder or None
+    for expected in hook_chars:
+        char = next(script_chars, None)
+        if char is None or char.casefold() != expected:
+            return False
+    return True

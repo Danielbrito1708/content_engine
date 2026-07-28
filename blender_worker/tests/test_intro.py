@@ -23,40 +23,103 @@ def _load_script():
 
 
 edit_video = _load_script()
-narration_start_frame = edit_video.narration_start_frame
+intro_frames = edit_video.intro_frames
+drop_specs_before = edit_video.drop_specs_before
 card_offset_y = edit_video.card_offset_y
 
 
-# --- narration_start_frame ---------------------------------------------------
+# --- intro_frames ------------------------------------------------------------
 
 
 def test_no_hook_keeps_the_templates_speech_start():
-    assert narration_start_frame(91, hook_end=None, tail_frames=9) == 91
+    assert intro_frames(91, hook_end=None, tail_frames=9) == (91, 91)
 
 
 def test_hook_end_of_zero_is_treated_as_no_hook():
-    assert narration_start_frame(91, hook_end=0, tail_frames=9) == 91
+    assert intro_frames(91, hook_end=0, tail_frames=9) == (91, 91)
 
 
 def test_narration_waits_for_a_hook_longer_than_the_intro():
     # Hook ends at 150, plus a 9-frame beat: the narration cannot start at 91.
-    assert narration_start_frame(91, hook_end=150, tail_frames=9) == 159
+    assert intro_frames(91, hook_end=150, tail_frames=9) == (159, 159)
 
 
 def test_short_hook_does_not_shorten_the_template_intro():
     # The template's own intro is the floor — a 1s hook keeps the 3s opening.
-    assert narration_start_frame(91, hook_end=30, tail_frames=9) == 91
+    assert intro_frames(91, hook_end=30, tail_frames=9) == (91, 91)
 
 
 def test_tail_is_optional():
-    assert narration_start_frame(91, hook_end=150) == 150
+    assert intro_frames(91, hook_end=150) == (150, 150)
 
 
 def test_tail_pushes_the_narration_past_the_last_hook_frame():
     # Without the tail the first narrated word would land on the frame the hook
     # ends, which reads as one run-on sentence.
-    with_tail = narration_start_frame(1, hook_end=200, tail_frames=9)
-    assert with_tail - 200 == 9
+    _, narration_start = intro_frames(1, hook_end=200, tail_frames=9)
+    assert narration_start - 200 == 9
+
+
+# --- intro_frames, hook muted ------------------------------------------------
+
+
+def test_muted_hook_lets_the_narration_start_with_the_video():
+    # The narration itself says the phrase, so there is nothing to wait for.
+    _, narration_start = intro_frames(91, hook_end=79, tail_frames=9, hook_muted=True)
+    assert narration_start == 1
+
+
+def test_muted_hook_holds_the_card_for_the_length_of_the_phrase():
+    card_end, _ = intro_frames(91, hook_end=79, tail_frames=9, hook_muted=True)
+    assert card_end == 79
+
+
+def test_muted_hook_is_not_charged_the_tail():
+    """O tail separa dois áudios; mudo há um só, e cobrá-lo esconde a legenda da
+    primeira palavra da história — medido: gancho falado acaba em 2,560s e a
+    palavra seguinte começa em 2,759s, dentro de um tail de 0,3s."""
+    no_tail, _ = intro_frames(91, hook_end=79, tail_frames=0, hook_muted=True)
+    with_tail, _ = intro_frames(91, hook_end=79, tail_frames=30, hook_muted=True)
+    assert no_tail == with_tail == 79
+
+
+def test_muted_hook_has_no_template_floor():
+    # Holding a short card to the template's 3s would cover the story's second
+    # sentence, which is already being narrated underneath it.
+    card_end, _ = intro_frames(91, hook_end=30, tail_frames=9, hook_muted=True)
+    assert card_end == 30
+
+
+def test_muted_hook_respects_a_custom_intro_start():
+    _, narration_start = intro_frames(91, hook_end=79, hook_muted=True, intro_start=4)
+    assert narration_start == 4
+
+
+def test_muting_without_a_hook_changes_nothing():
+    assert intro_frames(91, hook_end=None, hook_muted=True) == (91, 91)
+
+
+# --- drop_specs_before -------------------------------------------------------
+
+
+def _spec(start):
+    return {"start": start, "end": start + 5, "text": "x"}
+
+
+def test_specs_before_the_frame_are_dropped():
+    specs = [_spec(1), _spec(40), _spec(88), _spec(120)]
+    assert [s["start"] for s in drop_specs_before(specs, 88)] == [88, 120]
+
+
+def test_zero_keeps_every_spec():
+    specs = [_spec(1), _spec(40)]
+    assert drop_specs_before(specs, 0) == specs
+
+
+def test_surviving_specs_keep_their_own_timing():
+    # The words that stay are not shifted — the audio did not move.
+    specs = [_spec(1), _spec(100)]
+    assert drop_specs_before(specs, 50) == [_spec(100)]
 
 
 # --- card_offset_y -----------------------------------------------------------

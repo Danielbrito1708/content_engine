@@ -318,9 +318,13 @@ Uma observação para quando quiser aumentar mais: a imagem do cabeçalho já es
 
 **Vale para todas as partes da série.** Quando uma história vira duas ou três partes, todas abrem com o mesmo card e a mesma frase. É isso que faz as partes serem reconhecidas como do mesmo vídeo ao aparecerem no feed em dias diferentes.
 
-**A frase é dita uma vez só.** Como o gancho é literalmente a primeira frase do roteiro, narrar a parte 1 inteira faria o vídeo repetir a mesma frase logo em seguida — justamente nos segundos em que a pessoa decide se continua assistindo. A narração da parte 1 passa a começar na segunda frase: quem lê a frase de abertura é a voz da intro, sobre o card. O roteiro guardado não muda; o que muda é só o que vai para a narração.
+**A frase é dita uma vez só.** Como o gancho é literalmente a primeira frase do roteiro, tocar a narração separada dele na frente da parte 1 faria o vídeo repetir a mesma frase logo em seguida — justamente nos segundos em que a pessoa decide se continua assistindo. Então na parte 1 a narração é a de sempre, inteira, e é ela que diz a frase; o card entra por cima desde o primeiro segundo e sai quando a frase termina. A narração separada nem toca ali — ela serve só para o sistema saber quanto tempo a frase leva.
 
-Se por algum motivo a frase de abertura não corresponder ao começo do roteiro, ou se a narração do gancho tiver falhado, a parte 1 é narrada inteira como antes — melhor o vídeo repetir uma frase do que perdê-la.
+Enquanto o card está na tela a legenda não aparece: o card já mostra aquele texto, e os dois ficam na mesma altura do vídeo. A legenda entra na palavra seguinte, junto com o resto da história.
+
+Nas outras partes da série a frase não está na narração, então lá a narração separada toca normalmente como abertura — todas as partes começam do mesmo jeito.
+
+Se a frase de abertura não corresponder ao começo do roteiro (o texto foi reescrito, por exemplo), a parte volta a abrir com a narração separada. De um jeito ou de outro a frase é dita uma vez.
 
 **Se faltar alguma peça, o vídeo sai mesmo assim.** Se a narração do gancho falhar, ou se o card não puder ser gerado, o vídeo é montado sem a abertura, exatamente como era antes — nenhuma das duas peças vale perder o vídeo inteiro, que é o que o sistema existe para entregar.
 

@@ -110,76 +110,6 @@ async def test_hook_tts_is_narrated_at_the_narration_rate(session):
     assert sent["label"] == "hook"
 
 
-# ── o gancho não é narrado duas vezes ──────────────────────────────────────
-
-TTS_URL = "http://tts_service:8000/generate"
-REST = "O celular estava na mesa, desbloqueado."
-
-
-def _tts_ok(run_id, part=1):
-    return Response(200, json={
-        "audio_key": f"audio/{run_id}/part_{part}.mp3",
-        "srt_key": f"subs/{run_id}/part_{part}.srt",
-    })
-
-
-@respx.mock
-async def test_part_one_is_narrated_without_the_hook(session):
-    """O gancho abre o vídeo sobre o card; repeti-lo na narração é dizer duas vezes."""
-    run = await _make_run(session, hook_audio_key="audio/abc/hook.mp3")
-    part = await _make_part(session, run.id, script=f"{HOOK} {REST}")
-
-    route = respx.post(TTS_URL).mock(return_value=_tts_ok(run.id))
-
-    await _run_tts(session, part, run)
-
-    assert json.loads(route.calls.last.request.content)["text"] == REST
-
-
-@respx.mock
-async def test_part_two_keeps_its_whole_script(session):
-    """Só a parte 1 abre com o gancho — nas outras não há o que cortar."""
-    run = await _make_run(session, hook_audio_key="audio/abc/hook.mp3")
-    part_two = PipelinePart(run_id=run.id, part_number=2, script=f"{HOOK} {REST}")
-    session.add(part_two)
-    await session.commit()
-    await session.refresh(part_two)
-
-    route = respx.post(TTS_URL).mock(return_value=_tts_ok(run.id, part=2))
-
-    await _run_tts(session, part_two, run)
-
-    assert json.loads(route.calls.last.request.content)["text"] == f"{HOOK} {REST}"
-
-
-@respx.mock
-async def test_hook_stays_in_the_narration_when_there_is_no_hook_audio(session):
-    """Sem áudio do gancho não há abertura narrada: cortar apagaria a frase do vídeo."""
-    run = await _make_run(session, hook_audio_key=None)
-    part = await _make_part(session, run.id, script=f"{HOOK} {REST}")
-
-    route = respx.post(TTS_URL).mock(return_value=_tts_ok(run.id))
-
-    await _run_tts(session, part, run)
-
-    assert json.loads(route.calls.last.request.content)["text"] == f"{HOOK} {REST}"
-
-
-@respx.mock
-async def test_script_that_does_not_open_with_the_hook_is_sent_whole(session):
-    """Modelo que não copiou a frase literalmente: repetir é melhor que cortar errado."""
-    run = await _make_run(session, hook_audio_key="audio/abc/hook.mp3")
-    part = await _make_part(session, run.id, script=f"{REST} {HOOK}")
-
-    route = respx.post(TTS_URL).mock(return_value=_tts_ok(run.id))
-
-    await _run_tts(session, part, run)
-
-    assert json.loads(route.calls.last.request.content)["text"] == f"{REST} {HOOK}"
-
-
-# ── as duas keys chegam ao render ──────────────────────────────────────────
-
 def _blender_mocks(video_id, job_id):
     respx.post("http://blender_worker:8000/videos").mock(
         return_value=Response(201, json={
@@ -204,6 +134,104 @@ def _blender_mocks(video_id, job_id):
         })
     )
 
+
+# ── o gancho não é narrado duas vezes ──────────────────────────────────────
+
+REST = "O celular estava na mesa, desbloqueado."
+
+
+@respx.mock
+async def test_part_that_opens_with_the_hook_mutes_it(session, monkeypatch):
+    """A narração da parte já diz a frase; tocar o arquivo diria duas vezes."""
+    run = await _make_run(session, card_key="cards/abc.png", hook_audio_key="audio/abc/hook.mp3")
+    part = await _make_part(session, run.id, script=f"{HOOK} {REST}",
+                            audio_key="audio/abc/part_1.mp3", srt_key="subs/abc/part_1.srt")
+
+    monkeypatch.setenv("BLENDER_TEMPLATE_ID", str(uuid.uuid4()))
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", AsyncMock(return_value=[]))
+    _blender_mocks(uuid.uuid4(), uuid.uuid4())
+
+    await _run_render(session, part, run)
+
+    sent = json.loads(respx.calls[0].request.content)
+    assert sent["hook_muted"] is True
+    # O arquivo continua indo: é ele que mede quanto tempo o card fica na tela.
+    assert sent["hook_voice_key"] == "audio/abc/hook.mp3"
+    assert sent["card_key"] == "cards/abc.png"
+
+
+@respx.mock
+async def test_part_that_does_not_open_with_the_hook_plays_it(session, monkeypatch):
+    """Nas partes 2+ a frase não está na narração — o áudio abre o vídeo."""
+    run = await _make_run(session, card_key="cards/abc.png", hook_audio_key="audio/abc/hook.mp3")
+    part_two = PipelinePart(run_id=run.id, part_number=2, script=f"{REST} E continua.",
+                            audio_key="audio/abc/part_2.mp3", srt_key="subs/abc/part_2.srt")
+    session.add(part_two)
+    await session.commit()
+    await session.refresh(part_two)
+
+    monkeypatch.setenv("BLENDER_TEMPLATE_ID", str(uuid.uuid4()))
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", AsyncMock(return_value=[]))
+    _blender_mocks(uuid.uuid4(), uuid.uuid4())
+
+    await _run_render(session, part_two, run)
+
+    assert json.loads(respx.calls[0].request.content)["hook_muted"] is False
+
+
+@respx.mock
+async def test_the_condition_is_the_text_not_the_part_number(session, monkeypatch):
+    """Se o refino devolver o gancho abrindo a parte 2, ela se muta sozinha."""
+    run = await _make_run(session, hook_audio_key="audio/abc/hook.mp3")
+    part_two = PipelinePart(run_id=run.id, part_number=2, script=f"{HOOK} {REST}",
+                            audio_key="audio/abc/part_2.mp3", srt_key="subs/abc/part_2.srt")
+    session.add(part_two)
+    await session.commit()
+    await session.refresh(part_two)
+
+    monkeypatch.setenv("BLENDER_TEMPLATE_ID", str(uuid.uuid4()))
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", AsyncMock(return_value=[]))
+    _blender_mocks(uuid.uuid4(), uuid.uuid4())
+
+    await _run_render(session, part_two, run)
+
+    assert json.loads(respx.calls[0].request.content)["hook_muted"] is True
+
+
+@respx.mock
+async def test_run_without_hook_never_mutes(session, monkeypatch):
+    run = await _make_run(session, hook=None)
+    part = await _make_part(session, run.id, script=REST,
+                            audio_key="audio/abc/part_1.mp3", srt_key="subs/abc/part_1.srt")
+
+    monkeypatch.setenv("BLENDER_TEMPLATE_ID", str(uuid.uuid4()))
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", AsyncMock(return_value=[]))
+    _blender_mocks(uuid.uuid4(), uuid.uuid4())
+
+    await _run_render(session, part, run)
+
+    assert json.loads(respx.calls[0].request.content)["hook_muted"] is False
+
+
+@respx.mock
+async def test_part_one_is_narrated_whole(session):
+    """O roteiro vai inteiro ao TTS — quem evita a repetição é o mute, não um corte."""
+    run = await _make_run(session, hook_audio_key="audio/abc/hook.mp3")
+    part = await _make_part(session, run.id, script=f"{HOOK} {REST}")
+
+    route = respx.post("http://tts_service:8000/generate").mock(
+        return_value=Response(200, json={
+            "audio_key": f"audio/{run.id}/part_1.mp3",
+            "srt_key": f"subs/{run.id}/part_1.srt",
+        })
+    )
+
+    await _run_tts(session, part, run)
+
+    assert json.loads(route.calls.last.request.content)["text"] == f"{HOOK} {REST}"
+
+
+# ── as duas keys chegam ao render ──────────────────────────────────────────
 
 @respx.mock
 async def test_render_receives_card_and_hook_audio(session, monkeypatch):

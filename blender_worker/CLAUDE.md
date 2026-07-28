@@ -106,10 +106,10 @@ A bed shorter than the narration used to render a **black tail** — no error, n
 - Scene — `fps = frame_rate` **and `fps_base = 1.0`**. Blender's effective fps is `fps / fps_base`, and `fps_base` comes from the `.blend` (the current `template.blend` is `6/0.1` = 60fps). Leaving it alone makes the scene run at `frame_rate / 0.1` — 10x off, which desyncs every frame-based timing and stretches sound strips 10x.
 - Ch1 — movie strip (video file), starts at `intro_start + 1`
 - Ch2 — music strip, volume 0.2; if `music_fade_out` in timing: keyframed fade from 0.2 → 0.0 between `music_fade_out` and `frame_end`
-- Ch3 — voice strip, volume 1.0, starts at `narration_start_frame(...)` — `speech_start + 1` when there is no hook, otherwise after the hook (see **Video intro** below)
+- Ch3 — voice strip, volume 1.0, starts at `intro_frames(...)` — `speech_start + 1` without a hook, after the hook when it is played, with the video when it is muted (see **Video intro** below)
 - Ch4 — word-level text subtitles from `.srt` — see **Word-level subtitles** and **Subtitle typography** below
 - Ch5 — hook narration (optional), volume 1.0, starts at `intro_start + 1`
-- Ch6 — comment card image (optional), covering the whole intro
+- Ch6 — comment card image (optional), covering the intro; muted or not, its length comes from the hook file
 
 **`template.json` format:** see `docs/vision.md` — `frame_rate`, `frame_end`, `channels` (ch numbers), `timing` (frame offsets including optional `music_fade_out`), optional `subtitles` block.
 
@@ -119,17 +119,27 @@ A bed shorter than the narration used to render a **black tail** — no error, n
 
 ### Video intro — comment card + hook narration (`scripts/edit_video.py`)
 
-The video opens with the comment card on screen while the hook phrase is read aloud; the part's narration starts once the hook is done. Both assets are optional and independent — `Video.card_key` / `Video.hook_voice_key` (migration `d4e5f6a7b8c9`), fed by the orchestrator, `None` meaning "no intro".
+The video opens with the comment card on screen while the hook phrase is read aloud. Both assets are optional and independent — `Video.card_key` / `Video.hook_voice_key` (migration `d4e5f6a7b8c9`), fed by the orchestrator, `None` meaning "no intro".
+
+**Two modes, driven by `Video.hook_muted`** (migration `e5a6b7c8d9e0`). A part whose own narration opens with the hook — part 1, by construction — must not *play* the hook file too, or the video says the same sentence twice in a row. There the file is mounted **muted**, purely as a measure of how long that sentence takes:
+
+| | hook played (parts 2+) | hook muted (part that opens with it) |
+|---|---|---|
+| who says the phrase | `hook.mp3` | the part's own narration |
+| narration starts | after the hook + `tail` | with the video |
+| card leaves at | `max(speech_start, hook + tail)` | end of the hook, no `tail`, no floor |
+| subtitles | start with the narration | hidden while the card is up |
 
 **Public API (pure, no `bpy`):**
-- `narration_start_frame(default_start, hook_end=None, tail_frames=0) -> int` — `max(default_start, hook_end + tail_frames)`. `max` and not a sum: a short hook must not *shorten* the template's intro, so `speech_start` stays the floor. Without a hook it returns `default_start` unchanged, which is the pre-intro behaviour.
+- `intro_frames(default_start, hook_end=None, tail_frames=0, hook_muted=False, intro_start=1) -> (card_end, narration_start)` — the two numbers only diverge when muted. `max` and not a sum in the played case: a short hook must not *shorten* the template's intro, so `speech_start` stays the floor. No floor and **no tail** when muted — the tail separates two audio files and there is only one; measured on a real narration, charging it holds the card past the story's first word (spoken hook ends 2.560s, next word starts 2.759s) and that word loses its subtitle.
+- `drop_specs_before(specs, frame) -> list` — subtitle specs from `frame` on. The card and the word-level subtitle sit at the same height, so with a muted hook (narration running *under* the card) the same sentence would print twice, stacked. Survivors are not shifted: the audio did not move.
 - `card_offset_y(y_position, frame_height) -> int` — pixels from centre for `transform.offset_y`, using the same 0..1 scale as the subtitles' `y_position` (0 = bottom), clamped because an off-frame value renders as a card silently missing.
 
 **bpy-side:**
 - `add_image_strip(vse, path, channel, frame_start, frame_end)` — `fit_method="ORIGINAL"` (the PNG is authored at the exact frame width, so any fit only resamples it) and `blend_type="ALPHA_OVER"` set **explicitly**: a strip added through the API does not inherit the ALPHA_OVER the UI gives it, and without it the card's transparent margin renders as a black box over the video.
 - `add_card(scene, vse, path, channel, frame_start, frame_end, config, frame_height)` — the strip plus its `blend_alpha` fade, capped at ⅓ of the strip (same reason as the subtitle fade).
 
-**Channels** — `channels.hook` (5) and `channels.card` (6) come from `template.json` but **default in code**. `template.json` lives in the bucket: a template published before this feature has neither key, and without the default the card would land on the background's channel and cover the whole video. The card sits above the subtitles because the two never coexist — subtitles start with the narration, by which time the card is gone.
+**Channels** — `channels.hook` (5) and `channels.card` (6) come from `template.json` but **default in code**. `template.json` lives in the bucket: a template published before this feature has neither key, and without the default the card would land on the background's channel and cover the whole video. The card sits above the subtitles: with a played hook the two never coexist (subtitles start with the narration, by which time the card is gone), and with a muted one the subtitles under the card are dropped rather than stacked.
 
 **Template config** (optional `card` block):
 ```json
@@ -137,11 +147,13 @@ The video opens with the comment card on screen while the hook phrase is read al
 ```
 `tail_seconds` is the silence between the hook's last word and the narration's first — without it the two run together as one sentence.
 
-`render_job` downloads both keys into the tmpdir and adds them to `job_config.json` under `assets.card` / `assets.hook`; a missing key is simply absent from the dict.
+`render_job` downloads both keys into the tmpdir and adds them to `job_config.json` under `assets.card` / `assets.hook`, plus `hook_muted` at the top level; a missing key is simply absent from the dict. The hook file is downloaded either way — muted or not, it is what the card is measured by. It is muted (`strip.mute = True`), not removed, so the assembled `.blend` still shows where the card's length comes from.
 
-Verified on a real render (Blender 4.2, 1080×1920): 2.60s hook → narration at 3.03s (the template floor won), card from 0 to 3.00s; mixdown shows voice at ~-22 dBFS over 0–2.5s, -37 dBFS in the gap (music bed only) and ~-19 dBFS from 3.0s.
+Verified on real renders (Blender 4.2, 1080x1920):
+- **played**: 2.60s hook, narration at 3.03s (the template floor won), card 0-3.00s; mixdown shows voice at ~-22 dBFS over 0-2.5s, -37 dBFS in the gap (music bed only) and ~-19 dBFS from 3.0s.
+- **muted**: narration from 0.03s, card 0-2.60s, hook strip present with `mute=True`, first subtitle at 2.77s (the story's first word — the hook's own words hidden).
 
-- Tests: `tests/test_intro.py` (18 tests, marked `no_db` — the strip creation is exercised with fakes that record what the script asks bpy for), plus 3 in `tests/test_worker.py` for the asset plumbing.
+- Tests: `tests/test_intro.py` (27 tests, marked `no_db` — the strip creation is exercised with fakes that record what the script asks bpy for), plus 5 in `tests/test_worker.py` for the asset plumbing and the flag.
 
 ### Word-level subtitles (`scripts/edit_video.py`)
 

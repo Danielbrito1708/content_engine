@@ -156,9 +156,9 @@ O gancho sempre foi **regra de escrita** no prompt de refino ("a primeira frase 
 
 **Regra de derivação.** Fim de frase = pontuação terminal (`. ! ? …`, mais aspas/parênteses de fechamento) **seguida de espaço** — exigir o espaço é o que impede `R$ 3.5 mil` de virar fim de frase. Sem pontuação terminal, a parte inteira seria o "gancho", então há um teto de 200 caracteres com corte na última palavra inteira. O teto existe só para a derivação; gancho vindo do modelo é usado como veio.
 
-**O gancho não é removido do roteiro.** `parts[0]` continua abrindo com ele e `PipelinePart.script` guarda o roteiro inteiro — o campo `hook` é uma *cópia identificada*, não um recorte.
+**O gancho não é removido de lugar nenhum.** `parts[0]` continua abrindo com ele, `PipelinePart.script` guarda o roteiro inteiro e a narração da parte é gerada com o texto completo — o campo `hook` é uma *cópia identificada*, não um recorte.
 
-**Mas ele é removido da narração da parte 1.** Desde que a intro passou a montar o áudio do gancho na frente da narração (ver "Abertura do vídeo"), narrar a parte inteira faria o vídeo dizer a mesma frase duas vezes seguidas — exatamente nos segundos em que a retenção se decide. O corte é feito **no texto, antes do TTS** (`_narration_text` → `strip_hook`), não no áudio: o roteiro é o dado, o áudio é o produto, e mexer no texto não exige casar o gancho com o SRT palavra a palavra para achar onde cortar a onda.
+**Quem não é montado é o áudio.** Na parte que já abre pela frase (a parte 1, por construção), tocar o `hook.mp3` na frente da narração faria o vídeo dizer a mesma coisa duas vezes seguidas, nos segundos em que a retenção se decide. Então nessa parte o arquivo entra **mudo**, só medindo por quanto tempo o card fica na tela, e quem diz a frase é a narração inteira. Ver "Abertura do vídeo" → "O gancho é dito uma vez só".
 
 ### Áudio do gancho
 
@@ -466,19 +466,24 @@ Medido no render de validação: gancho de 2,60s, `tail` de 0,3s → narração 
 
 `card.y_position` usa a mesma escala do `y_position` da legenda (fração da altura do frame, 0 = base), aplicada como `transform.offset_y` em pixels a partir do centro; clampada a 0..1 porque um valor fora do frame vira card sumido sem erro. O fade é limitado a ⅓ do strip pelo mesmo motivo que o da legenda — um fade maior que o strip nunca chegaria a opacidade cheia.
 
-### O gancho é dito uma vez só (`hook_text.strip_hook`)
+### O gancho é dito uma vez só (`hook_muted`)
 
-O gancho é **literalmente** a primeira frase da parte 1, então a intro e a narração diriam a mesma coisa em sequência. `_narration_text(part, run)` manda ao TTS a parte 1 sem essa frase; as demais partes vão inteiras, porque nelas não há o que cortar.
+O gancho é **literalmente** a primeira frase da parte 1, então montar o `hook.mp3` na frente dela faria a abertura e a narração dizerem a mesma coisa em sequência. `_hook_is_muted(part, run)` marca essa parte, e o render entra num modo diferente:
 
-**Corta no texto, não no áudio.** Um corte no áudio exigiria casar o gancho com o SRT word-level para achar o timestamp, e depois trimar o strip e deslocar a legenda — três lugares para errar sincronia. No texto é comparação de prefixo, e o áudio e a legenda já nascem certos (a legenda é transcrita do próprio áudio).
+| | gancho tocado (partes 2+) | gancho mudo (parte que abre com ele) |
+|---|---|---|
+| quem narra a frase | `hook.mp3` | a narração da própria parte |
+| início da narração | depois do gancho + `tail` | junto com o vídeo |
+| card sai em | `max(speech_start, gancho + tail)` | fim do gancho, sem `tail` e sem piso |
+| legenda | começa com a narração | escondida enquanto o card está na tela |
 
-**A comparação ignora espaço em branco, caixa e forma de acentuação** (NFC/NFD normalizados na string inteira — em NFD o til de `manhã` é um caractere separado, e uma comparação caractere a caractere nem teria o mesmo número de posições dos dois lados). O prompt manda copiar a frase literalmente; a tolerância cobre a diferença de serialização, não uma reescrita.
+**O arquivo continua sendo baixado e montado, mudo.** É ele que diz quanto tempo a frase leva para ser falada — mesma voz, mesmo `rate`, mesmo texto. Medido num render real: a narração termina o gancho em 2,560s e o `hook.mp3` dura 2,600s, 40 ms de diferença. Não é removido do timeline (`strip.mute = True`, não `remove()`) para que o `.blend` montado continue mostrando de onde sai a duração do card.
 
-**`strip_hook` devolve `None` em vez do roteiro intacto** quando o gancho não abre a parte, ou quando sobraria só espaço em branco (a parte inteira era o gancho). Quem chama registra `warning` e narra o roteiro completo: o vídeo sai com a frase repetida — o defeito que isto existe para evitar — e isso não pode acontecer em silêncio.
+**A condição é o texto da parte, não o número dela** (`opens_with_hook`, puro): se um dia o refino devolver o gancho abrindo a parte 2, ela se comporta como a parte 1 sozinha. A comparação ignora espaço em branco, caixa e forma de acentuação (NFC/NFD normalizados na string inteira — em NFD o til de `manhã` é um caractere separado, e comparar caractere a caractere nem teria o mesmo número de posições dos dois lados). Um gancho que o modelo reescreveu dá `False`, e o vídeo volta a abrir com o áudio próprio: a frase é dita uma vez de um jeito ou de outro.
 
-**Só corta quando o gancho vai mesmo para a abertura** (`hook_audio_key` preenchido). O TTS do gancho é degradável: sem ele não há intro narrada, e cortar assim mesmo apagaria a frase do vídeo inteiro em vez de repeti-la.
+**A legenda some enquanto o card está na tela** (`drop_specs_before`). No modo mudo a narração roda *sob* o card, e o card e a legenda ocupam a mesma altura do frame — sem isso a mesma frase apareceria escrita duas vezes, empilhada. As palavras que sobram não são deslocadas: o áudio não se moveu.
 
-**`part.script` não é reescrito.** O roteiro continua sendo o roteiro; o corte é decisão de montagem, e fica visível no log (`hook removed from part 1 narration`).
+**Sem `tail` no modo mudo.** O `tail` separa dois áudios diferentes, e aqui há um só. Cobrá-lo custa a legenda da primeira palavra da história: medido, o gancho falado acaba em 2,560s e a palavra seguinte começa em 2,759s — dentro dos 0,3s de `tail`, que segurariam o card por cima dela. Pelo mesmo motivo não há piso do template: o card acompanha uma frase que já está sendo dita, e segurá-lo além disso cobriria a segunda frase da história.
 
 ### Degradação
 

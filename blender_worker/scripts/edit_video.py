@@ -347,24 +347,55 @@ def add_sound_strip(vse, path, channel, frame_start):
     )
 
 
-def narration_start_frame(default_start, hook_end=None, tail_frames=0):
-    """Frame where the part's narration starts.
+def intro_frames(default_start, hook_end=None, tail_frames=0, hook_muted=False, intro_start=1):
+    """`(card_end, narration_start)` — where the card leaves and the story begins.
 
-    Without a hook this is the template's own `speech_start` — the fixed intro
-    every render had before there was anything to put in it. With one, the
-    narration has to wait for the hook to finish speaking, plus a beat: the hook
-    is read over the card and the story only begins after it.
+    Three shapes, and the two numbers only diverge in the third:
 
-    `max` and not a plain sum, so a hook shorter than the template's intro does
-    not *shorten* the intro — the template's number stays the floor, which is
-    what keeps a run without a hook and a run with a very short one framed the
-    same way.
+    - **No hook audio.** The card (if any) covers the template's fixed intro and
+      the narration starts there, exactly as every render did before the intro
+      existed.
+    - **Hook played.** The card holds until the hook finishes speaking, plus a
+      beat, and the narration waits for it. `max` and not a plain sum: a hook
+      shorter than the template's intro must not *shorten* the opening, so
+      `speech_start` stays the floor.
+    - **Hook muted** — the part's own narration opens with that same sentence, so
+      the file is there only to say how long it takes to say it. The narration
+      starts with the video and the card holds for exactly the length of the
+      phrase: no floor and **no tail**.
 
-    Pure — frame numbers in, frame number out.
+    The tail is what separates two different audio files, and a muted hook has
+    only one — the narration runs straight through. Charging it anyway costs the
+    story's first word its subtitle: measured on a real narration, the spoken
+    hook ends at 2.560s and the next word starts at 2.759s, so a 0.3s tail holds
+    the card past it and the word gets hidden with the hook's own. Same reason
+    there is no floor: the card is tracking a sentence that is already being
+    spoken, and holding it longer would cover the story's second one.
+
+    Pure — frame numbers in, frame numbers out.
     """
     if not hook_end:
-        return default_start
-    return max(default_start, hook_end + tail_frames)
+        return default_start, default_start
+
+    if hook_muted:
+        return hook_end, intro_start
+    hook_out = hook_end + tail_frames
+    return max(default_start, hook_out), max(default_start, hook_out)
+
+
+def drop_specs_before(specs, frame):
+    """Subtitle specs that start at or after `frame`.
+
+    While the card is up it *is* the text: the card and the word-level subtitle
+    sit at the same height, so letting the narration's first words through would
+    stack the same sentence on top of itself. Only used when the hook is muted —
+    that is the only case where narration and card overlap in time.
+
+    Pure.
+    """
+    if not frame:
+        return list(specs)
+    return [spec for spec in specs if spec["start"] >= frame]
 
 
 def card_offset_y(y_position, frame_height):
@@ -537,14 +568,18 @@ def import_subtitles(
     rise_offset=DEFAULT_RISE_OFFSET,
     style=None,
     frame_width=None,
+    hide_before=0,
 ):
-    specs = build_subtitle_timeline(
-        parse_srt(srt_path),
-        frame_rate,
-        frame_offset,
-        fade_frames,
-        max_hold_seconds,
-        rise_frames,
+    specs = drop_specs_before(
+        build_subtitle_timeline(
+            parse_srt(srt_path),
+            frame_rate,
+            frame_offset,
+            fade_frames,
+            max_hold_seconds,
+            rise_frames,
+        ),
+        hide_before,
     )
 
     style = style or resolve_subtitle_style()
@@ -640,20 +675,31 @@ def main():
     card_config = timing.get("card", {})
     intro_start = t["intro_start"] + 1
 
+    # A part whose own narration opens with the hook keeps the file only as a
+    # measure of how long that sentence takes: playing it too would say the same
+    # phrase twice in a row.
+    hook_muted = bool(config.get("hook_muted"))
+
     hook_strip = None
     if assets.get("hook"):
         hook_strip = add_sound_strip(
             vse, assets["hook"], channels.get("hook", DEFAULT_HOOK_CHANNEL), intro_start
         )
         hook_strip.volume = 1.0
+        # Muted, not removed: the strip is what carries the duration, and leaving
+        # it on the timeline keeps the assembled .blend readable — the card's
+        # length is visibly tied to something.
+        hook_strip.mute = hook_muted
 
     tail_frames = round(
         float(card_config.get("tail_seconds", DEFAULT_HOOK_TAIL_SECONDS)) * frame_rate
     )
-    speech_start = narration_start_frame(
+    card_end, speech_start = intro_frames(
         t["speech_start"] + 1,
         hook_strip.frame_final_end if hook_strip else None,
         tail_frames,
+        hook_muted=hook_muted,
+        intro_start=intro_start,
     )
 
     if assets.get("card"):
@@ -663,7 +709,7 @@ def main():
             assets["card"],
             channels.get("card", DEFAULT_CARD_CHANNEL),
             intro_start,
-            speech_start,
+            card_end,
             card_config,
             scene.render.resolution_y,
         )
@@ -686,6 +732,10 @@ def main():
         rise_offset=subs.get("rise_offset", DEFAULT_RISE_OFFSET),
         style=resolve_subtitle_style(subs),
         frame_width=scene.render.resolution_x,
+        # Only ever non-zero with a muted hook: that is the one case where the
+        # narration runs while the card is still up, and the two would print the
+        # same sentence at the same height.
+        hide_before=card_end if hook_muted else 0,
     )
 
     bed_channels = {channels["music"], channels["video"]}

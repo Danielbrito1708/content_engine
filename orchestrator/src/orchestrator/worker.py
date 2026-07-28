@@ -13,7 +13,7 @@ from src.orchestrator.clients.tiktok import BufferQueueFull, TikTokClient
 from src.orchestrator.clients.tts import TTSClient
 from src.orchestrator.db.engine import AsyncSessionLocal
 from src.orchestrator.db.models import PartStatus, PipelinePart, PipelineRun, PipelineStatus
-from src.orchestrator.hook_text import strip_hook
+from src.orchestrator.hook_text import opens_with_hook
 from src.orchestrator.storage.client import list_keys
 
 log = get_logger(__name__)
@@ -184,7 +184,7 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | No
     await session.commit()
 
     audio_key, srt_key = await TTSClient().generate(
-        text=_narration_text(part, run),
+        text=part.script,
         run_id=str(run.id),
         part_number=part.part_number,
         rate=rate,
@@ -197,36 +197,23 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | No
     log.info("audio ready", run_id=str(run.id), part=part.part_number, audio=audio_key, srt=srt_key)
 
 
-def _narration_text(part: PipelinePart, run: PipelineRun) -> str:
-    """O texto que vai ao TTS — a parte 1 sem a frase gancho.
+def _hook_is_muted(part: PipelinePart, run: PipelineRun) -> bool:
+    """Se o áudio do gancho entra só como duração, sem ser tocado.
 
-    O gancho é a primeira frase da parte 1 e já é narrado sozinho na abertura,
-    sobre o card. Narrar a parte inteira faz o vídeo dizer a mesma frase duas
-    vezes seguidas, nos segundos em que a retenção se decide.
+    A parte 1 abre pela frase gancho — é de lá que ela é copiada. Tocar o
+    arquivo do gancho na frente dessa narração faria o vídeo dizer a mesma frase
+    duas vezes seguidas, nos segundos em que a retenção se decide. Então nessa
+    parte quem narra a frase é a narração inteira, como sempre foi, e o áudio
+    separado serve só para o render saber por quanto tempo o card fica na tela.
 
-    Só corta quando o gancho **vai mesmo** para a abertura (`hook_audio_key`
-    preenchido). Sem esse áudio não há intro narrada, e cortar aqui apagaria o
-    gancho do vídeo inteiro — o oposto do que se quer. As duas etapas são
-    degradáveis de propósito, então esse caso não é hipotético.
+    Nas partes 2+ o gancho não está na narração, e aí o arquivo é tocado de
+    verdade: é o que faz todas as partes da série abrirem igual.
 
-    `part.script` não é reescrito: o roteiro continua sendo o roteiro, e o corte
-    é decisão de montagem. A legenda não desalinha porque é transcrita do áudio,
-    não do script.
+    A condição é o texto da parte, não o número dela — se um dia o refino
+    devolver o gancho no começo da parte 2, ela se comporta como a parte 1
+    sozinha.
     """
-    if part.part_number != 1 or not run.hook or not run.hook_audio_key:
-        return part.script
-
-    stripped = strip_hook(part.script, run.hook)
-    if stripped is None:
-        log.warning(
-            "hook not found at the start of part 1, narration will repeat it",
-            run_id=str(run.id),
-            hook=run.hook[:60],
-        )
-        return part.script
-
-    log.info("hook removed from part 1 narration", run_id=str(run.id), chars_cut=len(part.script) - len(stripped))
-    return stripped
+    return bool(run.hook) and opens_with_hook(part.script, run.hook)
 
 
 async def background_key_for(run_id: uuid.UUID, part_number: int) -> str:
@@ -265,6 +252,7 @@ async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
         # cara à série inteira. Qualquer uma das duas pode ser nula.
         card_key=run.card_key,
         hook_voice_key=run.hook_audio_key,
+        hook_muted=_hook_is_muted(part, run),
     )
 
     template_id = uuid.UUID(settings.env.blender_template_id)

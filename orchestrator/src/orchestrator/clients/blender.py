@@ -21,6 +21,7 @@ class BlenderClient:
         subtitle_key: str,
         card_key: str | None = None,
         hook_voice_key: str | None = None,
+        hook_muted: bool = False,
     ) -> uuid.UUID:
         resp = await request(
             "POST",
@@ -33,6 +34,7 @@ class BlenderClient:
                 "subtitle_key": subtitle_key,
                 "card_key": card_key,
                 "hook_voice_key": hook_voice_key,
+                "hook_muted": hook_muted,
             },
         )
         return uuid.UUID(resp.json()["id"])

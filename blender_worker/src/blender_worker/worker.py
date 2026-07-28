@@ -80,6 +80,7 @@ async def render_job(job_id: uuid.UUID) -> None:
                         "subtitles": subtitle_path,
                         **intro_assets,
                     },
+                    "hook_muted": video.hook_muted,
                     "timing": timing,
                 }, f)
 
