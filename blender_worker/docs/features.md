@@ -645,7 +645,7 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
     "size": 36,
     "color": [0, 0, 0, 255],
     "offset": { "x": 0, "y": 0 },
-    "line_spacing": 10
+    "line_spacing": 2
   }
 }
 ```
@@ -669,7 +669,7 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
 | `assets[].size` | Tamanho que o asset ocupará — a imagem é redimensionada |
 | `assets[].position` | Posição dentro da linha de assets, no topo do card |
 | `text.font_path` | Caminho do `.ttf`, relativo ao `ROOT_DIR` |
-| `text.line_spacing` | Espaço entre linhas do texto quebrado |
+| `text.line_spacing` | Espaço **extra** entre linhas, somado à altura natural da linha da fonte (não é o total) |
 
 ### Canvas e card são coisas diferentes
 
