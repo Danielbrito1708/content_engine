@@ -61,7 +61,8 @@ The app requires a `.env` file at the project root. Copy from `.env.example` and
 - `db/engine.py` — async SQLAlchemy engine + `AsyncSessionLocal` + `get_session()` dependency. Reads `DATABASE_URL` from env at import time (safe because `app.py` triggers bootstrap first).
 - `schemas/job.py` — `JobCreate` (request) and `JobResponse` (response) Pydantic models.
 - `schemas/image.py` — `ImageRenderRequest` and `ImageRenderResponse` Pydantic models.
-- `storage/client.py` — `get_s3_client()` returns a boto3 S3 client pointed at MinIO via env vars. Also has `download_file` and `upload_file` async helpers.
+- `api/routes/templates.py` — `POST /templates`, `GET /templates/{id}`, `GET /templates/{id}/config`. See `## Features`.
+- `storage/client.py` — `get_s3_client()` returns a boto3 S3 client pointed at MinIO via env vars. Also has `download_file`, `download_bytes` and `upload_file` async helpers.
 - `worker.py` — `render_job(job_id)` async function: downloads all assets + template from MinIO into a tmpdir, runs Blender twice (assembly via `scripts/edit_video.py`, then render with `-a`), uploads the MP4 output, updates status to completed/failed. Called via FastAPI `BackgroundTasks`.
 - `scripts/edit_video.py` — Python script that runs **inside** Blender's interpreter (`blender -b template.blend -P edit_video.py -- job_config.json`). Sets up the VSE: movie strip (ch1), music strip at volume 0.2 with fade-out keyframes (ch2), voice strip at volume 1.0 (ch3), word-level text subtitles from `.srt` (ch4). Saves `.blend` and sets render output to the MP4 path. `bpy` is imported inside `main()` only, and `main()` is behind an `if __name__ == "__main__"` guard, so the pure helpers are importable (and tested) outside Blender.
 - `image/text.py` — word wrap + text block height calculation. See `## Features`.
@@ -178,6 +179,21 @@ Without it, raising the body size clips long words, and the clipping is **silent
 **Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 160, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. At 160 the auto-fit touches only 2 of 178 words on a real narration. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
 
 - Tests: `tests/test_subtitles.py` (35 tests total, marked `no_db` — no docker compose, no Blender needed).
+
+### Template config endpoint (`src/blender_worker/api/routes/templates.py`)
+
+`GET /templates/{id}/config` — downloads the template's `json_key` from MinIO and returns the parsed `template.json` as a JSON object.
+
+Exists so **upstream services can read template settings before render time**. The orchestrator needs `narration.rate` to call the `tts_service`, which happens long before a job reaches this worker. Serving it here keeps template ownership in one place — the orchestrator never touches MinIO or parses `template.json` itself.
+
+- `404` — template not registered
+- `502` — MinIO read failed, body is not valid JSON, or the JSON is not an object
+
+`storage/client.py` gained `download_bytes(bucket, key) -> bytes` for this (the existing `download_file` writes to disk, pointless for a config read).
+
+Note the worker's own render path still downloads `template.json` from MinIO directly — it needs the file on disk for Blender anyway.
+
+- Tests: `tests/test_templates.py` (13 tests; `download_bytes` mocked, DB required).
 
 ### Image text rendering (`src/blender_worker/image/text.py`)
 

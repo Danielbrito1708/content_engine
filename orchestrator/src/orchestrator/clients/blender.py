@@ -42,6 +42,11 @@ class BlenderClient:
         )
         return uuid.UUID(resp.json()["id"])
 
+    async def get_template_config(self, template_id: uuid.UUID) -> dict:
+        """The template's parsed `template.json` (narration, timing, subtitles, ...)."""
+        resp = await request("GET", f"{self._base}/templates/{template_id}/config", timeout=30)
+        return resp.json()
+
     async def get_job_status(self, job_id: uuid.UUID) -> dict:
         resp = await request("GET", f"{self._base}/jobs/{job_id}", timeout=10)
         return resp.json()

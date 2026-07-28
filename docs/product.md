@@ -106,7 +106,11 @@ Trocar o motor gratuito pelo Azure não muda a voz nem o ritmo da narração —
 
 A narração sai acelerada em relação ao ritmo natural da voz. O padrão é 15% mais rápido — o suficiente para dar o ritmo apressado que o formato do TikTok pede, sem que a fala soe artificial ou fique difícil de acompanhar. A voz continua com o tom normal: ela fala mais rápido, não fica mais aguda, porque a aceleração é feita pelo próprio motor de voz e não por acelerar o arquivo depois de pronto.
 
-A velocidade é configurável e aceita tanto acelerar quanto desacelerar. Também é possível voltar ao ritmo original da voz, se um tipo de conteúdo pedir uma narração mais calma. Como o vídeo fica mais curto quando a fala é mais rápida, acelerar também ajuda roteiros na fronteira dos 60 segundos a caberem em um único vídeo em vez de serem divididos em partes.
+**A velocidade faz parte do template do vídeo.** Cada template — que já define o visual, a fonte da legenda e o ritmo da edição — define também quão rápido a voz fala. Assim um template de drama pode ter narração mais pausada e um de curiosidades rápidas pode ser mais acelerado, sem que seja preciso mexer em configuração de servidor ou reiniciar nada: basta editar o template. Um template que não diz nada sobre velocidade simplesmente usa o padrão do sistema, então templates antigos continuam funcionando.
+
+A velocidade aceita tanto acelerar quanto desacelerar, e também voltar ao ritmo original da voz, se um tipo de conteúdo pedir uma narração mais calma. Como o vídeo fica mais curto quando a fala é mais rápida, acelerar também ajuda roteiros na fronteira dos 60 segundos a caberem em um único vídeo em vez de serem divididos em partes.
+
+Se o template não puder ser lido por algum motivo, o sistema não interrompe a produção do vídeo — ele usa a velocidade padrão e registra o ocorrido. Velocidade de narração é uma escolha estética, e não vale perder um vídeo inteiro por causa dela.
 
 ---
 
@@ -250,7 +254,7 @@ O sistema é configurável em vários aspectos sem precisar alterar o código:
 
 **Voz:** qual voz e qual motor de TTS usar. Padrão: voz feminina jovem brasileira, motor Azure (o gratuito continua disponível para quem não quiser configurar uma chave, ao custo da qualidade).
 
-**Velocidade da narração:** quanto mais rápido (ou mais devagar) a voz fala em relação ao ritmo natural dela. Padrão: 15% mais rápido.
+**Velocidade da narração:** quanto mais rápido (ou mais devagar) a voz fala em relação ao ritmo natural dela. Definida no template do vídeo, junto com o resto do visual. Padrão: 15% mais rápido.
 
 **Volume da narração:** o nível de audição padronizado de todas as narrações, e a opção de desligar essa padronização.
 

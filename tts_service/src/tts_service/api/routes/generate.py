@@ -16,9 +16,17 @@ log = get_logger(__name__)
 
 @router.post("/generate", response_model=GenerateResponse, status_code=201)
 async def generate(body: GenerateRequest) -> GenerateResponse:
-    log.info("tts request", run_id=body.run_id, part=body.part_number, chars=len(body.text))
+    rate = body.rate or settings.env.tts_rate
+    log.info(
+        "tts request",
+        run_id=body.run_id,
+        part=body.part_number,
+        chars=len(body.text),
+        rate=rate,
+        rate_source="request" if body.rate else "env",
+    )
 
-    client = get_tts_client()
+    client = get_tts_client(rate=rate)
 
     try:
         audio_bytes = await client.generate(body.text)
