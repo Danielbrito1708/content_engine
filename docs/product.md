@@ -226,11 +226,11 @@ Também é possível listar todos os pipelines já criados, com paginação, par
 
 ## Feature 8 — Geração de cards de comentário
 
-Além dos vídeos, o sistema consegue gerar imagens no estilo "card de comentário do TikTok" — fundo branco com bordas arredondadas, avatar no topo e o texto do comentário logo abaixo, em letra preta grossa (Arial Bold). Esse tipo de imagem é muito usado como overlay em vídeos de reação ou para dar contexto a uma história.
+Além dos vídeos, o sistema consegue gerar imagens no estilo "card de comentário do TikTok" — fundo branco com bordas arredondadas, um cabeçalho no topo com a foto de perfil, o nome e os selos do autor, e o texto do comentário logo abaixo, em letra preta grossa (Arial Bold). Esse tipo de imagem é muito usado como overlay em vídeos de reação ou para dar contexto a uma história.
 
 A imagem sai sempre com a mesma largura do vídeo do TikTok, e só a altura muda conforme o tamanho do texto. Dentro dessa moldura, o card em si é mais estreito e fica encostado mais à esquerda: o lado direito da tela do TikTok é ocupado pelos botões de curtir, comentar e compartilhar, então o card precisa dar espaço para eles. O resto da moldura é transparente, o que permite aplicar a imagem sobre o vídeo inteiro sem ninguém precisar calcular posição.
 
-O visual do card é controlado por um arquivo de template que define: a largura e a posição do card, a cor e o arredondamento do fundo, o tamanho do avatar, a fonte, o tamanho e o espaçamento do texto, e o espaçamento interno. Todos esses parâmetros podem ser ajustados sem alterar o código.
+O visual do card é controlado por um arquivo de template que define: a largura e a posição do card, a cor e o arredondamento do fundo, o tamanho e a imagem do cabeçalho, a fonte, o tamanho e o espaçamento do texto, e o espaçamento interno. Todos esses parâmetros podem ser ajustados sem alterar o código.
 
 O texto do comentário é quebrado automaticamente em múltiplas linhas para caber na largura definida. A altura do card cresce de acordo com o texto — não há limite de caracteres imposto pelo sistema.
 

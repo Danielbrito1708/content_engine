@@ -387,6 +387,20 @@ def test_shipped_template_font_is_vendored():
     assert (root / guide.text.font_path).is_file()
 
 
+def test_shipped_template_asset_keeps_the_source_aspect_ratio():
+    """compose() hard-resizes to spec.size — a mismatched aspect squashes the image silently."""
+    root = Path(__file__).parents[1]
+    guide = load_guide(root / "templates" / "comment_default.json")
+    spec = guide.assets[0]
+
+    # the repo keeps a copy of the uploaded asset under the same relative path as its storage key
+    source = Image.open(root / spec.minio_key)
+
+    assert spec.size.width / spec.size.height == pytest.approx(
+        source.width / source.height, rel=0.01
+    )
+
+
 def test_line_spacing_zero_is_honoured_not_treated_as_unset(font, tmp_path):
     """The shipped template asks for 0. A falsy check anywhere would silently restore the default."""
     guide_file = tmp_path / "guide.json"

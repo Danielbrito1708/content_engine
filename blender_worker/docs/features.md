@@ -635,8 +635,8 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
   "assets": [
     {
       "id": "avatar",
-      "minio_key": "assets/avatar.png",
-      "size": { "width": 72, "height": 72 },
+      "minio_key": "assets/perfil-azul.png",
+      "size": { "width": 417, "height": 61 },
       "position": { "x": 0, "y": 0 }
     }
   ],
@@ -666,7 +666,7 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
 | `background.shadow.spread` | Cresce (ou encolhe, se negativo) a sombra além do card antes do desfoque |
 | `background.shadow.offset` | Para que lado a sombra cai. `y` positivo = luz vindo de cima |
 | `assets[].id` | Identificador; usado para mapear ao `assets` do request |
-| `assets[].size` | Tamanho que o asset ocupará — a imagem é redimensionada |
+| `assets[].size` | Tamanho que o asset ocupará. A imagem é redimensionada **para essas dimensões exatas**, sem preservar proporção — um aspecto diferente do arquivo achata a imagem sem erro nenhum |
 | `assets[].position` | Posição dentro da linha de assets, no topo do card |
 | `text.font_path` | Caminho do `.ttf`, relativo ao `ROOT_DIR` |
 | `text.line_spacing` | Espaço **extra** entre linhas, somado à altura natural da linha da fonte (não é o total) |

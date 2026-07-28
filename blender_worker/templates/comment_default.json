@@ -21,8 +21,8 @@
   "assets": [
     {
       "id": "avatar",
-      "minio_key": "assets/avatar.png",
-      "size": { "width": 72, "height": 72 },
+      "minio_key": "assets/perfil-azul.png",
+      "size": { "width": 417, "height": 61 },
       "position": { "x": 0, "y": 0 }
     }
   ],

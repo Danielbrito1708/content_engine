@@ -272,7 +272,7 @@ Medido: um fundo de 90s sob narração de 68s renderizava 22s de ar morto depois
 
 ## Cards de comentário (`blender_worker`)
 
-O `POST /images/render` compõe um PNG estilo "comentário do TikTok" com Pillow (não Blender): retângulo arredondado, avatar no topo e texto quebrado automaticamente. O layout inteiro vem de um guide JSON versionado em `blender_worker/templates/`, então ajustar o visual não é mudança de código.
+O `POST /images/render` compõe um PNG estilo "comentário do TikTok" com Pillow (não Blender): retângulo arredondado, cabeçalho no topo e texto quebrado automaticamente. O layout inteiro vem de um guide JSON versionado em `blender_worker/templates/`, então ajustar o visual não é mudança de código.
 
 ### Canvas fixo, card móvel
 
@@ -300,6 +300,14 @@ Daí `check_card_fits()`: um card grudado demais numa borda cortaria o desfoque 
 **A sombra é clipada pela silhueta do card.** Com o card branco opaco isso não muda nada visível, mas a regra vale para qualquer `background.color` translúcido: sem clip a sombra atravessa e escurece o card de forma desigual, mais forte do lado para onde o offset aponta. O `box-shadow` do CSS clipa da mesma forma, e é nele que o card se espelha.
 
 **Desligada por padrão no schema.** `Shadow.enabled` é `False`, então um guide sem o bloco renderiza a mesma geometria de sempre. Só o `comment_default.json` liga a sombra explicitamente.
+
+### Cabeçalho do card
+
+O topo do card é **um único PNG transparente** com a foto de perfil, o nome e os selos do autor já compostos — não um avatar redondo que o código monta junto de um texto de nome. O guide trata isso como um asset comum na linha do topo, então trocar a identidade do comentário é trocar um arquivo, sem tocar em layout.
+
+O asset é guardado em **2×** (417×61 lógicos → 834×122 no arquivo), que é exatamente o que o `compose` pede com `canvas.supersample: 2`. Assim não há reamostragem intermediária: o arquivo entra no tamanho de device pixel e só é reduzido uma vez, junto com o card inteiro, no downsample final.
+
+**`assets[].size` é um resize duro, sem preservar proporção.** Enquanto o slot era um quadrado de 72×72 isso era inofensivo; com uma faixa larga, um tamanho de aspecto errado achata a imagem e nada falha. `test_shipped_template_asset_keeps_the_source_aspect_ratio` compara o aspecto do spec com o do arquivo versionado em `blender_worker/assets/`.
 
 ### Tipografia e antialiasing
 
