@@ -30,6 +30,8 @@ resolve_subtitle_style = edit_video.resolve_subtitle_style
 apply_text_style = edit_video.apply_text_style
 check_movie_strip = edit_video.check_movie_strip
 content_end_frame = edit_video.content_end_frame
+background_repeats = edit_video.background_repeats
+fit_font_size = edit_video.fit_font_size
 
 
 def _entry(start, end, text):
@@ -382,3 +384,109 @@ def test_content_end_frame_falls_back_on_an_empty_timeline():
 def test_content_end_frame_uses_the_longest_content_strip():
     strips = [_FakeChanStrip(3, 900), _FakeChanStrip(4, 1500), _FakeChanStrip(4, 1200)]
     assert content_end_frame(strips, bed_channels={1, 2}, fallback=0) == 1500
+
+
+# --- vertical position -----------------------------------------------------
+
+
+def test_default_subtitle_position_is_the_centre_of_the_frame():
+    assert resolve_subtitle_style({}, exists=NO_FONTS)["y_position"] == 0.5
+
+
+def test_y_position_is_configurable_per_template():
+    assert resolve_subtitle_style({"y_position": 0.05}, exists=NO_FONTS)["y_position"] == 0.05
+
+
+def test_y_position_is_clamped_to_the_frame():
+    # Off-frame values render as subtitles silently missing, not as an error.
+    assert resolve_subtitle_style({"y_position": 1.8}, exists=NO_FONTS)["y_position"] == 1.0
+    assert resolve_subtitle_style({"y_position": -0.4}, exists=NO_FONTS)["y_position"] == 0.0
+
+
+# --- per-word auto-fit -----------------------------------------------------
+
+
+def _measure_at(px_per_unit):
+    """Measurer where width is len(text) * size * px_per_unit."""
+    return lambda text, size: len(text) * size * px_per_unit
+
+
+def test_short_word_keeps_the_full_configured_size():
+    assert fit_font_size("oi", 190, 994, _measure_at(0.5)) == 190
+
+
+def test_long_word_is_scaled_down_to_fit():
+    # 13 chars at size 190 measures 1235 > 994, so it must come down.
+    fitted = fit_font_size("procedimento,", 190, 994, _measure_at(0.5))
+    assert fitted < 190
+    assert _measure_at(0.5)("procedimento,", fitted) <= 994
+
+
+def test_auto_fit_never_goes_below_the_floor():
+    # A pathological token must stay legible rather than collapse toward zero.
+    fitted = fit_font_size("a" * 400, 190, 994, _measure_at(0.5))
+    assert fitted == edit_video.MIN_AUTOFIT_FONT_SIZE
+
+
+def test_auto_fit_is_a_ceiling_never_an_enlargement():
+    # A word that already fits is not scaled *up* to fill the width.
+    assert fit_font_size("oi", 140, 994, _measure_at(0.5)) == 140
+
+
+def test_auto_fit_passes_through_when_size_is_unset():
+    # font_size None means "leave Blender's own size alone".
+    assert fit_font_size("qualquer", None, 994, _measure_at(0.5)) is None
+
+
+def test_auto_fit_handles_empty_text():
+    assert fit_font_size("", 190, 994, _measure_at(0.5)) == 190
+
+
+def test_apply_text_style_font_size_override_wins_over_the_style():
+    strip = _FakeStrip()
+    style = resolve_subtitle_style({"font_size": 190}, exists=NO_FONTS)
+    apply_text_style(strip, style, font=None, font_size=133)
+    assert strip.font_size == 133
+
+
+def test_apply_text_style_falls_back_to_the_style_size_without_an_override():
+    strip = _FakeStrip()
+    style = resolve_subtitle_style({"font_size": 190}, exists=NO_FONTS)
+    apply_text_style(strip, style, font=None)
+    assert strip.font_size == 190
+
+
+# ── background bed coverage ────────────────────────────────────────────────
+
+def test_background_is_repeated_until_it_covers_the_narration():
+    """A 45s clip (1350 frames) under a 71s narration (2151 frames) left 26s of
+    black tail. One more copy carries the bed to frame 2700, past the end."""
+    starts = background_repeats(clip_frames=1350, first_start=1, needed_end=2151)
+    assert starts == [1351]
+
+
+def test_background_long_enough_is_never_repeated():
+    assert background_repeats(clip_frames=3600, first_start=1, needed_end=2151) == []
+
+
+def test_repeats_start_exactly_where_the_previous_copy_ends():
+    """Overlapping strips get auto-moved to another channel by Blender, and a
+    gap is a black frame — the seam has to be exact."""
+    clip = 100
+    starts = background_repeats(clip_frames=clip, first_start=1, needed_end=450)
+    assert starts == [101, 201, 301, 401]
+    assert all(b - a == clip for a, b in zip(starts, starts[1:]))
+
+
+def test_exact_fit_needs_no_repeat():
+    # Clip covers frames 1..1350; the narration ends on the last covered frame.
+    assert background_repeats(clip_frames=1350, first_start=1, needed_end=1350) == []
+
+
+def test_degenerate_clip_is_bounded_instead_of_looping_forever():
+    starts = background_repeats(clip_frames=2, first_start=1, needed_end=1_000_000)
+    assert len(starts) == edit_video.MAX_BACKGROUND_REPEATS
+
+
+def test_a_clip_with_no_frames_asks_for_nothing():
+    assert background_repeats(clip_frames=0, first_start=1, needed_end=900) == []

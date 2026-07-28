@@ -15,9 +15,12 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `clients/llm.py` — `LLMClient.refine(script, metadata) → RefineResult`
 - `clients/tts.py` — `TTSClient.generate(text, run_id, part_number, rate=None) → (audio_key, srt_key)`
 - `clients/blender.py` — `BlenderClient`: `create_video(...)`, `create_job(...)`, `get_template_config(...)`, `get_job_status(...)`, `poll_job(...)`
-- `clients/tiktok.py` — `TikTokClient.schedule(video_key, classification, part_number, series_id)`
-- `storage/client.py` — `upload_bytes(bucket, key, data, content_type)` via boto3 (MinIO/R2)
-- `worker.py` — `run_pipeline(run_id)`: executa o pipeline completo em background via FastAPI BackgroundTasks
+- `clients/tiktok.py` — `TikTokClient.schedule(...)` + exceção `BufferQueueFull`
+- `clients/http.py` — `request(method, url, *, timeout, attempts)`: política única de retry
+- `backgrounds.py` — `pick_background(keys, run_id, part_number)`, puro
+- `storage/client.py` — `upload_bytes(...)` e `list_keys(bucket, prefix)` via boto3 (MinIO/R2)
+- `worker.py` — `run_pipeline(run_id)` + `recover_interrupted_runs()`, `retry_pending_schedules()`, `maintenance_loop()`
+- `api/app.py` — `lifespan`: reconcilia runs órfãos antes de servir, depois sobe o `maintenance_loop`
 
 ## Estado do PipelineRun
 
@@ -109,9 +112,26 @@ O orchestrador **não valida o formato** do rate — quem valida é o `tts_servi
 
 O orchestrador não participa da geração de legenda: o `tts_service` transcreve o próprio áudio (Whisper, timestamp por palavra) e devolve o `srt_key` junto com o `audio_key`. O orchestrador só persiste em `PipelinePart.srt_key` e repassa como `subtitle_key` ao `blender_worker`. Regras em `docs/vision.md` → "Legendas (word-level)".
 
+### Rotação de background (`src/orchestrator/backgrounds.py`)
+
+`pick_background(keys, run_id, part_number) -> str` — escolhe o clipe de fundo de cada parte entre os objetos sob `[template] background_prefix` (default `assets/backgrounds/`).
+
+- **Determinístico** (`sha256(run_id:part)`, não `hash()`, que é salgado por processo): re-render devolve o mesmo fundo, e partes da mesma série caem em clipes diferentes.
+- `background_key_for(run_id, part_number)` no worker lista o prefixo e cai no `background_video_key` único quando não há clipes.
+- Levanta `ValueError` com lista vazia — quem chama decide o fallback.
+
+### Resiliência (`src/orchestrator/worker.py`)
+
+- **`BufferQueueFull` não é falha.** `_schedule` devolve `False`, o run fica em `scheduling` com os vídeos intactos, e o scout lê isso como capacidade ocupada (backpressure). `_schedule` é idempotente: parte com `scheduled_at` é pulada.
+- **`recover_interrupted_runs()`** — roda no `lifespan` antes da primeira request. Estado ativo no boot é órfão por definição (as `BackgroundTasks` morrem com o processo): run com todas as partes renderizadas é retomado no agendamento, o resto vira `failed` com `"interrompido por restart"`.
+- **`retry_pending_schedules()` / `maintenance_loop()`** — reoferece os runs parados a cada `[pipeline] retry_interval_seconds` (900s).
+- **`clients/http.py`** — 3 tentativas com backoff exponencial em erro de transporte e 5xx. **4xx nunca é repetido**, incluindo o `429` do poster.
+
 ### Storage (`src/orchestrator/storage/client.py`)
 
 `upload_bytes(bucket, key, data, content_type) -> None` — upload via boto3 (MinIO/R2). Usa `run_in_executor` para não bloquear o event loop.
+
+`list_keys(bucket, prefix) -> list[str]` — lista paginada e **ordenada** (a rotação de background indexa nela, então a ordem tem que ser estável).
 
 ## Testing rules
 

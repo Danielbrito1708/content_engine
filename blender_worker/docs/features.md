@@ -571,7 +571,9 @@ Exemplos de acesso: `settings.CONFIG.blender.bin`, `settings.CONFIG.storage.buck
 
 ### Descrição
 
-Gera uma imagem PNG no estilo "card de comentário": fundo retangular com bordas arredondadas, assets posicionados (ex: avatar), e texto com quebra de linha automática. O layout é controlado por um arquivo de guide JSON versionado no repositório. O PNG gerado é salvo no MinIO.
+Gera uma imagem PNG no estilo "card de comentário": fundo branco com bordas arredondadas, avatar no topo e texto em Arial Bold com quebra de linha automática. O layout é controlado por um arquivo de guide JSON versionado no repositório. O PNG gerado é salvo no storage.
+
+**O PNG tem sempre 1080 de largura** — a mesma do frame do TikTok — e altura variável conforme o texto. O card é uma caixa mais estreita posicionada dentro desse frame, deslocada para a esquerda; o restante fica transparente. A imagem é feita para ser aplicada sobre o vídeo em largura cheia, sem cálculo de posição do lado de quem consome.
 
 ### POST /images/render
 
@@ -611,43 +613,89 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
 
 ```json
 {
-  "version": "1.0",
-  "canvas": { "width": 800 },
+  "version": "2.0",
+  "canvas": { "width": 1080, "supersample": 2 },
+  "card": {
+    "width": 880,
+    "offset": { "x": 60, "y": 0 },
+    "gap": 18
+  },
   "background": {
-    "color": [25, 25, 25, 230],
-    "radius": 16,
-    "padding": { "top": 20, "right": 20, "bottom": 20, "left": 20 }
+    "color": [255, 255, 255, 255],
+    "radius": 24,
+    "padding": { "top": 32, "right": 32, "bottom": 32, "left": 32 },
+    "shadow": {
+      "enabled": true,
+      "color": [0, 0, 0, 110],
+      "blur": 16,
+      "spread": 0,
+      "offset": { "x": 0, "y": 10 }
+    }
   },
   "assets": [
     {
       "id": "avatar",
-      "minio_key": "assets/avatar.png",
-      "size": { "width": 48, "height": 48 },
+      "minio_key": "assets/perfil-azul.png",
+      "size": { "width": 417, "height": 61 },
       "position": { "x": 0, "y": 0 }
     }
   ],
   "text": {
-    "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "size": 18,
-    "color": [255, 255, 255, 255],
-    "offset": { "x": 60, "y": 4 }
+    "font_path": "assets/fonts/Arial-Bold.ttf",
+    "size": 36,
+    "color": [0, 0, 0, 255],
+    "offset": { "x": 0, "y": 0 },
+    "line_spacing": 0
   }
 }
 ```
 
 | Campo | Descrição |
 |---|---|
-| `canvas.width` | Largura fixa em pixels |
+| `canvas.width` | Largura **do PNG de saída**, fixa (1080 = frame do TikTok). Não é a largura do card |
+| `canvas.supersample` | Renderiza tudo em N× e reduz uma vez com LANCZOS. `1` desliga |
+| `card.width` | Largura do card, sempre menor que o canvas |
+| `card.offset` | Posição do card dentro do canvas. `x` menor que o centro desloca para a esquerda |
+| `card.gap` | Espaço vertical entre a linha de assets e o texto. Só cobrado se houver assets |
 | `background.color` | RGBA (0–255 cada canal) |
 | `background.radius` | Raio das bordas arredondadas em pixels |
-| `background.padding` | Distância entre a borda do retângulo e o conteúdo interno |
+| `background.padding` | Distância entre a borda do card e o conteúdo interno |
+| `background.shadow.enabled` | Liga a sombra projetada. Padrão `false` |
+| `background.shadow.color` | RGBA da sombra; o alpha controla a intensidade |
+| `background.shadow.blur` | Desvio-padrão do desfoque em pixels; `0` dá uma cópia deslocada de borda dura |
+| `background.shadow.spread` | Cresce (ou encolhe, se negativo) a sombra além do card antes do desfoque |
+| `background.shadow.offset` | Para que lado a sombra cai. `y` positivo = luz vindo de cima |
 | `assets[].id` | Identificador; usado para mapear ao `assets` do request |
-| `assets[].size` | Tamanho que o asset ocupará — a imagem é redimensionada |
-| `assets[].position` | Posição relativa ao canto superior-esquerdo da área de padding |
-| `text.font_path` | Caminho absoluto para o arquivo `.ttf` |
-| `text.offset` | Posição do bloco de texto relativa ao canto superior-esquerdo da área de padding |
+| `assets[].size` | Tamanho que o asset ocupará. A imagem é redimensionada **para essas dimensões exatas**, sem preservar proporção — um aspecto diferente do arquivo achata a imagem sem erro nenhum |
+| `assets[].position` | Posição dentro da linha de assets, no topo do card |
+| `text.font_path` | Caminho do `.ttf`, relativo ao `ROOT_DIR` |
+| `text.line_spacing` | Espaço **extra** entre linhas, somado à altura natural da linha da fonte (não é o total) |
 
-**Altura do canvas:** calculada dinamicamente: `padding.top + max(maior_asset_height, altura_texto) + padding.bottom`.
+### Canvas e card são coisas diferentes
+
+O PNG tem **sempre** `canvas.width` de largura; só a altura varia com o texto. O card é uma caixa mais estreita desenhada em `card.offset`, e o resto do frame fica transparente. Assim a imagem é aplicada sobre o vídeo em largura cheia, sem cálculo de posição do lado de quem consome.
+
+> Isto **substitui** o contrato da v1, em que `canvas.width` era a largura do card e o PNG crescia junto com a sombra.
+
+**O card fica à esquerda do centro de propósito.** Com 1080 de canvas e 880 de card, centralizar daria `x = 100`; o template usa `60`, deixando 140px de goteira à direita — livre da barra de ações (curtir/comentar/compartilhar) do TikTok.
+
+**Altura do card:** `padding.top + altura_da_linha_de_assets + gap + altura_do_texto + padding.bottom`. Os assets ficam **acima** do texto, então as duas alturas somam; lado a lado seria `max()`.
+
+### Sombra projetada
+
+Uma sombra desfocada e deslocada ocupa espaço **fora** da caixa do card. Na vertical o canvas cresce para acomodá-la (`margem_topo + altura_do_card + margem_base`). Na horizontal **não dá**: a largura é fixa, então o espaço tem que vir de `card.offset.x` e da goteira direita.
+
+`shadow_margins(shadow) -> (left, top, right, bottom)` é a função pura que dá essa margem: `blur * 3 + spread`, ajustada pelo `offset` em cada lado (nunca negativa). O fator 3 vem de o `radius` do `GaussianBlur` do Pillow ser um desvio-padrão — ~3σ concentra >99% do peso do kernel, e o resto fica abaixo de um passo de alpha de 8 bits.
+
+`check_card_fits(guide)` levanta `ValueError` se o card mais a sombra estourar a largura do canvas, em vez de deixar o desfoque cortar numa linha reta. É erro de autoria de template, pego uma vez — e já pegou um estouro real de 14px durante o desenvolvimento deste template. `test_shipped_template_fits_its_canvas` mantém a guarda.
+
+A sombra é clipada pela silhueta do card (`ImageChops.subtract` contra uma máscara do rounded rect), como o `box-shadow` do CSS. Com o card branco opaco o efeito é invisível, mas a regra existe para qualquer `background.color` translucido.
+
+### Antialiasing
+
+Já havia AA antes de `canvas.supersample` existir: o texto é desenhado pelo FreeType, que antialiasa por conta própria, e `_rounded_rect` já desenhava os cantos em 4× antes de reduzir. O `supersample` renderiza o card inteiro em N× (com a fonte re-derivada via `font_variant`) e reduz uma vez com LANCZOS — uma passada de uniformidade em cima disso, não a origem do efeito. `supersample: 1` é uma escolha válida e mais rápida.
+
+Os testes afirmam que o AA **está presente** nos dois ajustes, em vez de afirmar que o knob o cria.
 
 ### Pipeline interno
 
@@ -658,13 +706,16 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
    - Usa minio_key do request.assets[id] se fornecido, senão usa o padrão do guide
    - Baixa bytes do MinIO (asyncio.to_thread)
    - Falha silenciosa se não encontrar — compositor pula assets ausentes
-4. Calcula altura do canvas com base no texto quebrado
-5. Compõe imagem (Pillow):
+4. Valida que o card + sombra cabem na largura do canvas (`check_card_fits`)
+5. Calcula altura do card: padding + linha de assets + gap + texto quebrado + padding
+6. Compõe imagem (Pillow), tudo em N× se `supersample > 1`:
+   - Sombra: rounded rect na cor da sombra → GaussianBlur → clip pela silhueta do card
    - Rounded rect com supersampling 4× para bordas suaves
-   - Assets posicionados e redimensionados
-   - Texto renderizado linha por linha
-6. Upload do PNG para MinIO (asyncio.to_thread)
-7. Retorna output_key
+   - Assets redimensionados, na linha do topo do card
+   - Texto renderizado linha por linha, abaixo dos assets
+   - Redução final única com LANCZOS se `supersample > 1`
+7. Upload do PNG para o storage (asyncio.to_thread)
+8. Retorna output_key
 ```
 
 ### Observações

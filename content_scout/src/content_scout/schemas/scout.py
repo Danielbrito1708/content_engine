@@ -17,6 +17,8 @@ class ScoutRunResponse(BaseModel):
     active_runs: int
     submitted_ids: list[str]
     comments_fetched: int
+    #: True when a cycle was already in flight, so this call did nothing.
+    already_running: bool = False
 
 
 class ItemCommentResponse(BaseModel):

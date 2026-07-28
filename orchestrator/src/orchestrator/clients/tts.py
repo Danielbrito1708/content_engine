@@ -1,6 +1,5 @@
-import httpx
-
 from src.core import settings
+from src.orchestrator.clients.http import request
 
 
 class TTSClient:
@@ -23,8 +22,6 @@ class TTSClient:
         if rate is not None:
             payload["rate"] = rate
 
-        async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(f"{self._base}/generate", json=payload)
-            resp.raise_for_status()
+        resp = await request("POST", f"{self._base}/generate", timeout=300, json=payload)
         data = resp.json()
         return data["audio_key"], data["srt_key"]

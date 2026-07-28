@@ -22,9 +22,19 @@ DEFAULT_MAX_HOLD_SECONDS = 0.4
 # and belongs in an image strip, not here.
 MIN_MOVIE_FRAMES = 2
 
-# Vertical position of the subtitle, as a fraction of frame height (0 = bottom).
-SUBTITLE_Y = 0.05
-# Entrance animation: each word starts this far below SUBTITLE_Y and rises to it
+# Ceiling on how many times the background clip may be laid end to end to cover
+# the narration. A well-sized clip needs one or two repeats; a number this far
+# above that only bounds the degenerate case, where a near-empty file would
+# otherwise ask Blender for thousands of strips.
+MAX_BACKGROUND_REPEATS = 60
+
+# Resting position of the subtitle, as a fraction of frame height (0 = bottom,
+# 0.5 = dead centre). Paired with align_y = "CENTER" below, so this is the
+# position of the text's own middle, not of its baseline — 0.5 puts the word in
+# the optical centre of the frame regardless of how tall the glyphs are.
+# Overridable per template via `subtitles.y_position`.
+DEFAULT_SUBTITLE_Y = 0.5
+# Entrance animation: each word starts this far below the resting position and rises to it
 # over rise_frames. Unlike the fade, this applies to every word — it's what makes
 # each word read as a distinct "pop" even between back-to-back words.
 DEFAULT_RISE_OFFSET = 0.025
@@ -46,6 +56,13 @@ DEFAULT_FONT_CANDIDATES = (
 # None means "leave the size Blender gave the strip" — the size is a separate
 # concern from the typeface and changing it would resize every existing render.
 DEFAULT_FONT_SIZE = None
+# Fraction of the frame width kept clear on each side. Word-level subtitles are
+# centred, so a word that measures wider than what is left simply runs off both
+# edges — Blender neither wraps a single word nor warns.
+SUBTITLE_SIDE_MARGIN = 0.04
+# Floor for the auto-fit, so a pathologically long token shrinks to something
+# still legible instead of collapsing toward zero.
+MIN_AUTOFIT_FONT_SIZE = 60
 DEFAULT_TEXT_COLOR = (1.0, 1.0, 1.0, 1.0)
 DEFAULT_OUTLINE_COLOR = (0.0, 0.0, 0.0, 1.0)
 # Blender's own default (0.05) is a hairline that disappears over a bright
@@ -183,6 +200,9 @@ def resolve_subtitle_style(config=None, exists=os.path.exists):
     return {
         "font_path": resolve_font_path(config.get("font_path"), exists=exists),
         "font_size": config.get("font_size", DEFAULT_FONT_SIZE),
+        # Clamped to the frame: a value outside 0..1 parks every word off-screen,
+        # which renders as subtitles silently missing rather than as an error.
+        "y_position": min(1.0, max(0.0, float(config.get("y_position", DEFAULT_SUBTITLE_Y)))),
         "color": _parse_color(config.get("color"), DEFAULT_TEXT_COLOR),
         "use_outline": config.get("use_outline", True),
         "outline_color": _parse_color(config.get("outline_color"), DEFAULT_OUTLINE_COLOR),
@@ -190,6 +210,57 @@ def resolve_subtitle_style(config=None, exists=os.path.exists):
         # template value from silently rendering as something else.
         "outline_width": min(1.0, max(0.0, float(config.get("outline_width", DEFAULT_OUTLINE_WIDTH)))),
     }
+
+
+def fit_font_size(text, font_size, max_width, measure, min_size=MIN_AUTOFIT_FONT_SIZE):
+    """Largest size <= font_size at which `text` fits within max_width.
+
+    `font_size` is a ceiling, not a fixed value: short words — the vast majority —
+    render at exactly that size, and only the ones that would overrun the frame
+    are scaled down. Without this, raising the body size clips the long words
+    instead of shrinking them, and the clipping is silent: Blender does not wrap
+    a single word and reports nothing.
+
+    Measured on a real 178-word narration at 1080px wide: at size 190 only 13
+    words (7%) need fitting, and the longest one ("procedimento,") lands at 133.
+
+    Pure — `measure(text, size) -> width` is injected, so the rule is testable
+    without Blender. Returns font_size unchanged when it is None (meaning "leave
+    Blender's own size alone") or when there is nothing to measure.
+    """
+    if not font_size or not text:
+        return font_size
+    width = measure(text, font_size)
+    if width <= max_width:
+        return font_size
+    return max(min_size, int(font_size * max_width / width))
+
+
+def make_text_measurer(font_path):
+    """Width-measuring callable backed by Blender's own font module.
+
+    Returns None when the font could not be loaded — the caller then skips
+    auto-fit rather than measuring with a different typeface than it renders,
+    which would scale words by the wrong ratio.
+
+    blf is the same rasteriser the VSE text strip uses. Verified against a real
+    render: blf reports 1046px for "procedimento," at size 140 where the rendered
+    bounding box (outline included) is 1037px, so it errs slightly wide — the
+    safe direction for a fits-on-screen test.
+    """
+    if not font_path:
+        return None
+    import blf
+
+    font_id = blf.load(font_path)
+    if font_id == -1:
+        return None
+
+    def measure(text, size):
+        blf.size(font_id, size)
+        return blf.dimensions(font_id, text)[0]
+
+    return measure
 
 
 def load_subtitle_font(font_path):
@@ -201,8 +272,11 @@ def load_subtitle_font(font_path):
     return bpy.data.fonts.load(font_path, check_existing=True)
 
 
-def apply_text_style(strip, style, font=None):
+def apply_text_style(strip, style, font=None, font_size=None):
     """Apply typeface, fill colour and outline to one text strip.
+
+    `font_size` overrides the style's size for this strip alone — that is how the
+    per-word auto-fit gets applied without mutating the shared style dict.
 
     The outline properties require Blender 4.2+ (the version pinned in the
     Dockerfile); on older builds this raises rather than silently dropping the
@@ -210,8 +284,9 @@ def apply_text_style(strip, style, font=None):
     """
     if font is not None:
         strip.font = font
-    if style["font_size"]:
-        strip.font_size = style["font_size"]
+    size = font_size if font_size is not None else style["font_size"]
+    if size:
+        strip.font_size = size
     strip.color = style["color"]
     strip.use_outline = style["use_outline"]
     strip.outline_color = style["outline_color"]
@@ -270,14 +345,51 @@ def content_end_frame(strips, bed_channels, fallback):
     Pure — takes any objects with `channel` and `frame_final_end`, so the rule is
     testable without Blender.
 
-    A bed *shorter* than the narration is the mirror case and is deliberately
-    not handled here: the tail goes black, which is an asset problem to fix in
-    the asset, not a length the timeline should silently shrink to.
+    A bed *shorter* than the narration is the mirror case, and the timeline still
+    must not shrink to it — the fix is to make the bed longer, which is what
+    `background_repeats` does before the render.
     """
     content = [s for s in strips if s.channel not in bed_channels]
     if not content:
         return fallback
     return max(s.frame_final_end for s in content)
+
+
+def background_repeats(clip_frames, first_start, needed_end, max_repeats=MAX_BACKGROUND_REPEATS):
+    """Start frames for the extra background copies needed to reach `needed_end`.
+
+    The background is a bed: it is however long its file happens to be, and the
+    narration decides where the video ends. When the bed runs out first the tail
+    renders **black** — no error, no warning, a video that looks finished and is
+    not. Measured: a 45s clip under a 71s narration produced 26s of black with
+    subtitles still popping over it.
+
+    That used to be filed as an asset problem, and it was, while every render
+    shared one long hand-picked file. With backgrounds now drawn from a library
+    of clips, a clip shorter than the narration is the normal case, not a
+    mistake — so the timeline covers it by repeating the clip.
+
+    Pure — takes frame numbers, so the arithmetic is testable without Blender.
+    `max_repeats` bounds the pathological case (a two-frame file would otherwise
+    ask for thousands of strips); past it the tail goes black as before.
+    """
+    if clip_frames < 1:
+        return []
+
+    starts = []
+    next_start = first_start + clip_frames
+    while next_start <= needed_end and len(starts) < max_repeats:
+        starts.append(next_start)
+        next_start += clip_frames
+    return starts
+
+
+def extend_background(vse, path, channel, strip, needed_end):
+    """Lay extra copies of the background clip until `needed_end` is covered."""
+    starts = background_repeats(strip.frame_duration, strip.frame_start, needed_end)
+    for start in starts:
+        add_movie_strip(vse, path, channel, start)
+    return len(starts)
 
 
 def apply_volume_fade(strip, start_frame, fade_start_frame, end_frame, start_volume):
@@ -319,6 +431,7 @@ def import_subtitles(
     rise_frames=DEFAULT_RISE_FRAMES,
     rise_offset=DEFAULT_RISE_OFFSET,
     style=None,
+    frame_width=None,
 ):
     specs = build_subtitle_timeline(
         parse_srt(srt_path),
@@ -332,6 +445,11 @@ def import_subtitles(
     style = style or resolve_subtitle_style()
     # Loaded once, outside the loop: one datablock shared by every word strip.
     font = load_subtitle_font(style["font_path"])
+    # Same reason — the measurer loads the font into blf once for all words.
+    measure = make_text_measurer(style["font_path"])
+    max_text_width = (
+        frame_width * (1 - 2 * SUBTITLE_SIDE_MARGIN) if frame_width else None
+    )
 
     for i, spec in enumerate(specs):
         strip = vse.sequences.new_effect(
@@ -341,17 +459,25 @@ def import_subtitles(
             frame_start=spec["start"],
             frame_end=spec["end"],
         )
+        subtitle_y = style["y_position"]
         strip.text = spec["text"]
         strip.align_x = "CENTER"
-        strip.align_y = "BOTTOM"
-        strip.location[1] = SUBTITLE_Y
+        # CENTER, not BOTTOM: anchoring the text's own middle is what makes
+        # y_position mean the same thing for a tall word and a short one.
+        strip.align_y = "CENTER"
+        strip.location[1] = subtitle_y
         strip.blend_alpha = 1.0
-        apply_text_style(strip, style, font)
+        fitted = (
+            fit_font_size(spec["text"], style["font_size"], max_text_width, measure)
+            if measure and max_text_width
+            else None
+        )
+        apply_text_style(strip, style, font, font_size=fitted)
 
         if spec["rise"] and rise_offset:
-            strip.location[1] = SUBTITLE_Y - rise_offset
+            strip.location[1] = subtitle_y - rise_offset
             strip.keyframe_insert("location", index=1, frame=spec["start"])
-            strip.location[1] = SUBTITLE_Y
+            strip.location[1] = subtitle_y
             strip.keyframe_insert("location", index=1, frame=spec["start"] + spec["rise"])
             # Ease out: fast off the mark, settling into place — reads as a pop
             # rather than a drift.
@@ -398,7 +524,7 @@ def main():
     for strip in vse.sequences_all:
         strip.select = False
 
-    add_movie_strip(vse, assets["video"], channels["video"], t["intro_start"] + 1)
+    background = add_movie_strip(vse, assets["video"], channels["video"], t["intro_start"] + 1)
 
     music_strip = add_sound_strip(vse, assets["music"], channels["music"], t["intro_start"] + 1)
     music_strip.volume = 0.2
@@ -421,11 +547,17 @@ def main():
         rise_frames=subs.get("rise_frames", DEFAULT_RISE_FRAMES),
         rise_offset=subs.get("rise_offset", DEFAULT_RISE_OFFSET),
         style=resolve_subtitle_style(subs),
+        frame_width=scene.render.resolution_x,
     )
 
     bed_channels = {channels["music"], channels["video"]}
     last_frame = content_end_frame(vse.sequences_all, bed_channels, timing["frame_end"])
     scene.frame_end = last_frame
+
+    # After the length is fixed, never before: the repeats are on a bed channel
+    # and so are invisible to content_end_frame either way, but laying them first
+    # would make the covering depend on a number that has not been decided yet.
+    extend_background(vse, assets["video"], channels["video"], background, last_frame)
 
     if "music_fade_out" in t:
         apply_volume_fade(

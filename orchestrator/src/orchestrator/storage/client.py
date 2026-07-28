@@ -22,3 +22,23 @@ async def upload_bytes(bucket: str, key: str, data: bytes, content_type: str = "
         None,
         lambda: client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type),
     )
+
+
+async def list_keys(bucket: str, prefix: str) -> list[str]:
+    """Every object under ``prefix``, sorted, directory placeholders excluded.
+
+    Sorted because the background rotation indexes into this list: a stable order
+    is what makes the choice reproducible when the same part is rendered twice.
+    """
+    client = _s3()
+    loop = asyncio.get_event_loop()
+
+    def _list() -> list[str]:
+        keys: list[str] = []
+        for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+            keys.extend(
+                obj["Key"] for obj in page.get("Contents", []) if not obj["Key"].endswith("/")
+            )
+        return sorted(keys)
+
+    return await loop.run_in_executor(None, _list)

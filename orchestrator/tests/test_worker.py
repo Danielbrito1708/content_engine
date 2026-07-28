@@ -124,7 +124,9 @@ async def test_run_render_full_flow(session, monkeypatch):
     part = await _make_part(session, run.id, audio_key=f"audio/{run.id}/part_1.mp3")
 
     monkeypatch.setenv("BLENDER_TEMPLATE_ID", str(uuid.uuid4()))
-    monkeypatch.setattr("src.orchestrator.worker.upload_bytes", AsyncMock())
+    # No upload to mock: the worker stopped generating SRTs — tts_service
+    # publishes them and hands back the key.
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", AsyncMock(return_value=[]))
 
     respx.post("http://blender_worker:8000/videos").mock(
         return_value=Response(201, json={"id": str(video_id), "video_file_key": "assets/bg.mp4",
@@ -165,7 +167,9 @@ async def test_run_render_raises_on_job_failure(session, monkeypatch):
     part = await _make_part(session, run.id, audio_key="audio/x.mp3")
 
     monkeypatch.setenv("BLENDER_TEMPLATE_ID", str(uuid.uuid4()))
-    monkeypatch.setattr("src.orchestrator.worker.upload_bytes", AsyncMock())
+    # No upload to mock: the worker stopped generating SRTs — tts_service
+    # publishes them and hands back the key.
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", AsyncMock(return_value=[]))
 
     respx.post("http://blender_worker:8000/videos").mock(
         return_value=Response(201, json={"id": str(video_id), "video_file_key": "x", "music_key": "x",
@@ -243,7 +247,9 @@ async def test_run_pipeline_full(session, monkeypatch):
     job_id = uuid.uuid4()
 
     monkeypatch.setenv("BLENDER_TEMPLATE_ID", str(uuid.uuid4()))
-    monkeypatch.setattr("src.orchestrator.worker.upload_bytes", AsyncMock())
+    # No upload to mock: the worker stopped generating SRTs — tts_service
+    # publishes them and hands back the key.
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", AsyncMock(return_value=[]))
 
     respx.post("http://llm_service:8000/refine").mock(
         return_value=Response(200, json={
