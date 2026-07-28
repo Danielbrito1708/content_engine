@@ -134,6 +134,8 @@ O ciclo para na primeira falha de moderação em vez de tentar os demais: se o s
 
 Desligável em `[scout] story_quality`.
 
+🚧 **A régua ainda não foi validada.** A medição feita até agora pontuou relatos reais (`r/desabafos`, `r/relacionamentos`), não histórias escritas para entreter — gêneros diferentes, então a taxa de 40% `weak_storytelling` pode estar medindo a fonte e não o corte. Decisões abertas (corpus, corte em 5 vs 6, tamanho do recorte, teto 9–10 nunca usado) e os dados brutos estão em **`content_scout/docs/story_quality_calibration.md`**. Não mexer em `min_story_score` nem no prompt de `story.py` antes de ler esse arquivo.
+
 ### Ciclo do scout (`src/content_scout/scout.py`)
 
 `run_cycle(sources=None) -> ScoutReport` — busca, deduplica, filtra e submete dentro do orçamento.
