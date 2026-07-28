@@ -180,7 +180,9 @@ Com o áudio pronto, o sistema monta o vídeo no Blender. A montagem segue um te
 
 **O que compõe o vídeo:**
 
-O vídeo de fundo toca durante todo o tempo. A trilha sonora começa junto, com volume baixo, e some gradualmente ao final. A narração em áudio (gerada na etapa anterior) entra no momento certo, de acordo com o timing definido no template. As legendas aparecem e somem de forma animada, sincronizadas com o texto narrado.
+O vídeo de fundo toca durante todo o tempo. A trilha sonora começa junto, com volume baixo, e some gradualmente ao final.
+
+⚠️ **Até agora a trilha nunca tocou.** O arquivo de música configurado era um placeholder de 35 segundos de silêncio puro — silêncio digital mesmo, medido amostra por amostra. Todos os vídeos publicados saíram só com narração e fundo. Isso foi corrigido: existe uma trilha de verdade no lugar, e ela sai 13 unidades de volume abaixo da narração, que é a distância em que uma cama sonora se ouve sem competir com a voz. A narração em áudio (gerada na etapa anterior) entra no momento certo, de acordo com o timing definido no template. As legendas aparecem e somem de forma animada, sincronizadas com o texto narrado.
 
 **Legendas:**
 
@@ -299,6 +301,34 @@ O sistema é configurável em vários aspectos sem precisar alterar o código:
 **Modelo de LLM:** qual modelo de linguagem usar para refinar os roteiros. A troca de modelo não afeta o fluxo — só a qualidade e o custo do refinamento.
 
 **Template de vídeo:** qual template Blender usar para montar os vídeos. Múltiplos templates podem coexistir — a escolha é feita por configuração.
+
+---
+
+## Feature 10 — Abertura do vídeo: o card com a frase gancho
+
+O vídeo agora **abre com um card de comentário** — aquele card branco de fundo arredondado, com foto de perfil e nome no topo — trazendo a frase gancho da história escrita nele. Enquanto o card está na tela, uma narração lê essa frase em voz alta. Só quando ela termina é que a história começa, com as legendas palavra por palavra de sempre.
+
+Antes, o vídeo começava com três segundos de fundo rodando sozinho: o card era gerado, a frase gancho era narrada em arquivo separado, e nada disso chegava ao vídeo. As duas peças existiam e não se encontravam.
+
+**Como fica na tela.** O card aparece e some suavemente, centralizado, com a mesma folga do lado direito que as demais artes deixam para os botões de curtir e comentar do TikTok. A posição, a duração do aparecer/sumir e a pausa entre o gancho e o início da narração são ajustáveis no template.
+
+**A foto de perfil e o texto do card ficaram maiores** — cerca de 40% em cima do tamanho original, tanto no cabeçalho (foto, nome e selos) quanto na letra da frase. No tamanho anterior o card era lido como uma legendinha no meio da tela; agora ele tem o peso de um card de comentário de verdade, que é o que faz alguém parar de rolar o feed para ler. O espaçamento entre o cabeçalho e o texto acompanhou o aumento. Nada disso é código: são números no arquivo de template do card, ajustáveis a qualquer momento.
+
+Uma observação para quando quiser aumentar mais: a imagem do cabeçalho já está sendo exibida um pouco acima do tamanho em que foi salva, então a partir daqui vale gerar uma versão maior desse arquivo antes de crescer de novo — senão ela começa a perder nitidez.
+
+**Quanto tempo dura.** A abertura dura o tempo da frase falada, mais uma pequena pausa — não um tempo fixo. Se o gancho for curto, a abertura mantém os três segundos mínimos do template; se for longo, ela estica para caber a frase inteira, e a narração espera. Nunca há palavra cortada nem card sumindo antes da hora.
+
+**Vale para todas as partes da série.** Quando uma história vira duas ou três partes, todas abrem com o mesmo card e a mesma frase. É isso que faz as partes serem reconhecidas como do mesmo vídeo ao aparecerem no feed em dias diferentes.
+
+**A frase é dita uma vez só.** Como o gancho é literalmente a primeira frase do roteiro, tocar a narração separada dele na frente da parte 1 faria o vídeo repetir a mesma frase logo em seguida — justamente nos segundos em que a pessoa decide se continua assistindo. Então na parte 1 a narração é a de sempre, inteira, e é ela que diz a frase; o card entra por cima desde o primeiro segundo e sai quando a frase termina. A narração separada nem toca ali — ela serve só para o sistema saber quanto tempo a frase leva.
+
+Enquanto o card está na tela a legenda não aparece: o card já mostra aquele texto, e os dois ficam na mesma altura do vídeo. A legenda entra na palavra seguinte, junto com o resto da história.
+
+Nas outras partes da série a frase não está na narração, então lá a narração separada toca normalmente como abertura — todas as partes começam do mesmo jeito.
+
+Se a frase de abertura não corresponder ao começo do roteiro (o texto foi reescrito, por exemplo), a parte volta a abrir com a narração separada. De um jeito ou de outro a frase é dita uma vez.
+
+**Se faltar alguma peça, o vídeo sai mesmo assim.** Se a narração do gancho falhar, ou se o card não puder ser gerado, o vídeo é montado sem a abertura, exatamente como era antes — nenhuma das duas peças vale perder o vídeo inteiro, que é o que o sistema existe para entregar.
 
 ---
 

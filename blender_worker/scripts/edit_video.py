@@ -63,6 +63,20 @@ SUBTITLE_SIDE_MARGIN = 0.04
 # Floor for the auto-fit, so a pathologically long token shrinks to something
 # still legible instead of collapsing toward zero.
 MIN_AUTOFIT_FONT_SIZE = 60
+# Intro (comment card + hook narration). Channels default here because
+# `template.json` lives in the bucket, not in the repo: a deployed template
+# written before the intro existed has no entry for them, and a render must not
+# fail — or worse, land the card on top of the video strip — over that.
+DEFAULT_HOOK_CHANNEL = 5
+DEFAULT_CARD_CHANNEL = 6
+# Silence between the last word of the hook and the first word of the narration.
+# Zero makes the two run together as one breathless sentence; a third of a
+# second is the pause a person leaves after reading a title out loud.
+DEFAULT_HOOK_TAIL_SECONDS = 0.3
+# Card centre, as a fraction of frame height (same convention as the subtitles).
+DEFAULT_CARD_Y = 0.5
+DEFAULT_CARD_FADE_FRAMES = 4
+
 DEFAULT_TEXT_COLOR = (1.0, 1.0, 1.0, 1.0)
 DEFAULT_OUTLINE_COLOR = (0.0, 0.0, 0.0, 1.0)
 # Blender's own default (0.05) is a hairline that disappears over a bright
@@ -333,6 +347,128 @@ def add_sound_strip(vse, path, channel, frame_start):
     )
 
 
+def intro_frames(default_start, hook_end=None, tail_frames=0, hook_muted=False, intro_start=1):
+    """`(card_end, narration_start)` — where the card leaves and the story begins.
+
+    Three shapes, and the two numbers only diverge in the third:
+
+    - **No hook audio.** The card (if any) covers the template's fixed intro and
+      the narration starts there, exactly as every render did before the intro
+      existed.
+    - **Hook played.** The card holds until the hook finishes speaking, plus a
+      beat, and the narration waits for it. `max` and not a plain sum: a hook
+      shorter than the template's intro must not *shorten* the opening, so
+      `speech_start` stays the floor.
+    - **Hook muted** — the part's own narration opens with that same sentence, so
+      the file is there only to say how long it takes to say it. The narration
+      starts with the video and the card holds for exactly the length of the
+      phrase: no floor and **no tail**.
+
+    The tail is what separates two different audio files, and a muted hook has
+    only one — the narration runs straight through. Charging it anyway costs the
+    story's first word its subtitle: measured on a real narration, the spoken
+    hook ends at 2.560s and the next word starts at 2.759s, so a 0.3s tail holds
+    the card past it and the word gets hidden with the hook's own. Same reason
+    there is no floor: the card is tracking a sentence that is already being
+    spoken, and holding it longer would cover the story's second one.
+
+    Pure — frame numbers in, frame numbers out.
+    """
+    if not hook_end:
+        return default_start, default_start
+
+    if hook_muted:
+        return hook_end, intro_start
+    hook_out = hook_end + tail_frames
+    return max(default_start, hook_out), max(default_start, hook_out)
+
+
+def drop_specs_before(specs, frame):
+    """Subtitle specs that start at or after `frame`.
+
+    While the card is up it *is* the text: the card and the word-level subtitle
+    sit at the same height, so letting the narration's first words through would
+    stack the same sentence on top of itself. Only used when the hook is muted —
+    that is the only case where narration and card overlap in time.
+
+    Pure.
+    """
+    if not frame:
+        return list(specs)
+    return [spec for spec in specs if spec["start"] >= frame]
+
+
+def card_offset_y(y_position, frame_height):
+    """Vertical offset in pixels for the card image strip.
+
+    Blender centres an image strip in the frame, and `transform.offset_y` moves
+    it from there in pixels (positive = up). `y_position` is a fraction of frame
+    height with the same meaning as the subtitles' — 0 = bottom, 0.5 = dead
+    centre — so both are read off the same scale, and it addresses the card's
+    own centre, so a two-line card and a five-line one sit at the same place.
+
+    Clamped to 0..1: an off-frame value renders as a card silently missing.
+
+    Pure — no bpy.
+    """
+    position = min(1.0, max(0.0, float(y_position)))
+    return round((position - 0.5) * frame_height)
+
+
+def add_image_strip(vse, path, channel, frame_start, frame_end):
+    """Image strip covering [frame_start, frame_end), composited over the video.
+
+    `fit_method="ORIGINAL"` keeps the PNG at its own pixel size: the card is
+    authored at exactly the frame width (1080) with transparent margins, so any
+    fitting would only resample it. `blend_type` must be set explicitly —
+    a strip added through the API does not inherit the ALPHA_OVER the UI gives
+    it, and without it the card's transparent frame renders as a black box over
+    the video.
+    """
+    strip = vse.sequences.new_image(
+        name=os.path.basename(path),
+        filepath=path,
+        channel=channel,
+        frame_start=frame_start,
+        fit_method="ORIGINAL",
+    )
+    strip.frame_final_duration = max(1, frame_end - frame_start)
+    strip.blend_type = "ALPHA_OVER"
+    strip.blend_alpha = 1.0
+    return strip
+
+
+def add_card(scene, vse, path, channel, frame_start, frame_end, config=None, frame_height=None):
+    """The comment card, on screen for the whole intro.
+
+    Fades in and out at the edges of the intro. The fade is capped at a third of
+    the strip for the same reason the subtitles' is: a fade longer than the strip
+    would insert inverted keyframes and the card would end up half-transparent
+    for its whole life.
+    """
+    config = config or {}
+    strip = add_image_strip(vse, path, channel, frame_start, frame_end)
+
+    if frame_height:
+        strip.transform.offset_y = card_offset_y(
+            config.get("y_position", DEFAULT_CARD_Y), frame_height
+        )
+
+    duration = strip.frame_final_duration
+    fade = min(int(config.get("fade_frames", DEFAULT_CARD_FADE_FRAMES)), duration // 3)
+    if fade > 0:
+        strip.blend_alpha = 0.0
+        strip.keyframe_insert("blend_alpha", frame=frame_start)
+        strip.blend_alpha = 1.0
+        strip.keyframe_insert("blend_alpha", frame=frame_start + fade)
+        strip.keyframe_insert("blend_alpha", frame=frame_start + duration - fade)
+        strip.blend_alpha = 0.0
+        strip.keyframe_insert("blend_alpha", frame=frame_start + duration)
+        _set_easing(scene, strip, "blend_alpha", 0, "SINE", "EASE_OUT")
+
+    return strip
+
+
 def content_end_frame(strips, bed_channels, fallback):
     """Last frame carrying content, ignoring the background beds.
 
@@ -432,14 +568,18 @@ def import_subtitles(
     rise_offset=DEFAULT_RISE_OFFSET,
     style=None,
     frame_width=None,
+    hide_before=0,
 ):
-    specs = build_subtitle_timeline(
-        parse_srt(srt_path),
-        frame_rate,
-        frame_offset,
-        fade_frames,
-        max_hold_seconds,
-        rise_frames,
+    specs = drop_specs_before(
+        build_subtitle_timeline(
+            parse_srt(srt_path),
+            frame_rate,
+            frame_offset,
+            fade_frames,
+            max_hold_seconds,
+            rise_frames,
+        ),
+        hide_before,
     )
 
     style = style or resolve_subtitle_style()
@@ -529,7 +669,51 @@ def main():
     music_strip = add_sound_strip(vse, assets["music"], channels["music"], t["intro_start"] + 1)
     music_strip.volume = 0.2
 
-    speech_start = t["speech_start"] + 1
+    # Intro: the hook is read aloud over the comment card, and only then does the
+    # narration start. Both assets are optional — a run whose hook TTS failed, or
+    # whose card could not be composed, still renders exactly as it did before.
+    card_config = timing.get("card", {})
+    intro_start = t["intro_start"] + 1
+
+    # A part whose own narration opens with the hook keeps the file only as a
+    # measure of how long that sentence takes: playing it too would say the same
+    # phrase twice in a row.
+    hook_muted = bool(config.get("hook_muted"))
+
+    hook_strip = None
+    if assets.get("hook"):
+        hook_strip = add_sound_strip(
+            vse, assets["hook"], channels.get("hook", DEFAULT_HOOK_CHANNEL), intro_start
+        )
+        hook_strip.volume = 1.0
+        # Muted, not removed: the strip is what carries the duration, and leaving
+        # it on the timeline keeps the assembled .blend readable — the card's
+        # length is visibly tied to something.
+        hook_strip.mute = hook_muted
+
+    tail_frames = round(
+        float(card_config.get("tail_seconds", DEFAULT_HOOK_TAIL_SECONDS)) * frame_rate
+    )
+    card_end, speech_start = intro_frames(
+        t["speech_start"] + 1,
+        hook_strip.frame_final_end if hook_strip else None,
+        tail_frames,
+        hook_muted=hook_muted,
+        intro_start=intro_start,
+    )
+
+    if assets.get("card"):
+        add_card(
+            scene,
+            vse,
+            assets["card"],
+            channels.get("card", DEFAULT_CARD_CHANNEL),
+            intro_start,
+            card_end,
+            card_config,
+            scene.render.resolution_y,
+        )
+
     voice_strip = add_sound_strip(vse, assets["voice"], channels["voice"], speech_start)
     voice_strip.volume = 1.0
 
@@ -548,6 +732,10 @@ def main():
         rise_offset=subs.get("rise_offset", DEFAULT_RISE_OFFSET),
         style=resolve_subtitle_style(subs),
         frame_width=scene.render.resolution_x,
+        # Only ever non-zero with a muted hook: that is the one case where the
+        # narration runs while the card is still up, and the two would print the
+        # same sentence at the same height.
+        hide_before=card_end if hook_muted else 0,
     )
 
     bed_channels = {channels["music"], channels["video"]}

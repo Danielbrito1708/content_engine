@@ -119,7 +119,9 @@ async def test_run_pipeline_generates_hook_audio(session, monkeypatch):
     video_id, job_id = uuid.uuid4(), uuid.uuid4()
 
     monkeypatch.setenv("BLENDER_TEMPLATE_ID", str(uuid.uuid4()))
-    monkeypatch.setattr("src.orchestrator.worker.upload_bytes", AsyncMock())
+    # Nada de upload aqui: o worker parou de gerar SRT — quem publica é o
+    # tts_service, que devolve a key pronta.
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", AsyncMock(return_value=[]))
 
     respx.post("http://llm_service:8000/refine").mock(return_value=_refine_response(hook=HOOK))
 
@@ -133,6 +135,9 @@ async def test_run_pipeline_generates_hook_audio(session, monkeypatch):
         })
 
     respx.post("http://tts_service:8000/generate").mock(side_effect=_tts)
+    respx.post("http://blender_worker:8000/images/render").mock(
+        return_value=Response(200, json={"output_key": f"cards/{run.id}.png"})
+    )
     respx.post("http://blender_worker:8000/videos").mock(
         return_value=Response(201, json={"id": str(video_id), "video_file_key": "x", "music_key": "x",
                                          "voice_key": "x", "subtitle_key": "x", "video_metadata": None,
@@ -162,6 +167,8 @@ async def test_run_pipeline_generates_hook_audio(session, monkeypatch):
     assert run.status == PipelineStatus.scheduled
     assert run.hook == HOOK
     assert run.hook_audio_key == f"audio/{run.id}/hook.mp3"
+    # A intro inteira: o áudio do gancho e o card composto com a mesma frase.
+    assert run.card_key == f"cards/{run.id}.png"
 
     # A parte continua com o arquivo dela — o gancho não sobrescreveu nada.
     result = await session.execute(select(PipelinePart).where(PipelinePart.run_id == run.id))
@@ -174,15 +181,17 @@ async def test_hook_audio_failure_still_produces_the_video(session, monkeypatch)
     video_id, job_id = uuid.uuid4(), uuid.uuid4()
 
     monkeypatch.setenv("BLENDER_TEMPLATE_ID", str(uuid.uuid4()))
-    monkeypatch.setattr("src.orchestrator.worker.upload_bytes", AsyncMock())
+    # Nada de upload aqui: o worker parou de gerar SRT — quem publica é o
+    # tts_service, que devolve a key pronta.
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", AsyncMock(return_value=[]))
 
     respx.post("http://llm_service:8000/refine").mock(return_value=_refine_response(hook=HOOK))
 
-    calls = {"n": 0}
-
     def _tts(request):
-        calls["n"] += 1
-        if calls["n"] == 1:  # o gancho é o primeiro TTS do run
+        # Identificado pelo `label`, não pela ordem da chamada: o cliente HTTP
+        # repete 5xx três vezes, então derrubar só a primeira tentativa deixaria
+        # o gancho passar na segunda — e o teste diria o contrário do que testa.
+        if json.loads(request.content).get("label") == "hook":
             return Response(502)
         return Response(200, json={
             "audio_key": f"audio/{run.id}/part_1.mp3",

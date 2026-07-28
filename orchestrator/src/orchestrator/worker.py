@@ -13,12 +13,17 @@ from src.orchestrator.clients.tiktok import BufferQueueFull, TikTokClient
 from src.orchestrator.clients.tts import TTSClient
 from src.orchestrator.db.engine import AsyncSessionLocal
 from src.orchestrator.db.models import PartStatus, PipelinePart, PipelineRun, PipelineStatus
+from src.orchestrator.hook_text import opens_with_hook
 from src.orchestrator.storage.client import list_keys
 
 log = get_logger(__name__)
 
 #: Nome do arquivo do gancho dentro do run: `audio/{run_id}/hook.mp3`.
 HOOK_LABEL = "hook"
+
+#: Guide de layout do card, resolvido pelo blender_worker em `templates/`.
+#: Sobrescrevível em `config.ini [template] card_template`.
+DEFAULT_CARD_TEMPLATE = "comment_default"
 
 #: States that mean "work is supposed to be happening". The scout counts these as
 #: occupied capacity, so nothing may sit in one of them without an owner.
@@ -40,8 +45,14 @@ async def run_pipeline(run_id: uuid.UUID) -> None:
 
         try:
             await _refine(session, run)
-            await _run_hook_tts(session, run)
-            await _process_all_parts(session, run)
+            # Read once, before the first TTS call: the hook is narrated *into*
+            # the video now, so it has to be spoken at the same rate as the
+            # narration it introduces — a hook at a different speed reads as a
+            # different voice.
+            rate = await _narration_rate()
+            await _run_hook_tts(session, run, rate)
+            await _render_card(session, run)
+            await _process_all_parts(session, run, rate)
             await _schedule(session, run)
         except Exception as exc:
             run.status = PipelineStatus.failed
@@ -71,30 +82,32 @@ async def _refine(session, run: PipelineRun) -> None:
     log.info("script refined", run_id=str(run.id), parts=run.parts_count, hook=bool(run.hook))
 
 
-async def _run_hook_tts(session, run: PipelineRun) -> None:
+async def _run_hook_tts(session, run: PipelineRun, rate: str | None = None) -> None:
     """Narra a frase gancho num arquivo próprio, separado das partes.
 
-    Não derruba o run em caso de falha: o gancho já é narrado dentro da parte 1
-    (é a primeira frase dela), então esse arquivo é um extra — perder o extra
-    não pode custar o vídeo inteiro, que é o que o pipeline existe para
-    entregar. A ausência fica visível em `hook_audio_key` nulo.
+    Esse áudio abre o vídeo: ele é montado sobre o card, e a narração da parte
+    só começa quando ele termina. Vai com o mesmo `rate` das partes — o gancho e
+    a narração que ele apresenta são a mesma voz, e velocidades diferentes soam
+    como duas.
 
-    Sai sem `rate`, então o gancho é narrado no `TTS_RATE` do tts_service e não
-    no `narration.rate` do template que as partes usam. Enquanto o gancho for só
-    um extra isso não aparece no vídeo; se ele passar a ser montado junto, o
-    rate tem de vir junto.
+    Não derruba o run em caso de falha: a intro é uma camada a mais sobre um
+    vídeo que já se sustenta sem ela (a narração da parte 1 abre com essa mesma
+    frase), e perder a camada não pode custar o vídeo inteiro, que é o que o
+    pipeline existe para entregar. A ausência fica visível em `hook_audio_key`
+    nulo, e o render volta a começar pela narração.
     """
     if not run.hook:
         log.info("no hook returned by refine, skipping hook audio", run_id=str(run.id))
         return
 
-    log.info("generating hook audio", run_id=str(run.id), chars=len(run.hook))
+    log.info("generating hook audio", run_id=str(run.id), chars=len(run.hook), rate=rate)
 
     try:
         audio_key, srt_key = await TTSClient().generate(
             text=run.hook,
             run_id=str(run.id),
             label=HOOK_LABEL,
+            rate=rate,
         )
     except Exception as exc:
         log.warning("hook audio failed, continuing without it", run_id=str(run.id), error=str(exc))
@@ -104,6 +117,35 @@ async def _run_hook_tts(session, run: PipelineRun) -> None:
     run.hook_srt_key = srt_key
     await session.commit()
     log.info("hook audio ready", run_id=str(run.id), audio=audio_key, srt=srt_key)
+
+
+async def _render_card(session, run: PipelineRun) -> None:
+    """Compõe o card de comentário com a frase gancho, mostrado na intro.
+
+    Degradável pelo mesmo motivo do áudio do gancho: card é a camada visual da
+    intro, e um vídeo sem ela ainda é o vídeo. A key nula é o que o render lê
+    como "não há card".
+    """
+    if not run.hook:
+        log.info("no hook, skipping card", run_id=str(run.id))
+        return
+
+    template = str(getattr(settings.CONFIG.template, "card_template", "") or DEFAULT_CARD_TEMPLATE)
+    output_key = f"cards/{run.id}.png"
+
+    try:
+        card_key = await BlenderClient().render_card(
+            text=run.hook,
+            template=template,
+            output_key=output_key,
+        )
+    except Exception as exc:
+        log.warning("card render failed, continuing without it", run_id=str(run.id), error=str(exc))
+        return
+
+    run.card_key = card_key
+    await session.commit()
+    log.info("card ready", run_id=str(run.id), card=card_key)
 
 
 async def _narration_rate() -> str | None:
@@ -125,12 +167,9 @@ async def _narration_rate() -> str | None:
     return rate
 
 
-async def _process_all_parts(session, run: PipelineRun) -> None:
+async def _process_all_parts(session, run: PipelineRun, rate: str | None = None) -> None:
     run.status = PipelineStatus.processing
     await session.commit()
-
-    # Fetched once per run: the template is the same for every part.
-    rate = await _narration_rate()
 
     for part in await _parts_of(session, run):
         await _run_tts(session, part, run, rate)
@@ -156,6 +195,25 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | No
     part.status = PartStatus.tts_done
     await session.commit()
     log.info("audio ready", run_id=str(run.id), part=part.part_number, audio=audio_key, srt=srt_key)
+
+
+def _hook_is_muted(part: PipelinePart, run: PipelineRun) -> bool:
+    """Se o áudio do gancho entra só como duração, sem ser tocado.
+
+    A parte 1 abre pela frase gancho — é de lá que ela é copiada. Tocar o
+    arquivo do gancho na frente dessa narração faria o vídeo dizer a mesma frase
+    duas vezes seguidas, nos segundos em que a retenção se decide. Então nessa
+    parte quem narra a frase é a narração inteira, como sempre foi, e o áudio
+    separado serve só para o render saber por quanto tempo o card fica na tela.
+
+    Nas partes 2+ o gancho não está na narração, e aí o arquivo é tocado de
+    verdade: é o que faz todas as partes da série abrirem igual.
+
+    A condição é o texto da parte, não o número dela — se um dia o refino
+    devolver o gancho no começo da parte 2, ela se comporta como a parte 1
+    sozinha.
+    """
+    return bool(run.hook) and opens_with_hook(part.script, run.hook)
 
 
 async def background_key_for(run_id: uuid.UUID, part_number: int) -> str:
@@ -190,6 +248,11 @@ async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
         music_key=settings.CONFIG.template.music_key,
         voice_key=part.audio_key,
         subtitle_key=part.srt_key,
+        # A intro abre todas as partes, não só a primeira: é ela que dá a mesma
+        # cara à série inteira. Qualquer uma das duas pode ser nula.
+        card_key=run.card_key,
+        hook_voice_key=run.hook_audio_key,
+        hook_muted=_hook_is_muted(part, run),
     )
 
     template_id = uuid.UUID(settings.env.blender_template_id)

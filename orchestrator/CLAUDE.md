@@ -14,10 +14,11 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `schemas/pipeline.py` — `PipelineCreate`, `PipelineResponse`, `PartResponse`
 - `clients/llm.py` — `LLMClient.refine(script, metadata) → RefineResult`
 - `clients/tts.py` — `TTSClient.generate(text, run_id, part_number=1, rate=None, label=None) → (audio_key, srt_key)`
-- `clients/blender.py` — `BlenderClient`: `create_video(...)`, `create_job(...)`, `get_template_config(...)`, `get_job_status(...)`, `poll_job(...)`
+- `clients/blender.py` — `BlenderClient`: `create_video(...)` (inclui `card_key`/`hook_voice_key`), `create_job(...)`, `render_card(text, template, output_key)`, `get_template_config(...)`, `get_job_status(...)`, `poll_job(...)`
 - `clients/tiktok.py` — `TikTokClient.schedule(...)` + exceção `BufferQueueFull`
 - `clients/http.py` — `request(method, url, *, timeout, attempts)`: política única de retry
 - `backgrounds.py` — `pick_background(keys, run_id, part_number)`, puro
+- `hook_text.py` — `opens_with_hook(script, hook) -> bool`, puro: se a parte já abre pela frase gancho
 - `storage/client.py` — `upload_bytes(...)` e `list_keys(bucket, prefix)` via boto3 (MinIO/R2)
 - `worker.py` — `run_pipeline(run_id)` + `recover_interrupted_runs()`, `retry_pending_schedules()`, `maintenance_loop()`
 - `api/app.py` — `lifespan`: reconcilia runs órfãos antes de servir, depois sobe o `maintenance_loop`
@@ -80,11 +81,13 @@ Assets estáticos (background + música) em `config.ini [template]`.
 `run_pipeline(run_id)` — executa as fases sequencialmente:
 
 1. **`_refine`**: chama `LLMClient.refine()` → guarda `hook` no run e cria `PipelinePart` para cada parte retornada
-2. **`_run_hook_tts`**: narra a frase gancho num arquivo próprio (degradável — ver abaixo)
-3. **`_process_all_parts`**: para cada part, executa `_run_tts` + `_run_render` sequencialmente
-4. **`_schedule`**: chama `TikTokClient.schedule()` para cada part com `video_key` definido
+2. **`_narration_rate`**: lê `narration.rate` do template uma vez por run, antes do primeiro TTS
+3. **`_run_hook_tts`**: narra a frase gancho num arquivo próprio (degradável — ver abaixo)
+4. **`_render_card`**: compõe o card de comentário com o gancho (degradável — ver abaixo)
+5. **`_process_all_parts`**: para cada part, executa `_run_tts` + `_run_render` sequencialmente
+6. **`_schedule`**: chama `TikTokClient.schedule()` para cada part com `video_key` definido
 
-**`_run_tts`**: chama `POST tts_service/generate` → salva `audio_key` e `srt_key` na part. Recebe o `rate` da narração e o repassa; `None` deixa o `tts_service` aplicar seu `TTS_RATE`.
+**`_run_tts`**: chama `POST tts_service/generate` → salva `audio_key` e `srt_key` na part. Recebe o `rate` da narração e o repassa; `None` deixa o `tts_service` aplicar seu `TTS_RATE`. O roteiro vai inteiro: quem evita a repetição do gancho é o `hook_muted` do render, não um corte no texto.
 
 ### Velocidade da narração (`_narration_rate`)
 
@@ -94,7 +97,7 @@ A velocidade da narração é definida no `template.json`, no bloco `narration.r
 2. Extrai `narration.rate` (ex.: `"+15%"`)
 3. Repassa como `rate` no `POST tts_service/generate`
 
-Buscado **uma vez por run** em `_process_all_parts`, não por part — o template é o mesmo para todas as partes.
+Buscado **uma vez por run** em `run_pipeline`, antes do TTS do gancho — o template é o mesmo para todas as partes, e o gancho tem de sair no mesmo rate que elas.
 
 **Degrada em silêncio.** Template sem bloco `narration`, blender_worker fora do ar, config inválido — tudo cai no `TTS_RATE` do `tts_service` com um warning no log, sem derrubar o run. Velocidade de narração é decisão estética; não vale falhar um pipeline por isso. Contrasta com o render, onde qualquer falha aborta.
 
@@ -102,22 +105,40 @@ O orchestrador **não valida o formato** do rate — quem valida é o `tts_servi
 
 **`_run_render`**:
 1. Usa `part.srt_key` — legenda word-level já transcrita e subida pelo `tts_service` em `subs/{run_id}/part_{n}.srt`. O orchestrador não gera SRT.
-2. `POST blender_worker/videos` com `background_video_key` + `music_key` (do config.ini) + `voice_key` (audio do TTS) + `subtitle_key`
+2. `POST blender_worker/videos` com `background_video_key` + `music_key` (do config.ini) + `voice_key` (audio do TTS) + `subtitle_key` + `card_key`/`hook_voice_key` (a intro, nullable)
 3. `POST blender_worker/jobs` com `video_id` + `BLENDER_TEMPLATE_ID`
 4. Polling via `poll_job()` até `completed` ou `failed`
 5. Salva `video_key = output_key` na part
 
-**Pré-requisito de infra**: o template (`.blend` + `template.json`) e os assets estáticos (background.mp4, music.mp3) devem estar pré-registrados no blender_worker e no MinIO antes de rodar o pipeline.
+**Pré-requisito de infra**: o template (`.blend` + `template.json`) e os assets estáticos (fundos, trilha) devem estar pré-registrados no blender_worker e no MinIO antes de rodar o pipeline.
+
+⚠️ **`[template] music_key`** apontava para `assets/music.mp3`, que é **35s de silêncio digital** (medido: zero amostras não-nulas) — todo vídeo publicado até aqui saiu sem trilha, sem nenhuma falha. Agora aponta para `assets/music/lofi-goularte.mp3`. O render não valida conteúdo de áudio: um arquivo mudo continua sendo um render bem-sucedido. Ver `docs/vision.md` → "Trilha sonora".
 
 ### Áudio da frase gancho (`_run_hook_tts`)
 
 O `llm_service` devolve `hook` — a frase de abertura do roteiro, isolada. O orchestrador guarda em `PipelineRun.hook` e narra essa frase sozinha, chamando o mesmo `POST tts_service/generate` com `label="hook"` → `hook_audio_key` (`audio/{run_id}/hook.mp3`) e `hook_srt_key`.
 
-⚠️ **A etapa é degradável de propósito.** Falha no TTS do gancho vira `log.warning` e o run continua; falha no TTS de uma parte continua derrubando o run. O gancho já está narrado dentro da parte 1 (é a primeira frase dela), então esse arquivo é um extra — perder o extra não pode custar o vídeo. A ausência fica auditável em `hook_audio_key` nulo.
+⚠️ **A etapa é degradável de propósito.** Falha no TTS do gancho vira `log.warning` e o run continua; falha no TTS de uma parte continua derrubando o run. A abertura é uma camada a mais sobre um vídeo que já se sustenta sem ela (a narração da parte 1 abre com essa mesma frase), e perder a camada não pode custar o vídeo. A ausência fica auditável em `hook_audio_key` nulo.
 
 `LLMClient.refine` lê `data.get("hook")`: um `llm_service` antigo produz run sem gancho, não erro. Deploy dos dois serviços não é atômico.
 
 Colunas em `pipeline_runs`: `hook`, `hook_audio_key`, `hook_srt_key` (migration `003`). Expostas em `PipelineResponse`.
+
+### Abertura do vídeo: card + gancho (`_render_card`)
+
+O card de comentário com a frase gancho é composto uma vez por run (`POST blender_worker/images/render` com `template` = `[template] card_template`, `text` = `run.hook`, `output_key` = `cards/{run_id}.png`) e guardado em `PipelineRun.card_key` (migration `004`, exposto em `PipelineResponse`).
+
+`_run_render` manda `card_key` + `hook_audio_key` + `hook_muted` no `POST /videos`, para **todas as partes** — a intro é o que dá a mesma cara à série inteira, não uma abertura só da parte 1.
+
+⚠️ **Degradável como o áudio do gancho**: falha na composição vira `warning`, `card_key` fica nulo e o vídeo sai sem abertura. Sem gancho, o card nem é pedido.
+
+**`_run_hook_tts` agora recebe o `rate`.** Como o gancho é montado na frente da narração, ele tem de ser narrado na mesma velocidade — daí `_narration_rate()` ter subido para antes do primeiro TTS (era lido dentro de `_process_all_parts`, que agora recebe o valor pronto).
+
+**O gancho é dito uma vez só** (`_hook_is_muted` + `hook_text.opens_with_hook`). Numa parte que já abre pela frase — a parte 1, por construção — tocar o `hook.mp3` na frente da narração diria a mesma coisa duas vezes. Então essa parte vai com `hook_muted=True`: o arquivo continua sendo mandado (é ele que mede quanto tempo o card fica na tela) e o blender_worker o monta mudo, deixando a narração dizer a frase.
+
+A condição é o **texto** da parte, não o número dela: se o refino devolver o gancho abrindo a parte 2, ela se muta sozinha. Gancho reescrito pelo modelo dá `False`, e o vídeo volta a abrir com o áudio próprio. `part.script` nunca é reescrito e o TTS recebe o roteiro inteiro.
+
+Regras completas em `docs/vision.md` → "Abertura do vídeo (intro: card + gancho)".
 
 ### Legendas
 
@@ -156,4 +177,4 @@ docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE orchestrato
 alembic upgrade head && python -m pytest -q
 ```
 
-57 testes em 7 arquivos: `test_pipeline.py` (6, API layer), `test_worker.py` (10, stages individuais + end-to-end), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_resilience.py` (10), `test_backgrounds.py` (6) e `test_http.py` (5).
+82 testes em 9 arquivos: `test_pipeline.py` (6, API layer), `test_worker.py` (10, stages individuais + end-to-end), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (10), `test_backgrounds.py` (6) e `test_http.py` (5).

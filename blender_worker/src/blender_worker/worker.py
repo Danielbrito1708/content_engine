@@ -51,6 +51,18 @@ async def render_job(job_id: uuid.UUID) -> None:
             await download_file(bucket, video.voice_key, voice_path)
             await download_file(bucket, video.subtitle_key, subtitle_path)
 
+            # Intro assets. Both optional: the hook TTS is a degradable step
+            # upstream and the card is composed from it, so a video may legitimately
+            # arrive with neither — it then renders exactly as it did before the
+            # intro existed, instead of failing at the last step of the pipeline.
+            intro_assets = {}
+            for name, key in (("card", video.card_key), ("hook", video.hook_voice_key)):
+                if not key:
+                    continue
+                path = os.path.join(tmpdir, _filename(key))
+                await download_file(bucket, key, path)
+                intro_assets[name] = path
+
             with open(template_json_path) as f:
                 timing = json.load(f)
 
@@ -66,7 +78,9 @@ async def render_job(job_id: uuid.UUID) -> None:
                         "music": music_path,
                         "voice": voice_path,
                         "subtitles": subtitle_path,
+                        **intro_assets,
                     },
+                    "hook_muted": video.hook_muted,
                     "timing": timing,
                 }, f)
 

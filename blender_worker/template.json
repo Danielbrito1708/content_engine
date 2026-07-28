@@ -8,7 +8,14 @@
       "video": 1,
       "music": 2,
       "voice": 3,
-      "subtitles": 4
+      "subtitles": 4,
+      "hook": 5,
+      "card": 6
+    },
+    "card": {
+      "y_position": 0.5,
+      "fade_frames": 4,
+      "tail_seconds": 0.3
     },
     "subtitles": {
       "fade_frames": 3,

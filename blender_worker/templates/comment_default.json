@@ -4,7 +4,7 @@
   "card": {
     "width": 880,
     "offset": { "x": 60, "y": 0 },
-    "gap": 18
+    "gap": 26
   },
   "background": {
     "color": [255, 255, 255, 255],
@@ -22,13 +22,13 @@
     {
       "id": "avatar",
       "minio_key": "assets/perfil-azul.png",
-      "size": { "width": 417, "height": 61 },
+      "size": { "width": 581, "height": 85 },
       "position": { "x": 0, "y": 0 }
     }
   ],
   "text": {
     "font_path": "assets/fonts/Arial-Bold.ttf",
-    "size": 36,
+    "size": 50,
     "color": [0, 0, 0, 255],
     "offset": { "x": 0, "y": 0 },
     "line_spacing": 0
