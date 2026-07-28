@@ -302,6 +302,24 @@ O sistema é configurável em vários aspectos sem precisar alterar o código:
 
 ---
 
+## Feature 10 — Abertura do vídeo: o card com a frase gancho
+
+O vídeo agora **abre com um card de comentário** — aquele card branco de fundo arredondado, com foto de perfil e nome no topo — trazendo a frase gancho da história escrita nele. Enquanto o card está na tela, uma narração lê essa frase em voz alta. Só quando ela termina é que a história começa, com as legendas palavra por palavra de sempre.
+
+Antes, o vídeo começava com três segundos de fundo rodando sozinho: o card era gerado, a frase gancho era narrada em arquivo separado, e nada disso chegava ao vídeo. As duas peças existiam e não se encontravam.
+
+**Como fica na tela.** O card aparece e some suavemente, centralizado, com a mesma folga do lado direito que as demais artes deixam para os botões de curtir e comentar do TikTok. A posição, a duração do aparecer/sumir e a pausa entre o gancho e o início da narração são ajustáveis no template.
+
+**Quanto tempo dura.** A abertura dura o tempo da frase falada, mais uma pequena pausa — não um tempo fixo. Se o gancho for curto, a abertura mantém os três segundos mínimos do template; se for longo, ela estica para caber a frase inteira, e a narração espera. Nunca há palavra cortada nem card sumindo antes da hora.
+
+**Vale para todas as partes da série.** Quando uma história vira duas ou três partes, todas abrem com o mesmo card e a mesma frase. É isso que faz as partes serem reconhecidas como do mesmo vídeo ao aparecerem no feed em dias diferentes.
+
+**Na parte 1 a frase é dita duas vezes** — uma na abertura, sobre o card, e de novo como primeira frase da narração, já que o gancho é literalmente a abertura do roteiro. Foi uma escolha deliberada de formato, não um efeito colateral.
+
+**Se faltar alguma peça, o vídeo sai mesmo assim.** Se a narração do gancho falhar, ou se o card não puder ser gerado, o vídeo é montado sem a abertura, exatamente como era antes — nenhuma das duas peças vale perder o vídeo inteiro, que é o que o sistema existe para entregar.
+
+---
+
 ## Quando o vídeo de fundo está quebrado
 
 Antes, um arquivo de fundo corrompido ou vazio não impedia nada: o sistema montava o vídeo normalmente, marcava o trabalho como concluído e entregava um MP4 com a tela **preta** do começo ao fim. A narração e a legenda estavam lá, mas o vídeo era inutilizável — e nada avisava. Só olhando o resultado dava para perceber.

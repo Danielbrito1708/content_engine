@@ -10,6 +10,10 @@ class VideoCreate(BaseModel):
     music_key: str
     voice_key: str
     subtitle_key: str
+    #: Intro (card + gancho). Opcionais e independentes: um vídeo sem eles
+    #: renderiza como antes de a intro existir.
+    card_key: str | None = None
+    hook_voice_key: str | None = None
     video_metadata: dict[str, Any] | None = None
 
 
@@ -19,6 +23,8 @@ class VideoResponse(BaseModel):
     music_key: str
     voice_key: str
     subtitle_key: str
+    card_key: str | None
+    hook_voice_key: str | None
     video_metadata: dict[str, Any] | None
     created_at: datetime
 

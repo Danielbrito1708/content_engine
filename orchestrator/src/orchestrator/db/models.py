@@ -45,6 +45,9 @@ class PipelineRun(Base):
     #: devolveu gancho ou quando o TTS do gancho falhou (ver `_run_hook_tts`).
     hook_audio_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     hook_srt_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    #: PNG do card de comentário com a frase gancho, mostrado na intro de todas
+    #: as partes. `None` quando não há gancho ou quando a composição falhou.
+    card_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     parts_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[PipelineStatus] = mapped_column(Enum(PipelineStatus), nullable=False, default=PipelineStatus.pending)

@@ -28,6 +28,11 @@ class Video(Base):
     music_key: Mapped[str] = mapped_column(String(512), nullable=False)
     voice_key: Mapped[str] = mapped_column(String(512), nullable=False)
     subtitle_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    #: PNG do card de comentário, mostrado durante a intro. Nullable: quem monta
+    #: o vídeo pode não ter card, e isso não impede o render.
+    card_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    #: Áudio da frase gancho, narrado sobre o card antes da narração da parte.
+    hook_voice_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     video_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

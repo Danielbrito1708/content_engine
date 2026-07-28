@@ -19,6 +19,8 @@ class BlenderClient:
         music_key: str,
         voice_key: str,
         subtitle_key: str,
+        card_key: str | None = None,
+        hook_voice_key: str | None = None,
     ) -> uuid.UUID:
         resp = await request(
             "POST",
@@ -29,9 +31,25 @@ class BlenderClient:
                 "music_key": music_key,
                 "voice_key": voice_key,
                 "subtitle_key": subtitle_key,
+                "card_key": card_key,
+                "hook_voice_key": hook_voice_key,
             },
         )
         return uuid.UUID(resp.json()["id"])
+
+    async def render_card(self, text: str, template: str, output_key: str) -> str:
+        """Compose the comment card PNG. Returns the key it was written to.
+
+        Synchronous on the worker's side (Pillow, not Blender), so there is no
+        job to poll — the response already carries the finished object.
+        """
+        resp = await request(
+            "POST",
+            f"{self._base}/images/render",
+            timeout=60,
+            json={"template": template, "text": text, "output_key": output_key},
+        )
+        return resp.json()["output_key"]
 
     async def create_job(self, video_id: uuid.UUID, template_id: uuid.UUID) -> uuid.UUID:
         resp = await request(

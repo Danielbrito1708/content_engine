@@ -63,6 +63,20 @@ SUBTITLE_SIDE_MARGIN = 0.04
 # Floor for the auto-fit, so a pathologically long token shrinks to something
 # still legible instead of collapsing toward zero.
 MIN_AUTOFIT_FONT_SIZE = 60
+# Intro (comment card + hook narration). Channels default here because
+# `template.json` lives in the bucket, not in the repo: a deployed template
+# written before the intro existed has no entry for them, and a render must not
+# fail — or worse, land the card on top of the video strip — over that.
+DEFAULT_HOOK_CHANNEL = 5
+DEFAULT_CARD_CHANNEL = 6
+# Silence between the last word of the hook and the first word of the narration.
+# Zero makes the two run together as one breathless sentence; a third of a
+# second is the pause a person leaves after reading a title out loud.
+DEFAULT_HOOK_TAIL_SECONDS = 0.3
+# Card centre, as a fraction of frame height (same convention as the subtitles).
+DEFAULT_CARD_Y = 0.5
+DEFAULT_CARD_FADE_FRAMES = 4
+
 DEFAULT_TEXT_COLOR = (1.0, 1.0, 1.0, 1.0)
 DEFAULT_OUTLINE_COLOR = (0.0, 0.0, 0.0, 1.0)
 # Blender's own default (0.05) is a hairline that disappears over a bright
@@ -333,6 +347,97 @@ def add_sound_strip(vse, path, channel, frame_start):
     )
 
 
+def narration_start_frame(default_start, hook_end=None, tail_frames=0):
+    """Frame where the part's narration starts.
+
+    Without a hook this is the template's own `speech_start` — the fixed intro
+    every render had before there was anything to put in it. With one, the
+    narration has to wait for the hook to finish speaking, plus a beat: the hook
+    is read over the card and the story only begins after it.
+
+    `max` and not a plain sum, so a hook shorter than the template's intro does
+    not *shorten* the intro — the template's number stays the floor, which is
+    what keeps a run without a hook and a run with a very short one framed the
+    same way.
+
+    Pure — frame numbers in, frame number out.
+    """
+    if not hook_end:
+        return default_start
+    return max(default_start, hook_end + tail_frames)
+
+
+def card_offset_y(y_position, frame_height):
+    """Vertical offset in pixels for the card image strip.
+
+    Blender centres an image strip in the frame, and `transform.offset_y` moves
+    it from there in pixels (positive = up). `y_position` is a fraction of frame
+    height with the same meaning as the subtitles' — 0 = bottom, 0.5 = dead
+    centre — so both are read off the same scale, and it addresses the card's
+    own centre, so a two-line card and a five-line one sit at the same place.
+
+    Clamped to 0..1: an off-frame value renders as a card silently missing.
+
+    Pure — no bpy.
+    """
+    position = min(1.0, max(0.0, float(y_position)))
+    return round((position - 0.5) * frame_height)
+
+
+def add_image_strip(vse, path, channel, frame_start, frame_end):
+    """Image strip covering [frame_start, frame_end), composited over the video.
+
+    `fit_method="ORIGINAL"` keeps the PNG at its own pixel size: the card is
+    authored at exactly the frame width (1080) with transparent margins, so any
+    fitting would only resample it. `blend_type` must be set explicitly —
+    a strip added through the API does not inherit the ALPHA_OVER the UI gives
+    it, and without it the card's transparent frame renders as a black box over
+    the video.
+    """
+    strip = vse.sequences.new_image(
+        name=os.path.basename(path),
+        filepath=path,
+        channel=channel,
+        frame_start=frame_start,
+        fit_method="ORIGINAL",
+    )
+    strip.frame_final_duration = max(1, frame_end - frame_start)
+    strip.blend_type = "ALPHA_OVER"
+    strip.blend_alpha = 1.0
+    return strip
+
+
+def add_card(scene, vse, path, channel, frame_start, frame_end, config=None, frame_height=None):
+    """The comment card, on screen for the whole intro.
+
+    Fades in and out at the edges of the intro. The fade is capped at a third of
+    the strip for the same reason the subtitles' is: a fade longer than the strip
+    would insert inverted keyframes and the card would end up half-transparent
+    for its whole life.
+    """
+    config = config or {}
+    strip = add_image_strip(vse, path, channel, frame_start, frame_end)
+
+    if frame_height:
+        strip.transform.offset_y = card_offset_y(
+            config.get("y_position", DEFAULT_CARD_Y), frame_height
+        )
+
+    duration = strip.frame_final_duration
+    fade = min(int(config.get("fade_frames", DEFAULT_CARD_FADE_FRAMES)), duration // 3)
+    if fade > 0:
+        strip.blend_alpha = 0.0
+        strip.keyframe_insert("blend_alpha", frame=frame_start)
+        strip.blend_alpha = 1.0
+        strip.keyframe_insert("blend_alpha", frame=frame_start + fade)
+        strip.keyframe_insert("blend_alpha", frame=frame_start + duration - fade)
+        strip.blend_alpha = 0.0
+        strip.keyframe_insert("blend_alpha", frame=frame_start + duration)
+        _set_easing(scene, strip, "blend_alpha", 0, "SINE", "EASE_OUT")
+
+    return strip
+
+
 def content_end_frame(strips, bed_channels, fallback):
     """Last frame carrying content, ignoring the background beds.
 
@@ -529,7 +634,40 @@ def main():
     music_strip = add_sound_strip(vse, assets["music"], channels["music"], t["intro_start"] + 1)
     music_strip.volume = 0.2
 
-    speech_start = t["speech_start"] + 1
+    # Intro: the hook is read aloud over the comment card, and only then does the
+    # narration start. Both assets are optional — a run whose hook TTS failed, or
+    # whose card could not be composed, still renders exactly as it did before.
+    card_config = timing.get("card", {})
+    intro_start = t["intro_start"] + 1
+
+    hook_strip = None
+    if assets.get("hook"):
+        hook_strip = add_sound_strip(
+            vse, assets["hook"], channels.get("hook", DEFAULT_HOOK_CHANNEL), intro_start
+        )
+        hook_strip.volume = 1.0
+
+    tail_frames = round(
+        float(card_config.get("tail_seconds", DEFAULT_HOOK_TAIL_SECONDS)) * frame_rate
+    )
+    speech_start = narration_start_frame(
+        t["speech_start"] + 1,
+        hook_strip.frame_final_end if hook_strip else None,
+        tail_frames,
+    )
+
+    if assets.get("card"):
+        add_card(
+            scene,
+            vse,
+            assets["card"],
+            channels.get("card", DEFAULT_CARD_CHANNEL),
+            intro_start,
+            speech_start,
+            card_config,
+            scene.render.resolution_y,
+        )
+
     voice_strip = add_sound_strip(vse, assets["voice"], channels["voice"], speech_start)
     voice_strip.volume = 1.0
 

@@ -32,6 +32,7 @@ class PipelineResponse(BaseModel):
     hook: str | None
     hook_audio_key: str | None
     hook_srt_key: str | None
+    card_key: str | None
     classification: dict | None
     error: str | None
     parts: list[PartResponse]

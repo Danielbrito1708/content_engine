@@ -42,6 +42,10 @@ Usuário → dashboard / API ─┴─ POST /pipeline  { script: "...", metadata
   ├─ 1.5. TTS DO GANCHO → tts_service   (degradável: falha não derruba o run)
   │     └─ narra só a frase gancho → audio/{run_id}/hook.mp3
   │
+  ├─ 1.6. CARD DO GANCHO → blender_worker   (degradável)
+  │     └─ compõe o card de comentário → cards/{run_id}.png
+  │     └─ os dois abrem o vídeo de todas as partes (ver "Abertura do vídeo")
+  │
   ├─ [para cada parte do roteiro:]
   │   ├─ 2. TTS → tts_service
   │   │     └─ gera audio.mp3, salva no MinIO
@@ -152,7 +156,9 @@ O gancho sempre foi **regra de escrita** no prompt de refino ("a primeira frase 
 
 **Regra de derivação.** Fim de frase = pontuação terminal (`. ! ? …`, mais aspas/parênteses de fechamento) **seguida de espaço** — exigir o espaço é o que impede `R$ 3.5 mil` de virar fim de frase. Sem pontuação terminal, a parte inteira seria o "gancho", então há um teto de 200 caracteres com corte na última palavra inteira. O teto existe só para a derivação; gancho vindo do modelo é usado como veio.
 
-**O gancho não é removido da parte 1.** Ele continua sendo a primeira frase da narração completa — o campo é uma *cópia identificada*, não um recorte. Por isso o vídeo montado não repete nada: o render usa o áudio da parte, e o áudio do gancho é um artefato à parte.
+**O gancho não é removido da parte 1.** Ele continua sendo a primeira frase da narração completa — o campo é uma *cópia identificada*, não um recorte.
+
+**E o vídeo montado repete a frase, de propósito.** Desde que a intro passou a montar o áudio do gancho na frente da narração (ver "Abertura do vídeo"), a parte 1 diz a mesma frase duas vezes: uma sobre o card, outra ao abrir a narração. É decisão de formato — o card é lido em voz alta como um título, e a história começa do início logo depois. As alternativas foram consideradas e recusadas: cortar a frase da narração exigiria casar o texto do gancho com o SRT palavra a palavra para achar onde cortar o áudio, e pular a intro só na parte 1 daria à primeira parte uma abertura diferente das outras — justamente a parte que mais precisa ser reconhecida como o começo da série.
 
 ### Áudio do gancho
 
@@ -408,7 +414,57 @@ O texto é **Arial Bold preta sobre card branco**. A fonte é versionada em `ble
 
 **O peso é Bold, não Black.** A Black foi o primeiro corte e ficou pesada demais para o texto corrido do card; ela continua versionada como alternativa. A diferença não é só de espessura: a Black também é mais **larga**, então o mesmo texto quebra em mais linhas e a altura do card cresce junto. Trocar o peso é editar `text.font_path` no guide — nenhum código conhece o nome da fonte.
 
+**Nota:** o card deixou de ser só um asset avulso — ele é a abertura de todo vídeo montado pelo pipeline. Ver "Abertura do vídeo (intro)" abaixo.
+
 **O antialiasing já existia antes de haver um knob para ele.** O texto é desenhado pelo FreeType, que antialiasa por conta própria; os cantos arredondados já eram desenhados em 4× e reduzidos. `canvas.supersample` renderiza o card inteiro em N× e reduz uma vez com LANCZOS — é uma passada de uniformidade *em cima* disso, não a origem do efeito, e `supersample: 1` continua sendo uma escolha válida e mais barata. Os testes afirmam que o AA está presente nos dois ajustes, em vez de afirmar que o knob o cria.
+
+---
+
+## Abertura do vídeo (intro: card + gancho)
+
+O vídeo abre com o **card de comentário** trazendo a frase gancho, e com essa frase **narrada por cima dele**. A narração da parte começa quando o gancho termina. As duas peças já existiam separadas — o card (`POST /images/render`) e o `hook.mp3` (`_run_hook_tts`) — e nenhuma chegava ao vídeo: a intro era um bloco de 3 segundos de fundo rodando sozinho.
+
+### Quem monta o quê
+
+```
+orchestrator
+  ├─ _run_hook_tts   → audio/{run_id}/hook.mp3      (rate = narration.rate)
+  ├─ _render_card    → cards/{run_id}.png            (POST blender_worker/images/render)
+  └─ _run_render     → POST /videos {card_key, hook_voice_key, ...}
+                          └→ blender_worker: ch6 imagem + ch5 som, antes da narração
+```
+
+`PipelineRun` ganhou `card_key` (migration `004`); `videos` ganhou `card_key` e `hook_voice_key` (migration `d4e5f6a7b8c9`). Ambas as colunas são nullable, e é essa nulidade que carrega o significado de "não há intro".
+
+### A intro dura o gancho, não um número fixo
+
+`narration_start_frame(default_start, hook_end, tail_frames)` decide onde a narração começa: `max(speech_start_do_template, fim_do_gancho + tail)`.
+
+- **`max` e não soma** — um gancho curto não *encurta* a abertura: o `speech_start` do template (90 frames) continua sendo o piso, então um run sem gancho e um run com gancho de 1 segundo têm a mesma moldura.
+- **O `tail` (0.3s por padrão)** separa a última palavra do gancho da primeira da narração. Sem ele as duas falas colam e viram uma frase só, o que denuncia a emenda.
+- O card cobre exatamente `[intro_start, narration_start)` — a abertura inteira, sempre.
+
+Medido no render de validação: gancho de 2,60s, `tail` de 0,3s → narração em 3,03s (o piso do template venceu), card de 0 a 3,00s. O mixdown mostra voz a ~-22 dBFS de 0 a 2,5s, -37 dBFS no intervalo (só a trilha a 0.2) e ~-19 dBFS a partir de 3,0s.
+
+### O gancho vai no rate da narração
+
+`_run_hook_tts` passou a receber o `narration.rate` do template, o que obrigou `_narration_rate()` a ser lido **antes** do primeiro TTS (era lido dentro de `_process_all_parts`). Enquanto o gancho era um artefato à parte, narrá-lo no `TTS_RATE` default não aparecia em lugar nenhum; montado na frente da narração, um rate diferente lê como uma segunda voz.
+
+### Canais novos, com default no código
+
+`channels.hook` (5) e `channels.card` (6) entram no `template.json`, mas `edit_video.py` traz os dois como default. O `template.json` **vive no bucket**: um template publicado antes desta feature não tem os campos, e sem default o card cairia no canal do vídeo de fundo — encobrindo o vídeo inteiro em vez de aparecer sobre ele. O card fica acima da legenda porque os dois nunca coexistem: as legendas começam com a narração, e aí o card já saiu.
+
+### O card é um strip de imagem com alpha
+
+`fit_method="ORIGINAL"` e `blend_type="ALPHA_OVER"`, ambos explícitos. O PNG é composto na largura exata do frame (1080) com margem transparente, então qualquer *fit* só reamostraria a imagem. E o `blend_type` de um strip criado pela API **não** é o `ALPHA_OVER` que a UI dá: sem setar, a moldura transparente do card renderiza como uma caixa preta sobre o vídeo.
+
+`card.y_position` usa a mesma escala do `y_position` da legenda (fração da altura do frame, 0 = base), aplicada como `transform.offset_y` em pixels a partir do centro; clampada a 0..1 porque um valor fora do frame vira card sumido sem erro. O fade é limitado a ⅓ do strip pelo mesmo motivo que o da legenda — um fade maior que o strip nunca chegaria a opacidade cheia.
+
+### Degradação
+
+Card e gancho são **independentes e degradáveis**: cada etapa vira `warning` e deixa a key nula. Um vídeo sem gancho e sem card renderiza exatamente como antes desta feature, o que é o comportamento que se quer de uma camada visual num pipeline cujo produto é o vídeo. A assimetria com o TTS das partes (que derruba o run) é a mesma de sempre: sem narração não há vídeo, sem abertura há.
+
+**A intro abre todas as partes**, não só a primeira — é ela que dá a mesma cara à série inteira quando as partes caem no feed em dias diferentes.
 
 ---
 
