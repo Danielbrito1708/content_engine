@@ -82,6 +82,8 @@ O texto bruto raramente está pronto para virar um vídeo viral. O sistema passa
 
 A primeira frase é transformada para prender o espectador nos primeiros dois segundos. Esse gancho é o elemento mais importante de um vídeo — sem ele, o usuário passa para o próximo. O restante do roteiro é reescrito em linguagem coloquial, direta e envolvente, preservando o conteúdo e a essência do que foi enviado.
 
+Além de abrir o roteiro, esse gancho volta separado, como uma frase à parte. Antes ele era só a primeira linha de um texto corrido, e ninguém sabia dizer onde ele terminava; agora o sistema devolve a frase inteira, identificada, para poder ser usada sozinha. Se o modelo esquecer de mandá-la, o sistema a recupera pegando a primeira frase da parte 1 — o gancho nunca fica faltando.
+
 Cada parte termina com uma chamada para ação clara: um pedido para comentar, seguir, ver a parte 2, ou qualquer comportamento específico que maximize o engajamento.
 
 **Divisão em partes:**
@@ -99,6 +101,10 @@ Junto com o roteiro refinado, o sistema produz uma classificação automática d
 Com o roteiro pronto, o sistema gera a narração em áudio. O texto é transformado em fala por um motor de síntese de voz, e o resultado é um arquivo de áudio MP3.
 
 A voz padrão é feminina, jovem e adequada para o estilo TikTok brasileiro. É possível configurar outras vozes, inclusive masculinas, dependendo do tipo de conteúdo. Para roteiros divididos em partes, cada parte recebe seu próprio arquivo de áudio separado.
+
+**A frase gancho também é narrada, num arquivo só dela.** A mesma locutora, o mesmo ritmo, o mesmo tratamento de áudio das partes — só que dizendo apenas a frase de abertura. O arquivo fica guardado junto com os outros do vídeo e pode ser usado para abrir a peça, testar ganchos diferentes ou montar uma prévia, sem depender de recortar o áudio da parte 1. O vídeo em si continua sendo montado como antes: a narração completa já contém o gancho na primeira frase, então nada é dito duas vezes.
+
+Se a narração do gancho falhar, o vídeo é produzido do mesmo jeito. Esse arquivo é um extra — perdê-lo não pode custar a peça inteira, e a falta dele fica registrada para quem for olhar depois.
 
 O sistema suporta três motores de voz. O primeiro é gratuito e funciona sem nenhuma configuração extra, mas entrega o áudio numa qualidade fixa e baixa — é a razão pela qual a narração soava abafada, como se viesse de um rádio. O segundo é o Azure, que usa exatamente as mesmas vozes do gratuito, só que numa qualidade muito superior: é o motor recomendado e o padrão de produção. O terceiro é o ElevenLabs, ainda não implementado, para quando fizer sentido pagar por vozes mais expressivas. A escolha entre eles é feita por configuração, sem alterar nada no fluxo de produção.
 

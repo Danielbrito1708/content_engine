@@ -26,5 +26,10 @@ async def refine(body: RefineRequest) -> RefineResponse:
         log.error("llm request failed", error=str(exc))
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}")
 
-    log.info("refine done", parts=len(result.parts), content_type=result.classification.content_type)
+    log.info(
+        "refine done",
+        parts=len(result.parts),
+        content_type=result.classification.content_type,
+        hook_chars=len(result.hook),
+    )
     return result

@@ -25,6 +25,7 @@ Serviço de refinamento e classificação de roteiros via LLM. Expõe `POST /ref
 
 **Response** (`RefineResponse`):
 - `parts` (list[str]) — partes do roteiro refinado (1 ou mais)
+- `hook` (str) — a frase gancho, isolada. **Sempre preenchida** (ver abaixo)
 - `classification.content_type` — drama / comédia / motivacional / educativo / entretenimento / suspense
 - `classification.tone` — suspenseful / funny / emotional / educational / inspirational / shocking
 - `classification.target_audience` — `{age_range, gender, interests}`
@@ -33,6 +34,18 @@ Serviço de refinamento e classificação de roteiros via LLM. Expõe `POST /ref
 - `classification.split_rationale` — razão do corte ou `null`
 
 Erros: `502` se o LLM retornar JSON inválido ou se a chamada à API falhar.
+
+### Frase gancho (`hook`)
+
+O gancho era só uma regra de escrita no prompt; virou campo porque o orchestrador narra essa frase num arquivo próprio (`audio/{run_id}/hook.mp3`) e, para isso, precisa saber onde ela termina.
+
+**API pública** (`schemas/refine.py`):
+- `derive_hook(parts) -> str` — primeira frase de `parts[0]`, com teto de `MAX_HOOK_CHARS` (200) cortado na última palavra inteira
+- `RefineResponse._fill_hook` — validator `mode="after"`: `hook` vazio/branco cai em `derive_hook`
+
+**O campo nunca volta vazio quando há roteiro.** O prompt pede o `hook` copiado literal da primeira frase da parte 1, mas o contrato não pode depender de o modelo obedecer — daí o fallback. Fim de frase = pontuação terminal (`. ! ? …` + aspas/parênteses de fechamento) **seguida de espaço**; exigir o espaço é o que impede `R$ 3.5 mil` de virar fim de frase.
+
+O gancho **não** é removido de `parts[0]` — o campo é uma cópia identificada, não um recorte. Quem monta o vídeo usa o áudio da parte; o áudio do gancho é artefato à parte.
 
 ### Endpoint de moderação (`src/llm_service/api/routes/moderate.py`)
 
@@ -63,7 +76,7 @@ Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`). `ge
 
 ## Testes
 
-9 testes em `tests/test_refine.py`. LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
+`tests/test_refine.py` + `tests/test_hook.py` (14 testes do gancho: derivação, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO. 36 testes no total.
 
 ```bash
 poetry run pytest

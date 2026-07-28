@@ -29,6 +29,9 @@ class PipelineResponse(BaseModel):
     id: uuid.UUID
     status: PipelineStatus
     parts_count: int
+    hook: str | None
+    hook_audio_key: str | None
+    hook_srt_key: str | None
     classification: dict | None
     error: str | None
     parts: list[PartResponse]

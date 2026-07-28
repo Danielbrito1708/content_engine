@@ -37,6 +37,10 @@ Usuário → dashboard / API ─┴─ POST /pipeline  { script: "...", metadata
   │     └─ classifica: público-alvo, tom, tipo de conteúdo
   │     └─ decide se divide em partes (e onde cortar com cliffhanger)
   │     └─ gera resumo das partes anteriores (para parte 2+)
+  │     └─ devolve a frase gancho isolada (campo `hook`)
+  │
+  ├─ 1.5. TTS DO GANCHO → tts_service   (degradável: falha não derruba o run)
+  │     └─ narra só a frase gancho → audio/{run_id}/hook.mp3
   │
   ├─ [para cada parte do roteiro:]
   │   ├─ 2. TTS → tts_service
@@ -112,6 +116,28 @@ O schema é armazenado como JSONB no DB do orchestrador. Novos campos são adici
 - Se dividido, o LLM escolhe o ponto de corte que maximize a curiosidade (cliffhanger natural).
 - Para partes 2+, o LLM gera um resumo curto ("Na parte anterior...") que é inserido no início do roteiro daquela parte antes de ir para o TTS.
 - O orchestrador cria um `pipeline_part` por parte e processa cada uma em sequência.
+
+---
+
+## Frase gancho (`hook`)
+
+O gancho sempre foi **regra de escrita** no prompt de refino ("a primeira frase deve prender em 2 segundos"), nunca um dado. Passou a ser campo (`RefineResponse.hook`) porque o pipeline precisa narrá-lo isolado, e para isso é preciso saber onde a frase termina — coisa que texto corrido não informa.
+
+**O campo é sempre preenchido.** O prompt pede o `hook` copiado literalmente da primeira frase da parte 1; se o modelo omitir, um validador em `RefineResponse` deriva a frase de `parts[0]` (`derive_hook`). O contrato do endpoint não pode depender da obediência do modelo — quem consome trata `hook` vazio como "não há gancho", e isso só deve acontecer quando não há roteiro.
+
+**Regra de derivação.** Fim de frase = pontuação terminal (`. ! ? …`, mais aspas/parênteses de fechamento) **seguida de espaço** — exigir o espaço é o que impede `R$ 3.5 mil` de virar fim de frase. Sem pontuação terminal, a parte inteira seria o "gancho", então há um teto de 200 caracteres com corte na última palavra inteira. O teto existe só para a derivação; gancho vindo do modelo é usado como veio.
+
+**O gancho não é removido da parte 1.** Ele continua sendo a primeira frase da narração completa — o campo é uma *cópia identificada*, não um recorte. Por isso o vídeo montado não repete nada: o render usa o áudio da parte, e o áudio do gancho é um artefato à parte.
+
+### Áudio do gancho
+
+O orchestrador narra o `hook` numa etapa própria (`_run_hook_tts`), entre o refino e o processamento das partes, e guarda `hook_audio_key` / `hook_srt_key` no `pipeline_run`.
+
+**Key própria via `label`.** O `tts_service` montava a key sempre como `part_{n}`; o gancho sobrescreveria `part_1.mp3`, que é a narração da parte inteira. O `GenerateRequest` ganhou `label` opcional (`hook` → `audio/{run_id}/hook.mp3`, `subs/{run_id}/hook.srt`). O pattern `^[a-z0-9][a-z0-9_-]{0,63}$` não é cosmético: a key é montada por interpolação e um label com `/` ou `..` escreveria fora do run.
+
+**A etapa é degradável.** Falha no TTS do gancho vira `warning` e o run segue; falha no TTS de uma parte continua derrubando o run. A assimetria é intencional — o gancho já está narrado dentro da parte 1, então esse arquivo é um extra, e perder um extra não pode custar o vídeo, que é o que o pipeline existe para entregar. A ausência fica auditável em `hook_audio_key` nulo.
+
+**Compatibilidade.** `LLMClient.refine` lê `data.get("hook")`, então um `llm_service` antigo (sem o campo) apenas resulta em run sem gancho, não em erro — o deploy dos dois serviços não é atômico. Mesma lógica no `tts_service`: sem `label`, as keys são exatamente as de antes.
 
 ---
 
@@ -426,6 +452,8 @@ Comentários são uma **capacidade opcional**, no Protocol separado `CommentCapa
 ```
 tts_service     → audio/{pipeline_run_id}/part_{n}.mp3
                 → subs/{pipeline_run_id}/part_{n}.srt   (legenda word-level, via Whisper)
+                → audio/{pipeline_run_id}/hook.mp3      (frase gancho narrada sozinha)
+                → subs/{pipeline_run_id}/hook.srt
 blender_worker  → outputs/{job_id}.mp4   (vídeo renderizado)
                 → outputs/{job_id}.blend  (cena Blender montada, para inspeção/reuso)
 ```
