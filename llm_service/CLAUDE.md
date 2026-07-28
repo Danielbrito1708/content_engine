@@ -5,13 +5,17 @@ Serviço de refinamento e classificação de roteiros via LLM. Expõe `POST /ref
 ## Arquitetura
 
 - `api/routes/refine.py` — endpoint principal
+- `api/routes/moderate.py` — `POST /moderate`, segurança de publicação
+- `api/routes/story.py` — `POST /story-quality`, gancho + storytelling em lote
 - `api/routes/health.py` — `GET /health` com provider e model ativos
 - `llm/base.py` — `BaseLLMClient` com método `refine()` que faz parse do JSON
 - `llm/openai_compat.py` — `OpenAICompatClient` (OpenRouter + Chutes AI via `openai` package)
 - `llm/anthropic_client.py` — `AnthropicClient` (API Anthropic direta)
 - `llm/factory.py` — `get_llm_client()` seleciona o provider via `LLM_PROVIDER` env var
 - `prompts/refine.py` — `SYSTEM_PROMPT` + `build_user_prompt(script, metadata)`
+- `prompts/moderate.py`, `prompts/story.py` — idem para os outros dois endpoints
 - `schemas/refine.py` — `RefineRequest`, `RefineResponse`, `Classification`, `TargetAudience`
+- `schemas/story.py` — `StoryItem`, `StoryQualityRequest`, `StoryVerdict`, `StoryQualityResponse`
 
 ## Features
 
@@ -60,6 +64,23 @@ Erros: `502` se o LLM falhar ou devolver JSON sem veredito. O chamador precisa d
 
 **Modelo próprio.** Usa `LLM_MODERATION_MODEL`, que cai de volta para `LLM_MODEL` quando não definido. A chamada é um sim/não, então não precisa do modelo de refino — apontar para um mais barato reduz o custo por candidato.
 
+### Endpoint de qualidade narrativa (`src/llm_service/api/routes/story.py`)
+
+`POST /story-quality` — avalia, **em lote**, se cada candidato tem gancho e se se conta bem. Chamado pelo `content_scout` uma vez por ciclo.
+
+**Request** (`StoryQualityRequest`): `items[]` com `index` (int), `opening` (str), `title` (str, opcional).
+**Response** (`StoryQualityResponse`): `results[]` com `index`, `hook` (bool), `score` (0–10), `hook_line` (str | null), `reason` (str | null).
+
+**Por que recebe lista e não uma história.** Ao contrário da moderação — que só roda nos 2–3 candidatos que vão ser publicados —, isto é sinal de **seleção**: precisa ver todos os candidatos do ciclo para poder ordená-los, e pontuar só a cabeça da lista seria circular. Uma chamada por candidato seriam ~30 por ciclo; uma chamada com as 30 aberturas são alguns milhares de tokens e sai mais barato que a moderação.
+
+**O `index` é o contrato.** Cada item leva o próprio índice e os vereditos o devolvem, então um modelo que reordena ou omite entradas não desloca nota para a história errada. Índice não pedido, ou repetido, é descartado com log.
+
+⚠️ **Degrada por item, não por lote.** Veredito malformado é descartado e os outros voltam — o chamador trata veredito ausente como "não avaliado" e cai de volta no ranking da fonte. Nota fora de 0–10 é **clampada**, não rejeitada: um número ruim não pode custar o veredito de todos os outros. Já uma resposta que não rende **nenhum** veredito utilizável é `502` — isso é falha, não resultado vazio. Lista vazia na entrada devolve 200 sem chamar o LLM.
+
+`prompts/story.py` traz a anatomia do gancho em quatro partes (relação concreta, conflito em curso, promessa de desfecho, curiosidade não resolvida), com exemplo forte e exemplos fracos, e a régua de 0–10 que põe post comum de fórum em 4–6. O prompt é explícito em separar qualidade narrativa de aceitabilidade do assunto — essa decisão é da moderação.
+
+**Modelo próprio.** `LLM_STORY_MODEL`, com fallback para `LLM_MODEL`. Não compartilha o modelo da moderação: julgar craft narrativo sobre um lote é mais difícil que um sim/não.
+
 ### Providers LLM (`src/llm_service/llm/`)
 
 Selecionado por `LLM_PROVIDER` env var:
@@ -76,7 +97,7 @@ Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`). `ge
 
 ## Testes
 
-`tests/test_refine.py` + `tests/test_hook.py` (14 testes do gancho: derivação, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO. 36 testes no total.
+53 testes: `tests/test_refine.py` (9), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
 
 ```bash
 poetry run pytest

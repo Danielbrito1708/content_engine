@@ -15,6 +15,17 @@ from sqlalchemy import delete
 from src.content_scout.api.app import app  # triggers bootstrap
 from src.content_scout.db.engine import AsyncSessionLocal
 from src.content_scout.db.models import SeenItem
+from src.content_scout.sources.reddit import shared_throttle
+
+
+@pytest.fixture(autouse=True)
+def fresh_throttle():
+    """The Reddit window is process state, shared by every source instance —
+    without this each test would inherit the previous test's timer and wait it
+    out for real."""
+    shared_throttle(0).reset()
+    yield
+    shared_throttle(0).reset()
 
 
 @pytest_asyncio.fixture

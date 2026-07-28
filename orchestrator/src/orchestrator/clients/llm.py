@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 
-import httpx
-
 from src.core import settings
+from src.orchestrator.clients.http import request
 
 
 @dataclass
@@ -19,10 +18,13 @@ class LLMClient:
         self._base = settings.CONFIG.services.llm_url
 
     async def refine(self, script: str, metadata: dict) -> RefineResult:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(f"{self._base}/refine", json={"script": script, "metadata": metadata})
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await request(
+            "POST",
+            f"{self._base}/refine",
+            timeout=120,
+            json={"script": script, "metadata": metadata},
+        )
+        data = resp.json()
         return RefineResult(
             parts=data["parts"],
             classification=data["classification"],

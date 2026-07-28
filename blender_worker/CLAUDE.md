@@ -61,7 +61,8 @@ The app requires a `.env` file at the project root. Copy from `.env.example` and
 - `db/engine.py` — async SQLAlchemy engine + `AsyncSessionLocal` + `get_session()` dependency. Reads `DATABASE_URL` from env at import time (safe because `app.py` triggers bootstrap first).
 - `schemas/job.py` — `JobCreate` (request) and `JobResponse` (response) Pydantic models.
 - `schemas/image.py` — `ImageRenderRequest` and `ImageRenderResponse` Pydantic models.
-- `storage/client.py` — `get_s3_client()` returns a boto3 S3 client pointed at MinIO via env vars. Also has `download_file` and `upload_file` async helpers.
+- `api/routes/templates.py` — `POST /templates`, `GET /templates/{id}`, `GET /templates/{id}/config`. See `## Features`.
+- `storage/client.py` — `get_s3_client()` returns a boto3 S3 client pointed at MinIO via env vars. Also has `download_file`, `download_bytes` and `upload_file` async helpers.
 - `worker.py` — `render_job(job_id)` async function: downloads all assets + template from MinIO into a tmpdir, runs Blender twice (assembly via `scripts/edit_video.py`, then render with `-a`), uploads the MP4 output, updates status to completed/failed. Called via FastAPI `BackgroundTasks`.
 - `scripts/edit_video.py` — Python script that runs **inside** Blender's interpreter (`blender -b template.blend -P edit_video.py -- job_config.json`). Sets up the VSE: movie strip (ch1), music strip at volume 0.2 with fade-out keyframes (ch2), voice strip at volume 1.0 (ch3), word-level text subtitles from `.srt` (ch4). Saves `.blend` and sets render output to the MP4 path. `bpy` is imported inside `main()` only, and `main()` is behind an `if __name__ == "__main__"` guard, so the pure helpers are importable (and tested) outside Blender.
 - `image/text.py` — word wrap + text block height calculation. See `## Features`.
@@ -95,7 +96,11 @@ A file with no decodable video track *still loads* as a movie strip — Blender 
 
 Pure (takes anything with a `frame_duration`), so it is tested without Blender.
 
-**Render length** — `content_end_frame(strips, bed_channels, fallback)` sets `scene.frame_end`. The music **and the background video** are *beds*: each is however long its asset happens to be, so neither may define where the video ends — only the narration and its subtitles do. Measured: a 90s background under a 68s narration rendered 22s of dead air after the last word left the screen. Previously only music was excluded, which went unnoticed because the placeholder background was a single frame. A bed *shorter* than the narration is deliberately not handled: the tail goes black, which is a problem to fix in the asset. Pure, so the rule is tested without Blender.
+**Background coverage** — `background_repeats(clip_frames, first_start, needed_end, max_repeats=MAX_BACKGROUND_REPEATS)` returns the start frames for the extra copies needed to cover the narration; `extend_background(vse, path, channel, strip, needed_end)` lays them down. Called in `main()` **after** `scene.frame_end` is decided.
+
+A bed shorter than the narration used to render a **black tail** — no error, no warning: measured, a 45s clip under a 71s narration gave 26s of black with subtitles still popping over it. That was filed as an asset problem while every render shared one long hand-picked file; with backgrounds now drawn from a clip library (`orchestrator` rotates over `assets/backgrounds/`), a short clip is the normal case. Copies are laid exactly end to end — an overlap makes Blender relocate the strip to another channel, a gap is a black frame. `MAX_BACKGROUND_REPEATS` (60) bounds the degenerate case; past it the tail goes black as before. Pure, tested without Blender.
+
+**Render length** — `content_end_frame(strips, bed_channels, fallback)` sets `scene.frame_end`. The music **and the background video** are *beds*: each is however long its asset happens to be, so neither may define where the video ends — only the narration and its subtitles do. Measured: a 90s background under a 68s narration rendered 22s of dead air after the last word left the screen. Previously only music was excluded, which went unnoticed because the placeholder background was a single frame. A bed *shorter* than the narration is covered by repeating it (see **Background coverage** above) rather than by shrinking the timeline, which would cut narration mid-sentence. Pure, so the rule is tested without Blender.
 
 **`scripts/edit_video.py` VSE layout:**
 - Scene — `fps = frame_rate` **and `fps_base = 1.0`**. Blender's effective fps is `fps / fps_base`, and `fps_base` comes from the `.blend` (the current `template.blend` is `6/0.1` = 60fps). Leaving it alone makes the scene run at `frame_rate / 0.1` — 10x off, which desyncs every frame-based timing and stretches sound strips 10x.
@@ -131,9 +136,15 @@ The `.srt` produced by `tts_service` has **one entry per word** (Whisper `word_t
 
 **Template config** (optional block in `template.json`):
 ```json
-"subtitles": { "fade_frames": 3, "max_hold_seconds": 0.4, "rise_frames": 4, "rise_offset": 0.025 }
+"subtitles": { "fade_frames": 3, "max_hold_seconds": 0.4, "rise_frames": 4, "rise_offset": 0.025, "font_size": 160, "y_position": 0.474 }
 ```
-`rise_offset` is a fraction of frame height (0.025 ≈ 48px at 1080×1920); `rise_frames: 0` disables the animation. Resting position is `SUBTITLE_Y = 0.05`.
+`rise_offset` is a fraction of frame height (0.025 ≈ 48px at 1080×1920); `rise_frames: 0` disables the animation.
+
+**Vertical position** — `y_position` (default `0.5`, dead centre) is a fraction of frame height, clamped to 0..1 because an off-frame value renders as subtitles silently missing rather than as an error. Strips use `align_y = "CENTER"`, so the value positions the text's own middle: the same number means the same place for a tall word and a short one. `0.05` restores the old bottom-anchored look.
+
+The shipped template uses **0.474** — 50px below dead centre at 1920 high (`50/1920 = 0.026`). Verified by rendering the same word at the same size with only `y_position` changing: the glyph centre moved exactly 50.0px. Measure a position change that way, holding size fixed; comparing frames that differ in *both* size and position reads ~3px short, because the x-height box of a smaller font sits differently against the anchor.
+
+⚠️ **`template.json` lives in the bucket, not in the repo.** `render_job` downloads `templates/template.json` from MinIO/R2 — editing the repo copy changes nothing until it is uploaded. These two drifted: the repo declared `font_size: 140` while the deployed template had no typography block at all, so every render used Blender's built-in 60 (measured from the rendered glyphs: 33px for "ano" against 104px at size 190). `font_size` is the only property with no code default, which is exactly why it was the one that silently regressed — font, colour and outline kept working from `DEFAULT_*`, so nothing looked broken.
 
 - Tests: `tests/test_subtitles.py` (16 tests, marked `no_db` — no docker compose, no Blender needed).
 
@@ -157,9 +168,32 @@ Typeface, fill colour and outline for the word-level text strips. Default: **Fut
 
 **Requires Blender 4.2+** — `use_outline`/`outline_color`/`outline_width` do not exist before 4.2 (the Dockerfile pins 4.2.20). Verified against the real RNA, not assumed.
 
-**Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 140, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
+**Per-word auto-fit** — `fit_font_size(text, font_size, max_width, measure, min_size=60)` treats `font_size` as a **ceiling**, not a fixed value: short words render at exactly that size and only the ones that would overrun the frame are scaled down, floored at `MIN_AUTOFIT_FONT_SIZE`. `SUBTITLE_SIDE_MARGIN` (0.04) keeps 4% of the width clear on each side.
+
+Without it, raising the body size clips long words, and the clipping is **silent** — Blender does not wrap a single word and reports nothing. Measured at 1080px wide: `"procedimento,"` already occupied 1037 of 1080px at size 140, and at 170+ it ran off both edges. On a real 178-word narration, size 190 needs fitting on only 13 words (7%), the longest landing at 133.
+
+`make_text_measurer(font_path)` builds the measuring callable from `blf`, the same rasteriser the VSE text strip uses; it returns `None` when the font cannot be loaded, and the caller then skips auto-fit rather than measuring with a typeface it will not render. Verified against a real render: blf reports 1046px for `"procedimento,"` at 140 where the rendered bounding box (outline included) is 1037px — it errs slightly wide, the safe direction for a fits-on-screen test.
+
+`fit_font_size` is pure (the measurer is injected), so the rule is tested without Blender.
+
+**Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 160, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. At 160 the auto-fit touches only 2 of 178 words on a real narration. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
 
 - Tests: `tests/test_subtitles.py` (35 tests total, marked `no_db` — no docker compose, no Blender needed).
+
+### Template config endpoint (`src/blender_worker/api/routes/templates.py`)
+
+`GET /templates/{id}/config` — downloads the template's `json_key` from MinIO and returns the parsed `template.json` as a JSON object.
+
+Exists so **upstream services can read template settings before render time**. The orchestrator needs `narration.rate` to call the `tts_service`, which happens long before a job reaches this worker. Serving it here keeps template ownership in one place — the orchestrator never touches MinIO or parses `template.json` itself.
+
+- `404` — template not registered
+- `502` — MinIO read failed, body is not valid JSON, or the JSON is not an object
+
+`storage/client.py` gained `download_bytes(bucket, key) -> bytes` for this (the existing `download_file` writes to disk, pointless for a config read).
+
+Note the worker's own render path still downloads `template.json` from MinIO directly — it needs the file on disk for Blender anyway.
+
+- Tests: `tests/test_templates.py` (13 tests; `download_bytes` mocked, DB required).
 
 ### Image text rendering (`src/blender_worker/image/text.py`)
 
@@ -174,18 +208,42 @@ Wraps text and computes block dimensions for the image compositor.
 
 Composes a comment card image (rounded rect background + positioned assets + wrapped text) and returns PNG bytes. No DB or MinIO required at call time — callers are responsible for downloading assets and passing raw bytes.
 
-**Schema (Pydantic models for the template guide JSON):** `CommentGuide`, `Canvas`, `Background`, `Padding`, `AssetSpec`, `Size`, `Position`, `TextSpec`.
+**Schema (Pydantic models for the template guide JSON, guide `version: "2.0"`):** `CommentGuide`, `Canvas`, `Card`, `Background`, `Padding`, `Shadow`, `AssetSpec`, `Size`, `Position`, `TextSpec`.
 
 **Public API:**
 - `load_guide(path: Path) -> CommentGuide` — parses a guide JSON file from disk.
 - `load_font(guide, root_dir) -> FreeTypeFont` — loads the TrueType font referenced by the guide.
-- `compose(guide, text, asset_images, font, line_spacing=4) -> bytes` — renders and returns raw PNG bytes. `asset_images` is `dict[str, bytes]` keyed by asset `id`; missing ids are silently skipped. Canvas height grows automatically to fit text and assets.
+- `compose(guide, text, asset_images, font, line_spacing=None) -> bytes` — renders and returns raw PNG bytes. `asset_images` is `dict[str, bytes]` keyed by asset `id`; missing ids are silently skipped. `line_spacing` overrides `guide.text.line_spacing`.
+- `shadow_margins(shadow) -> (left, top, right, bottom)` — transparent padding the blurred shadow needs around the card. Pure, so the geometry is tested without rendering.
+- `check_card_fits(guide)` — raises `ValueError` if the card plus its shadow overflows the fixed canvas width. Called at the top of `compose`.
 
-**Canvas height rule:** `padding.top + max(tallest_asset_spec_height, text_block_height) + padding.bottom`.
+**Canvas vs card — the two are separate.** `canvas.width` is the **output PNG width and it is fixed** (1080, matching the TikTok frame); only the height varies with the text. The card is a narrower box placed inside it at `card.offset`, and the rest of the frame stays transparent, so the PNG is meant to be dropped onto the video at full width with no positioning maths downstream. This replaces the v1 contract where `canvas.width` *was* the card and the PNG grew with the shadow.
 
-**Template:** `templates/comment_default.json` — reference guide (800px wide, avatar slot + text). Uses `font_path: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"` (installed via `fonts-dejavu-core` apt package in the Dockerfile — available in the container, but needs to be installed locally for dev outside Docker).
+**Card is left of centre on purpose** — `card.offset.x` (60) is smaller than the centred `(1080-880)/2 = 100`, leaving a 140px right gutter clear of TikTok's like/comment/share rail.
 
-- Tests: `tests/test_image_composer.py` (9 tests, no DB/MinIO required).
+**Card height rule:** `padding.top + asset_row_height + gap + text_block_height + padding.bottom`. Assets stack **above** the text (a comment-card header), so the asset row and the text are summed, not `max`-ed; the `gap` is only charged when the guide declares assets.
+
+**Fixed width means the shadow cannot grow sideways**, so `check_card_fits` rejects a card placed too close to either edge instead of letting the blur clip into a hard vertical line. This caught a real 14px overflow in the shipped template during development; `test_shipped_template_fits_its_canvas` keeps it caught.
+
+**`canvas.supersample`** renders the whole card at N× and downsamples once with LANCZOS (the font is re-derived via `font_variant`). It is *not* what makes edges smooth — FreeType already antialiases glyphs and `_rounded_rect` already supersamples corners 4×. It is an extra uniformity pass; `supersample: 1` is a valid, faster choice. Tests assert antialiasing is present at both settings rather than claiming the knob creates it.
+
+**Template:** `templates/comment_default.json` — 1080 canvas, 880 card at x=60, white opaque background, black **Arial Bold** at 36px, a 417×61 header strip on top (`assets/perfil-azul.png` — avatar, name and badges baked into one transparent PNG, stored at 2× so `supersample: 2` needs no resampling), soft shadow. `assets[].size` is applied as a hard resize, so its aspect must match the file's or the image squashes silently — `test_shipped_template_asset_keeps_the_source_aspect_ratio` guards the shipped one. `font_path` is `assets/fonts/Arial-Bold.ttf` — vendored, because the image only ships `fonts-dejavu-core` (see `assets/fonts/README.md`). `Arial-Black.ttf` is vendored alongside it as a heavier alternative; it is also *wider*, so the same text wraps to more lines and the card grows taller.
+
+- Tests: `tests/test_image_composer.py` (37 tests, marked `no_db`).
+
+### Card drop shadow (`src/blender_worker/image/composer.py`)
+
+Optional `background.shadow` block in the guide: `enabled` (default `False`), `color` RGBA, `blur`, `spread`, `offset` `{x, y}`. `comment_default.json` ships it on — black at 150/255, blur 14, offset y 8.
+
+**Vertically the canvas grows to fit the shadow; horizontally it cannot.** A blurred, offset shadow falls outside the card's box. The PNG height is `margin_top + card_height + margin_bottom`, so the falloff always fits. The width is pinned at 1080, so the horizontal room has to come from `card.offset.x` and the right gutter — hence `check_card_fits`.
+
+**Margin is `blur * BLUR_EXTENT` (3×) plus spread, adjusted by offset.** Pillow's `GaussianBlur` radius *is* the standard deviation, and ~3σ holds >99% of the kernel weight — past it the contribution is under one 8-bit alpha step. `test_shadow_does_not_clip_at_canvas_edge` asserts the whole canvas border is alpha 0, so a smaller constant fails loudly instead of degrading quietly.
+
+**The shadow is clipped to outside the card's silhouette** (`ImageChops.subtract` against a rounded-rect occluder mask). The card background is translucent (alpha 230), so an unclipped shadow shows through it and darkens the card unevenly — strongest where the offset points. CSS `box-shadow` clips the same way.
+
+**Off by default in the schema** so every guide written before this feature renders byte-identical geometry; only the shipped template opts in.
+
+- `_rounded_rect(size, radius, color, scale=4)` returns the supersampled rounded rectangle; `_draw_rounded_rect(...)` composites it at a `dest`. Both are used for the card and for the shadow shape.
 
 ### Image render endpoint (`src/blender_worker/api/routes/images.py`)
 

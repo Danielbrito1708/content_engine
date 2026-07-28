@@ -25,6 +25,7 @@ Serviço de geração de áudio a partir de texto. Expõe `POST /generate` que o
 - `run_id` (str) — UUID do pipeline run (usado na key MinIO)
 - `part_number` (int, padrão `1`) — número da parte (1, 2, ...)
 - `label` (str | None) — nome do arquivo dentro do run, quando o áudio **não** é uma parte do roteiro
+- `rate` (str, opcional) — velocidade da narração desta request (`+15%`). Vem do `narration.rate` do `template.json`. Ausente ou `null` → usa `TTS_RATE`. Formato inválido → `422` antes de qualquer chamada ao TTS.
 
 **Response** (`GenerateResponse`):
 - `audio_key` (str) — key MinIO do áudio gerado: `audio/{run_id}/{slug}.mp3`
@@ -84,15 +85,17 @@ Reaproveita `TTS_VOICE` e `TTS_RATE`, então trocar `edge` ↔ `azure` não muda
 
 ### Velocidade da narração (`TTS_RATE`)
 
-Acelera (ou desacelera) a narração na **própria síntese**, via `rate` do `edge_tts.Communicate` — que é `prosody rate` do SSML. O pitch fica intacto, diferente de acelerar o MP3 depois (resample deixa a voz aguda).
+Acelera (ou desacelera) a narração na **própria síntese** — `rate` do `edge_tts.Communicate` no provider `edge`, `<prosody rate='...'>` no `azure`. É o `prosody rate` do SSML nos dois casos. O pitch fica intacto, diferente de acelerar o MP3 depois (resample deixa a voz aguda).
 
 | Var | Padrão | Descrição |
 |---|---|---|
 | `TTS_RATE` | `+15%` | Percentual **com sinal** sobre o ritmo natural da voz |
 
-Formato obrigatório: `^[+-]\d+%$` (`+15%`, `-10%`, `+0%` para desligar). Formato inválido **derruba o boot** em `TTSEnvSettings._check_rate_format` — falhar no start é melhor do que o edge-tts rejeitar na hora de sintetizar, no meio de uma request.
+**Precedência:** `rate` da request (vem do `narration.rate` do `template.json`) → `TTS_RATE` → `+15%`. O env var é o fallback de quem chama o serviço direto ou de templates sem o bloco `narration`.
 
-`EdgeTTSClient(voice=..., rate=...)` aceita override explícito; sem argumento, usa `settings.env.tts_rate`.
+Formato obrigatório: `^[+-]\d+%$` (`+15%`, `-10%`, `+0%` para desligar), validado por `validate_rate()` em `src/core/config.py` — mesma função para o env var (derruba o **boot**) e para o campo da request (devolve **422**). Em ambos os casos o erro aparece antes de qualquer síntese; o edge-tts só rejeitaria o formato na hora de gerar o áudio.
+
+`get_tts_client(rate=...)` repassa ao provider ativo — `EdgeTTSClient` e `AzureTTSClient` aceitam `rate=` e caem em `settings.env.tts_rate` sem argumento. Um provider novo precisa aceitar `rate` no construtor, senão o `narration.rate` do template é silenciosamente ignorado ao trocar de provider.
 
 Como o rate age antes de tudo, a remoção de silêncio e a transcrição já rodam sobre o áudio acelerado — **o SRT sai sincronizado sem nenhum ajuste** e o `blender_worker` não muda.
 
@@ -207,7 +210,7 @@ O consumo dessa legenda (offset de sincronia, hold entre palavras, fades) é res
 
 Rodar com Python 3.11 (o do Dockerfile) — anotações são avaliadas no import, então um nome não importado numa assinatura quebra a coleção do arquivo inteiro, coisa que o Python 3.14 local não acusa.
 
-`tests/test_rate.py` — 16 testes; `edge_tts.Communicate` mockado. Cobre o repasse do `rate` na síntese, o override explícito no construtor, a validação de formato do `TTS_RATE` (via `TTSEnvSettings()` direto, que relê o env) e o campo `rate` no `/health`.
+`tests/test_rate.py` — 31 testes; `edge_tts.Communicate` mockado. Cobre o repasse do `rate` na síntese, o override no construtor e na factory, a precedência request → env no endpoint, a validação de formato (env via `TTSEnvSettings()` direto, que relê o env; request via `422`) e o campo `rate` no `/health`.
 
 ```bash
 poetry run pytest

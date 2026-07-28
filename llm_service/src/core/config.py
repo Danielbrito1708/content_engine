@@ -35,6 +35,7 @@ class LLMEnvSettings(BaseModel):
     llm_provider: str
     llm_model: str
     llm_moderation_model: str
+    llm_story_model: str
     openrouter_api_key: str | None
     chutes_api_key: str | None
     chutes_base_url: str
@@ -51,6 +52,12 @@ class LLMEnvSettings(BaseModel):
             # point it at a cheaper model to cut the per-candidate cost.
             "llm_moderation_model": os.environ.get(
                 "LLM_MODERATION_MODEL", os.environ.get("LLM_MODEL", "anthropic/claude-3.5-sonnet")
+            ),
+            # Story quality judges narrative craft over a batch of openings, which
+            # is a harder call than moderation's yes/no — so it gets its own knob
+            # rather than sharing the cheap moderation model. Same fallback.
+            "llm_story_model": os.environ.get(
+                "LLM_STORY_MODEL", os.environ.get("LLM_MODEL", "anthropic/claude-3.5-sonnet")
             ),
             "openrouter_api_key": os.environ.get("OPENROUTER_API_KEY"),
             "chutes_api_key": os.environ.get("CHUTES_API_KEY"),

@@ -28,6 +28,28 @@ Mas o sistema não pega simplesmente as melhores do topo geral, porque isso fari
 
 O rodízio se mantém sozinho ao longo dos dias, porque o sistema lembra o que já usou e nunca repete.
 
+**Ele lê o começo de cada história e julga se ela prende:**
+
+O ranking do Reddit diz quantas pessoas votaram numa história, mas não diz se ela *se conta bem*. Um desabafo desorganizado pode ter mil upvotes e ainda assim não render vídeo, porque no TikTok o espectador decide em dois segundos se continua assistindo — e ele decide olhando o começo.
+
+Então, antes de escolher, o sistema lê o título e a abertura de cada história coletada e responde duas perguntas.
+
+A primeira: **existe um gancho ali?** Um gancho é uma frase que, sozinha, faz querer saber o resto. Ela tem gente concreta, de preferência uma relação, um conflito já acontecendo, a promessa de um desfecho, e uma curiosidade que fica no ar. Por exemplo: *"minha mãe foi intimidada por outras mães, então ela se vingou de forma doce"* — tem a mãe, tem a agressão, promete a vingança e não conta qual foi. Já *"desabafo"* ou *"preciso de conselhos"* nomeiam um sentimento e não prometem nada.
+
+A segunda: **a história se conta bem?** Isso rende uma nota de 0 a 10. Ganha ponto quem tem conflito claro, gente que age, cenas concretas e sinal de que vem uma virada. Perde ponto quem só reclama, quem apresenta gente demais de uma vez, quem faz pergunta ao fórum em vez de contar o que aconteceu, ou quem escreve uma abertura da qual não se entende nada.
+
+**O que o sistema faz com isso:**
+
+Duas coisas, e nenhuma delas é jogar a história no lixo.
+
+A primeira é **ordenar**. As vagas de cada ciclo passam a ir para as histórias que abrem melhor, não para as que apareceram primeiro no feed. O rodízio entre comunidades continua valendo por cima disso: cada comunidade concorre com a sua melhor abertura, e nenhuma monopoliza.
+
+A segunda é **marcar**. Toda história avaliada recebe uma etiqueta: `strong` quando tem gancho e se conta bem, `no_hook` quando é boa história mas começa longe do assunto — o gancho existe, está enterrado mais adiante — e `weak_storytelling` quando a nota ficou abaixo do corte. A etiqueta viaja junto com o roteiro até a etapa de refinamento, então o modelo que escreve o texto final sabe se está polindo um gancho que já existe ou se vai ter que construir um. Quando existe uma frase que serve de gancho, ela vai junto, identificada.
+
+**Por que marcar e não descartar:** a etiqueta é informação, não veredito. Uma história com abertura fraca e nada melhor atrás dela ainda vai ao ar — recusá-la transformaria um sinal de qualidade em filtro rígido e poderia esvaziar a fila em semanas fracas. O que a nota faz é decidir a *ordem*, e a etiqueta serve para o refinamento trabalhar melhor e para você olhar depois quais notas correspondiam a vídeos que renderam. O ponto de corte entre fraco e forte é ajustável justamente por isso.
+
+**Custo:** a avaliação é uma única consulta ao modelo por ciclo, com o começo de todas as histórias de uma vez, e não uma consulta por história. É o que torna viável avaliar tudo em vez de só o que já foi escolhido — sem isso, não haveria como ordenar. Se essa consulta falhar, o ciclo segue normalmente usando o ranking do Reddit, e as histórias ficam registradas como "não avaliadas", que é diferente de "avaliadas e ruins".
+
 **O que é descartado automaticamente:**
 
 Nem toda história serve. O sistema recusa textos curtos demais, que não têm história suficiente para sustentar um vídeo, e longos demais, que precisariam ser tão cortados que o que iria ao ar já não seria o post original.
@@ -112,7 +134,11 @@ Trocar o motor gratuito pelo Azure não muda a voz nem o ritmo da narração —
 
 A narração sai acelerada em relação ao ritmo natural da voz. O padrão é 15% mais rápido — o suficiente para dar o ritmo apressado que o formato do TikTok pede, sem que a fala soe artificial ou fique difícil de acompanhar. A voz continua com o tom normal: ela fala mais rápido, não fica mais aguda, porque a aceleração é feita pelo próprio motor de voz e não por acelerar o arquivo depois de pronto.
 
-A velocidade é configurável e aceita tanto acelerar quanto desacelerar. Também é possível voltar ao ritmo original da voz, se um tipo de conteúdo pedir uma narração mais calma. Como o vídeo fica mais curto quando a fala é mais rápida, acelerar também ajuda roteiros na fronteira dos 60 segundos a caberem em um único vídeo em vez de serem divididos em partes.
+**A velocidade faz parte do template do vídeo.** Cada template — que já define o visual, a fonte da legenda e o ritmo da edição — define também quão rápido a voz fala. Assim um template de drama pode ter narração mais pausada e um de curiosidades rápidas pode ser mais acelerado, sem que seja preciso mexer em configuração de servidor ou reiniciar nada: basta editar o template. Um template que não diz nada sobre velocidade simplesmente usa o padrão do sistema, então templates antigos continuam funcionando.
+
+A velocidade aceita tanto acelerar quanto desacelerar, e também voltar ao ritmo original da voz, se um tipo de conteúdo pedir uma narração mais calma. Como o vídeo fica mais curto quando a fala é mais rápida, acelerar também ajuda roteiros na fronteira dos 60 segundos a caberem em um único vídeo em vez de serem divididos em partes.
+
+Se o template não puder ser lido por algum motivo, o sistema não interrompe a produção do vídeo — ele usa a velocidade padrão e registra o ocorrido. Velocidade de narração é uma escolha estética, e não vale perder um vídeo inteiro por causa dela.
 
 ---
 
@@ -232,11 +258,19 @@ Também é possível listar todos os pipelines já criados, com paginação, par
 
 ## Feature 8 — Geração de cards de comentário
 
-Além dos vídeos, o sistema consegue gerar imagens no estilo "card de comentário do TikTok" — aquele visual de fundo escuro com bordas arredondadas, avatar e texto de comentário. Esse tipo de imagem é muito usado como overlay em vídeos de reação ou para dar contexto a uma história.
+Além dos vídeos, o sistema consegue gerar imagens no estilo "card de comentário do TikTok" — fundo branco com bordas arredondadas, um cabeçalho no topo com a foto de perfil, o nome e os selos do autor, e o texto do comentário logo abaixo, em letra preta grossa (Arial Bold). Esse tipo de imagem é muito usado como overlay em vídeos de reação ou para dar contexto a uma história.
 
-O visual do card é controlado por um arquivo de template que define: a largura da imagem, a cor e o arredondamento do fundo, a posição e o tamanho do avatar, a fonte e o tamanho do texto, e o espaçamento interno. Todos esses parâmetros podem ser ajustados sem alterar o código.
+A imagem sai sempre com a mesma largura do vídeo do TikTok, e só a altura muda conforme o tamanho do texto. Dentro dessa moldura, o card em si é mais estreito e fica encostado mais à esquerda: o lado direito da tela do TikTok é ocupado pelos botões de curtir, comentar e compartilhar, então o card precisa dar espaço para eles. O resto da moldura é transparente, o que permite aplicar a imagem sobre o vídeo inteiro sem ninguém precisar calcular posição.
+
+O visual do card é controlado por um arquivo de template que define: a largura e a posição do card, a cor e o arredondamento do fundo, o tamanho e a imagem do cabeçalho, a fonte, o tamanho e o espaçamento do texto, e o espaçamento interno. Todos esses parâmetros podem ser ajustados sem alterar o código.
 
 O texto do comentário é quebrado automaticamente em múltiplas linhas para caber na largura definida. A altura do card cresce de acordo com o texto — não há limite de caracteres imposto pelo sistema.
+
+Se alguém configurar um card largo demais, ou grudado demais numa das bordas, o sistema recusa a configuração com uma mensagem dizendo de que lado e por quantos pixels ele passou — em vez de gerar uma imagem com a sombra cortada pela metade.
+
+O card também tem uma sombra projetada, que dá a sensação de que ele está flutuando sobre o vídeo em vez de estar colado nele. Dá para escolher a cor e a opacidade da sombra, o quanto ela é difusa, o quanto ela se espalha para além do card e para que lado ela cai — o padrão é uma sombra suave caindo para baixo, como se a luz viesse de cima. A sombra é opcional: templates que não a configuram continuam produzindo a mesma imagem de antes.
+
+A altura da imagem já reserva o espaço que a sombra precisa em cima e embaixo, então ela nunca aparece cortada. A sombra também nunca escurece o próprio card por baixo — ela aparece só ao redor dele.
 
 O resultado é uma imagem PNG salva no storage, pronta para ser usada como asset em um vídeo.
 
@@ -248,7 +282,7 @@ O sistema é configurável em vários aspectos sem precisar alterar o código:
 
 **Voz:** qual voz e qual motor de TTS usar. Padrão: voz feminina jovem brasileira, motor Azure (o gratuito continua disponível para quem não quiser configurar uma chave, ao custo da qualidade).
 
-**Velocidade da narração:** quanto mais rápido (ou mais devagar) a voz fala em relação ao ritmo natural dela. Padrão: 15% mais rápido.
+**Velocidade da narração:** quanto mais rápido (ou mais devagar) a voz fala em relação ao ritmo natural dela. Definida no template do vídeo, junto com o resto do visual. Padrão: 15% mais rápido.
 
 **Volume da narração:** o nível de audição padronizado de todas as narrações, e a opção de desligar essa padronização.
 
@@ -280,7 +314,55 @@ O vídeo agora termina junto com a narração.
 
 Antes, a duração era ditada pelo mais longo entre todos os arquivos — inclusive o vídeo de fundo e a música, que são apenas pano de fundo. Na prática, um fundo de 90 segundos sob uma narração de 68 gerava 22 segundos de silêncio no fim, com a legenda já fora da tela. Quem define onde a história acaba é a narração; fundo e trilha são decoração e não esticam mais o vídeo.
 
-Se o fundo for **mais curto** que a narração, o final fica preto — isso continua sendo caso de trocar o arquivo de fundo por um mais longo.
+Se o fundo for **mais curto** que a narração, o sistema repete o próprio fundo até cobrir a história inteira. Antes, o trecho que sobrava saía **preto**, com a legenda aparecendo sobre o nada e sem nenhum aviso — um clipe de 45 segundos sob uma narração de 71 gerava 26 segundos de tela preta. Isso deixou de ser um erro do arquivo e passou a ser normal, porque o fundo agora vem de uma biblioteca de clipes curtos (ver abaixo).
+
+## Legenda no centro e maior
+
+A legenda agora aparece **no meio da tela**, não mais no rodapé, e com a fonte bem maior.
+
+O tamanho anterior era o padrão interno do Blender — pequeno demais para vídeo vertical, e menor do que a configuração do projeto dizia usar. O arquivo de template que estava em uso não trazia a definição de tamanho, então a configuração escrita no repositório nunca chegava ao vídeo. Corrigido: a palavra agora sai mais de três vezes maior do que saía antes.
+
+**Palavras longas se ajustam sozinhas.** Uma palavra comprida como "procedimento," não caberia na largura da tela no tamanho novo — e antes seria simplesmente cortada nas bordas, sem aviso. Agora o tamanho escolhido funciona como um teto: a maioria esmagadora das palavras sai nele, e só as poucas que não cabem encolhem o suficiente para caber inteiras. Numa narração real de 178 palavras, apenas 13 precisaram de ajuste.
+
+**Dá para mudar sem mexer em código.** Posição vertical e tamanho são configuração do template: `y_position` (0.5 = centro exato, 0.05 = rodapé como antes) e `font_size`.
+
+Valores em uso hoje: **tamanho 160**, posição **0.474** — ou seja, 50 pixels abaixo do centro da tela.
+
+## Fundo diferente a cada vídeo
+
+Antes, todo vídeo do canal usava **o mesmo arquivo de fundo, começando no mesmo segundo**. Duas partes seguidas da mesma história saíam com exatamente a mesma imagem por trás, mudando só as palavras.
+
+Agora o fundo vem de uma biblioteca: um vídeo longo é cortado em dezenas de clipes curtos, e cada parte sorteia o seu. Partes da mesma história — que vão ao ar uma atrás da outra, onde a repetição seria mais visível — praticamente nunca caem no mesmo clipe.
+
+A escolha é **estável**: se a mesma parte precisar ser montada de novo, ela volta com o mesmo fundo, em vez de virar um vídeo diferente do que já foi revisado.
+
+Se a biblioteca estiver vazia, o sistema continua usando o arquivo único de antes — nada quebra por falta de clipes.
+
+## Fila cheia deixou de jogar vídeo fora
+
+O serviço de agendamento aceita no máximo 10 posts na fila. Quando ela enchia, a história inteira era marcada como **falha** — depois de já ter pago o refinamento do texto, a narração, a transcrição e a montagem do vídeo. O trabalho ia todo para o lixo por causa de um minuto de fila cheia.
+
+Agora a história fica **esperando vaga**, com os vídeos prontos guardados. De tempos em tempos o sistema tenta de novo sozinho, e assim que abre espaço na fila ela é agendada.
+
+Isso também resolveu um desequilíbrio silencioso: a busca de roteiros trazia até dois por hora, enquanto a publicação dá conta de três por dia. Como uma história esperando vaga conta como trabalho em andamento, a busca agora se segura sozinha enquanto a fila está cheia, em vez de produzir vídeos que morreriam na última etapa.
+
+## Nada mais fica preso depois de um reinício
+
+Se a máquina reiniciasse no meio de uma produção, a história ficava **presa para sempre** no estado "em andamento". Ninguém percebia — e como o sistema conta as histórias em andamento para decidir se busca mais roteiro, bastavam cinco presas para a busca parar de vez, em silêncio.
+
+Ao subir, o sistema agora revisa o que ficou pela metade: histórias com todos os vídeos prontos são retomadas direto na etapa de agendamento, e as que pararam antes disso são marcadas como falhas, com o motivo escrito. De um jeito ou de outro, a fila é liberada.
+
+## Tropeços passageiros não derrubam mais a produção
+
+Uma conexão que cai ou um serviço que ainda está subindo devolvia erro e matava a história na hora. Agora cada chamada entre os serviços é repetida algumas vezes, com intervalo crescente, antes de desistir. Erros que são resposta definitiva — como "essa fila está cheia" — não são repetidos, porque insistir neles não muda nada.
+
+## Preparado para ficar ligado sem ninguém olhando
+
+Três mudanças de bastidor para o sistema aguentar rodar sozinho:
+
+- **Volta sozinho.** Os serviços reiniciam automaticamente depois de uma queda ou de um reboot da máquina. Antes ficavam desligados até alguém reparar.
+- **Log não enche mais o disco.** O registro de cada serviço passou a ser resumido em vez de detalhado, e é limitado a um tamanho máximo com descarte do que é antigo. Antes, cada chamada de rede gravava cabeçalhos inteiros, sem limite de tamanho.
+- **O modelo de transcrição não é mais baixado toda vez.** Ele agora fica guardado na máquina; antes, cada atualização de container baixava de novo os 420 MB e dependia do serviço externo estar no ar naquele momento.
 
 ## Fluxo completo resumido
 

@@ -100,7 +100,7 @@ Externamente (localhost), cada um usa a porta mapeada acima.
 ## Estado do projeto
 
 - `blender_worker` — implementado (MVP completo: API, DB, Blender pipeline, image compositor)
-- `orchestrator` — planejado, em implementação
+- `orchestrator` — implementado (pipeline completo, rotação de background, recuperação de runs órfãos, retry de agendamento)
 - `llm_service` — planejado
 - `tts_service` — implementado (providers `azure`/`edge`, corte de silêncio + normalização de loudness, transcrição word-level)
 - `tiktok_poster` — planejado

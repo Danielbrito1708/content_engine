@@ -22,5 +22,12 @@ async def download_file(bucket: str, key: str, dest_path: str) -> None:
     await asyncio.to_thread(get_s3_client().download_file, bucket, key, dest_path)
 
 
+async def download_bytes(bucket: str, key: str) -> bytes:
+    def _read() -> bytes:
+        return get_s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()
+
+    return await asyncio.to_thread(_read)
+
+
 async def upload_file(bucket: str, key: str, src_path: str) -> None:
     await asyncio.to_thread(get_s3_client().upload_file, src_path, bucket, key)

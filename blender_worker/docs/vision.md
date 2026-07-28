@@ -66,6 +66,9 @@ Define a estrutura de montagem. Reutilizado em múltiplos jobs.
 {
   "frame_rate": 30,
   "frame_end": 900,
+  "narration": {
+    "rate": "+15%"
+  },
   "channels": {
     "video": 1,
     "music": 2,
@@ -83,6 +86,8 @@ Define a estrutura de montagem. Reutilizado em múltiplos jobs.
   }
 }
 ```
+
+O bloco `narration` é opcional e **não é consumido pelo blender_worker** — ele existe no `template.json` porque a velocidade da narração é uma decisão de design do template, junto com tipografia e timing. Quem lê é o orchestrador, via `GET /templates/{id}/config`, antes de chamar o `tts_service`. Templates sem o bloco continuam válidos.
 
 ### Job
 Representa uma tarefa de montagem. Criado por requisição e processado em background.

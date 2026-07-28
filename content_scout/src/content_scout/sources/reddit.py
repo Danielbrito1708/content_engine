@@ -41,17 +41,42 @@ class _Throttle:
     """
 
     def __init__(self, delay: float):
-        self._delay = delay
+        self.delay = delay
         self._lock = asyncio.Lock()
         self._last: float | None = None
 
     async def wait(self) -> None:
         async with self._lock:
             if self._last is not None:
-                remaining = self._last + self._delay - time.monotonic()
+                remaining = self._last + self.delay - time.monotonic()
                 if remaining > 0:
                     await asyncio.sleep(remaining)
             self._last = time.monotonic()
+
+    def reset(self) -> None:
+        """Forget the last request. For tests — the window is process state now,
+        so without this every test inherits the previous one's timer."""
+        self._last = None
+
+
+# Process-wide, not per instance. Reddit counts requests per client, and
+# ``build_sources()`` mints a fresh RedditSource on every cycle — so an
+# instance-level throttle spaces out the requests *within* a cycle and nothing
+# else. Measured live: a manual ``POST /scout/run`` overlapping the periodic loop
+# halved the spacing to 34s and both cycles started taking 429s. The state has to
+# outlive the instance for the spacing to mean anything.
+_SHARED_THROTTLE = _Throttle(0.0)
+
+
+def shared_throttle(delay: float | None = None) -> _Throttle:
+    """The one throttle every Reddit request goes through.
+
+    ``delay`` re-tunes it — last writer wins, which keeps the test suite at 0
+    instead of inheriting production's 60s window from an earlier construction.
+    """
+    if delay is not None:
+        _SHARED_THROTTLE.delay = delay
+    return _SHARED_THROTTLE
 
 
 def clean_body(raw_content: str) -> str:
@@ -187,7 +212,7 @@ class RedditSource:
         self._user_agent = user_agent
         self._timeout = timeout
         self._comments_limit = comments_limit
-        self._throttle = _Throttle(request_delay)
+        self._throttle = shared_throttle(request_delay)
 
     def feed_url(self, subreddit: str) -> str:
         return (
