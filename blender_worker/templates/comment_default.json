@@ -1,23 +1,36 @@
 {
-  "version": "1.0",
-  "canvas": { "width": 800 },
+  "version": "2.0",
+  "canvas": { "width": 1080, "supersample": 2 },
+  "card": {
+    "width": 880,
+    "offset": { "x": 60, "y": 0 },
+    "gap": 18
+  },
   "background": {
-    "color": [25, 25, 25, 230],
-    "radius": 16,
-    "padding": { "top": 20, "right": 20, "bottom": 20, "left": 20 }
+    "color": [255, 255, 255, 255],
+    "radius": 24,
+    "padding": { "top": 32, "right": 32, "bottom": 32, "left": 32 },
+    "shadow": {
+      "enabled": true,
+      "color": [0, 0, 0, 110],
+      "blur": 16,
+      "spread": 0,
+      "offset": { "x": 0, "y": 10 }
+    }
   },
   "assets": [
     {
       "id": "avatar",
-      "minio_key": "assets/avatar.png",
-      "size": { "width": 48, "height": 48 },
+      "minio_key": "assets/perfil-azul.png",
+      "size": { "width": 417, "height": 61 },
       "position": { "x": 0, "y": 0 }
     }
   ],
   "text": {
-    "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "size": 18,
-    "color": [255, 255, 255, 255],
-    "offset": { "x": 60, "y": 4 }
+    "font_path": "assets/fonts/Arial-Bold.ttf",
+    "size": 36,
+    "color": [0, 0, 0, 255],
+    "offset": { "x": 0, "y": 0 },
+    "line_spacing": 0
   }
 }

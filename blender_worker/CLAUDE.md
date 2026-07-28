@@ -192,18 +192,42 @@ Wraps text and computes block dimensions for the image compositor.
 
 Composes a comment card image (rounded rect background + positioned assets + wrapped text) and returns PNG bytes. No DB or MinIO required at call time — callers are responsible for downloading assets and passing raw bytes.
 
-**Schema (Pydantic models for the template guide JSON):** `CommentGuide`, `Canvas`, `Background`, `Padding`, `AssetSpec`, `Size`, `Position`, `TextSpec`.
+**Schema (Pydantic models for the template guide JSON, guide `version: "2.0"`):** `CommentGuide`, `Canvas`, `Card`, `Background`, `Padding`, `Shadow`, `AssetSpec`, `Size`, `Position`, `TextSpec`.
 
 **Public API:**
 - `load_guide(path: Path) -> CommentGuide` — parses a guide JSON file from disk.
 - `load_font(guide, root_dir) -> FreeTypeFont` — loads the TrueType font referenced by the guide.
-- `compose(guide, text, asset_images, font, line_spacing=4) -> bytes` — renders and returns raw PNG bytes. `asset_images` is `dict[str, bytes]` keyed by asset `id`; missing ids are silently skipped. Canvas height grows automatically to fit text and assets.
+- `compose(guide, text, asset_images, font, line_spacing=None) -> bytes` — renders and returns raw PNG bytes. `asset_images` is `dict[str, bytes]` keyed by asset `id`; missing ids are silently skipped. `line_spacing` overrides `guide.text.line_spacing`.
+- `shadow_margins(shadow) -> (left, top, right, bottom)` — transparent padding the blurred shadow needs around the card. Pure, so the geometry is tested without rendering.
+- `check_card_fits(guide)` — raises `ValueError` if the card plus its shadow overflows the fixed canvas width. Called at the top of `compose`.
 
-**Canvas height rule:** `padding.top + max(tallest_asset_spec_height, text_block_height) + padding.bottom`.
+**Canvas vs card — the two are separate.** `canvas.width` is the **output PNG width and it is fixed** (1080, matching the TikTok frame); only the height varies with the text. The card is a narrower box placed inside it at `card.offset`, and the rest of the frame stays transparent, so the PNG is meant to be dropped onto the video at full width with no positioning maths downstream. This replaces the v1 contract where `canvas.width` *was* the card and the PNG grew with the shadow.
 
-**Template:** `templates/comment_default.json` — reference guide (800px wide, avatar slot + text). Uses `font_path: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"` (installed via `fonts-dejavu-core` apt package in the Dockerfile — available in the container, but needs to be installed locally for dev outside Docker).
+**Card is left of centre on purpose** — `card.offset.x` (60) is smaller than the centred `(1080-880)/2 = 100`, leaving a 140px right gutter clear of TikTok's like/comment/share rail.
 
-- Tests: `tests/test_image_composer.py` (9 tests, no DB/MinIO required).
+**Card height rule:** `padding.top + asset_row_height + gap + text_block_height + padding.bottom`. Assets stack **above** the text (a comment-card header), so the asset row and the text are summed, not `max`-ed; the `gap` is only charged when the guide declares assets.
+
+**Fixed width means the shadow cannot grow sideways**, so `check_card_fits` rejects a card placed too close to either edge instead of letting the blur clip into a hard vertical line. This caught a real 14px overflow in the shipped template during development; `test_shipped_template_fits_its_canvas` keeps it caught.
+
+**`canvas.supersample`** renders the whole card at N× and downsamples once with LANCZOS (the font is re-derived via `font_variant`). It is *not* what makes edges smooth — FreeType already antialiases glyphs and `_rounded_rect` already supersamples corners 4×. It is an extra uniformity pass; `supersample: 1` is a valid, faster choice. Tests assert antialiasing is present at both settings rather than claiming the knob creates it.
+
+**Template:** `templates/comment_default.json` — 1080 canvas, 880 card at x=60, white opaque background, black **Arial Bold** at 36px, a 417×61 header strip on top (`assets/perfil-azul.png` — avatar, name and badges baked into one transparent PNG, stored at 2× so `supersample: 2` needs no resampling), soft shadow. `assets[].size` is applied as a hard resize, so its aspect must match the file's or the image squashes silently — `test_shipped_template_asset_keeps_the_source_aspect_ratio` guards the shipped one. `font_path` is `assets/fonts/Arial-Bold.ttf` — vendored, because the image only ships `fonts-dejavu-core` (see `assets/fonts/README.md`). `Arial-Black.ttf` is vendored alongside it as a heavier alternative; it is also *wider*, so the same text wraps to more lines and the card grows taller.
+
+- Tests: `tests/test_image_composer.py` (37 tests, marked `no_db`).
+
+### Card drop shadow (`src/blender_worker/image/composer.py`)
+
+Optional `background.shadow` block in the guide: `enabled` (default `False`), `color` RGBA, `blur`, `spread`, `offset` `{x, y}`. `comment_default.json` ships it on — black at 150/255, blur 14, offset y 8.
+
+**Vertically the canvas grows to fit the shadow; horizontally it cannot.** A blurred, offset shadow falls outside the card's box. The PNG height is `margin_top + card_height + margin_bottom`, so the falloff always fits. The width is pinned at 1080, so the horizontal room has to come from `card.offset.x` and the right gutter — hence `check_card_fits`.
+
+**Margin is `blur * BLUR_EXTENT` (3×) plus spread, adjusted by offset.** Pillow's `GaussianBlur` radius *is* the standard deviation, and ~3σ holds >99% of the kernel weight — past it the contribution is under one 8-bit alpha step. `test_shadow_does_not_clip_at_canvas_edge` asserts the whole canvas border is alpha 0, so a smaller constant fails loudly instead of degrading quietly.
+
+**The shadow is clipped to outside the card's silhouette** (`ImageChops.subtract` against a rounded-rect occluder mask). The card background is translucent (alpha 230), so an unclipped shadow shows through it and darkens the card unevenly — strongest where the offset points. CSS `box-shadow` clips the same way.
+
+**Off by default in the schema** so every guide written before this feature renders byte-identical geometry; only the shipped template opts in.
+
+- `_rounded_rect(size, radius, color, scale=4)` returns the supersampled rounded rectangle; `_draw_rounded_rect(...)` composites it at a `dest`. Both are used for the card and for the shadow shape.
 
 ### Image render endpoint (`src/blender_worker/api/routes/images.py`)
 

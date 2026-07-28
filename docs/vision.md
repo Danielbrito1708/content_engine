@@ -317,6 +317,55 @@ Isso *era* documentado como problema de asset, e era, enquanto todo render compa
 
 ---
 
+## Cards de comentário (`blender_worker`)
+
+O `POST /images/render` compõe um PNG estilo "comentário do TikTok" com Pillow (não Blender): retângulo arredondado, cabeçalho no topo e texto quebrado automaticamente. O layout inteiro vem de um guide JSON versionado em `blender_worker/templates/`, então ajustar o visual não é mudança de código.
+
+### Canvas fixo, card móvel
+
+O guide (`version: "2.0"`) separa duas coisas que antes eram uma só:
+
+- **`canvas`** — o PNG de saída. Largura **fixa em 1080**, a mesma do frame do TikTok; só a altura varia com o texto.
+- **`card`** — a caixa branca, mais estreita, posicionada dentro desse frame por `card.offset`.
+
+O resto do frame fica transparente. Assim a imagem é aplicada sobre o vídeo em largura cheia e o alinhamento é trivial — não há cálculo de posição do lado de quem consome, que era o ponto fraco do contrato da v1 (lá `canvas.width` era o card e o PNG crescia junto com a sombra, obrigando quem posiciona a alinhar pelo centro).
+
+**O card fica à esquerda do centro de propósito.** Com 1080 de canvas e 880 de card, centralizar daria `x = 100`; o template usa `60`. Os 140px de goteira à direita são para a barra de ações do TikTok (curtir, comentar, compartilhar) — um card centralizado passa por baixo dela.
+
+**Os assets empilham acima do texto.** A altura do card é `padding + linha_de_assets + gap + texto + padding`: as duas alturas somam em vez de `max()`, que é o que o layout lado a lado fazia. O `gap` só é cobrado quando o guide declara assets, senão sobra um vão morto acima do texto.
+
+### Sombra projetada
+
+Bloco `background.shadow` no guide: `enabled`, `color` (RGBA), `blur`, `spread` e `offset` (x, y). O padrão do `comment_default.json` é uma sombra preta a 110/255, blur 16, sem spread, caindo 10px para baixo — luz vindo de cima, que é a convenção que o olho lê como "o card está sobre o vídeo" em vez de "o card é parte do vídeo".
+
+**Na vertical o canvas cresce; na horizontal não pode.** Uma sombra borrada e deslocada ocupa espaço *fora* da caixa do card. `shadow_margins()` calcula quanto de padding transparente cada lado precisa; a altura do PNG é `margem_topo + altura_do_card + margem_base`, então o esmaecimento sempre cabe. Mas a largura é fixa em 1080, e ali não há para onde crescer — o espaço tem que vir de `card.offset.x` e da goteira direita.
+
+Daí `check_card_fits()`: um card grudado demais numa borda cortaria o desfoque numa linha reta vertical, o artefato que denuncia uma sombra falsa. Em vez de deixar isso passar, o compose levanta `ValueError` nomeando o lado e o excesso em pixels. É erro de autoria de template, pego uma vez no design — e já pegou um estouro real de 14px durante a escrita deste template.
+
+**A margem é `blur × 3`.** O `radius` do `GaussianBlur` do Pillow é um desvio-padrão, e ~3σ concentra >99% do peso do kernel — além disso a contribuição fica abaixo de um passo de alpha de 8 bits, ou seja, invisível. Margem menor economizaria pixels ao custo de reintroduzir o corte.
+
+**A sombra é clipada pela silhueta do card.** Com o card branco opaco isso não muda nada visível, mas a regra vale para qualquer `background.color` translúcido: sem clip a sombra atravessa e escurece o card de forma desigual, mais forte do lado para onde o offset aponta. O `box-shadow` do CSS clipa da mesma forma, e é nele que o card se espelha.
+
+**Desligada por padrão no schema.** `Shadow.enabled` é `False`, então um guide sem o bloco renderiza a mesma geometria de sempre. Só o `comment_default.json` liga a sombra explicitamente.
+
+### Cabeçalho do card
+
+O topo do card é **um único PNG transparente** com a foto de perfil, o nome e os selos do autor já compostos — não um avatar redondo que o código monta junto de um texto de nome. O guide trata isso como um asset comum na linha do topo, então trocar a identidade do comentário é trocar um arquivo, sem tocar em layout.
+
+O asset é guardado em **2×** (417×61 lógicos → 834×122 no arquivo), que é exatamente o que o `compose` pede com `canvas.supersample: 2`. Assim não há reamostragem intermediária: o arquivo entra no tamanho de device pixel e só é reduzido uma vez, junto com o card inteiro, no downsample final.
+
+**`assets[].size` é um resize duro, sem preservar proporção.** Enquanto o slot era um quadrado de 72×72 isso era inofensivo; com uma faixa larga, um tamanho de aspecto errado achata a imagem e nada falha. `test_shipped_template_asset_keeps_the_source_aspect_ratio` compara o aspecto do spec com o do arquivo versionado em `blender_worker/assets/`.
+
+### Tipografia e antialiasing
+
+O texto é **Arial Bold preta sobre card branco**. A fonte é versionada em `blender_worker/assets/fonts/Arial-Bold.ttf` pelo mesmo motivo da Futura das legendas: a imagem Docker instala apenas `fonts-dejavu-core`, e a família Arial só viria do `ttf-mscorefonts-installer`, que exige aceite de EULA no build. Sem versionar, o card renderizaria em DejaVu no container sem nenhum erro visível.
+
+**O peso é Bold, não Black.** A Black foi o primeiro corte e ficou pesada demais para o texto corrido do card; ela continua versionada como alternativa. A diferença não é só de espessura: a Black também é mais **larga**, então o mesmo texto quebra em mais linhas e a altura do card cresce junto. Trocar o peso é editar `text.font_path` no guide — nenhum código conhece o nome da fonte.
+
+**O antialiasing já existia antes de haver um knob para ele.** O texto é desenhado pelo FreeType, que antialiasa por conta própria; os cantos arredondados já eram desenhados em 4× e reduzidos. `canvas.supersample` renderiza o card inteiro em N× e reduz uma vez com LANCZOS — é uma passada de uniformidade *em cima* disso, não a origem do efeito, e `supersample: 1` continua sendo uma escolha válida e mais barata. Os testes afirmam que o AA está presente nos dois ajustes, em vez de afirmar que o knob o cria.
+
+---
+
 ## Agendamento (tiktok_poster)
 
 - Ritmo: 2 posts por dia.
