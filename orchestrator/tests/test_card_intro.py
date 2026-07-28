@@ -12,7 +12,7 @@ import respx
 from httpx import Response
 
 from src.orchestrator.db.models import PipelinePart, PipelineRun
-from src.orchestrator.worker import _render_card, _run_hook_tts, _run_render
+from src.orchestrator.worker import _render_card, _run_hook_tts, _run_render, _run_tts
 
 HOOK = "Ela achou a mensagem às 3 da manhã."
 CARD_URL = "http://blender_worker:8000/images/render"
@@ -26,8 +26,8 @@ async def _make_run(session, hook=HOOK, **fields):
     return run
 
 
-async def _make_part(session, run_id, **fields):
-    part = PipelinePart(run_id=run_id, part_number=1, script="Parte 1.", **fields)
+async def _make_part(session, run_id, script="Parte 1.", **fields):
+    part = PipelinePart(run_id=run_id, part_number=1, script=script, **fields)
     session.add(part)
     await session.commit()
     await session.refresh(part)
@@ -108,6 +108,74 @@ async def test_hook_tts_is_narrated_at_the_narration_rate(session):
     sent = json.loads(route.calls.last.request.content)
     assert sent["rate"] == "+15%"
     assert sent["label"] == "hook"
+
+
+# ── o gancho não é narrado duas vezes ──────────────────────────────────────
+
+TTS_URL = "http://tts_service:8000/generate"
+REST = "O celular estava na mesa, desbloqueado."
+
+
+def _tts_ok(run_id, part=1):
+    return Response(200, json={
+        "audio_key": f"audio/{run_id}/part_{part}.mp3",
+        "srt_key": f"subs/{run_id}/part_{part}.srt",
+    })
+
+
+@respx.mock
+async def test_part_one_is_narrated_without_the_hook(session):
+    """O gancho abre o vídeo sobre o card; repeti-lo na narração é dizer duas vezes."""
+    run = await _make_run(session, hook_audio_key="audio/abc/hook.mp3")
+    part = await _make_part(session, run.id, script=f"{HOOK} {REST}")
+
+    route = respx.post(TTS_URL).mock(return_value=_tts_ok(run.id))
+
+    await _run_tts(session, part, run)
+
+    assert json.loads(route.calls.last.request.content)["text"] == REST
+
+
+@respx.mock
+async def test_part_two_keeps_its_whole_script(session):
+    """Só a parte 1 abre com o gancho — nas outras não há o que cortar."""
+    run = await _make_run(session, hook_audio_key="audio/abc/hook.mp3")
+    part_two = PipelinePart(run_id=run.id, part_number=2, script=f"{HOOK} {REST}")
+    session.add(part_two)
+    await session.commit()
+    await session.refresh(part_two)
+
+    route = respx.post(TTS_URL).mock(return_value=_tts_ok(run.id, part=2))
+
+    await _run_tts(session, part_two, run)
+
+    assert json.loads(route.calls.last.request.content)["text"] == f"{HOOK} {REST}"
+
+
+@respx.mock
+async def test_hook_stays_in_the_narration_when_there_is_no_hook_audio(session):
+    """Sem áudio do gancho não há abertura narrada: cortar apagaria a frase do vídeo."""
+    run = await _make_run(session, hook_audio_key=None)
+    part = await _make_part(session, run.id, script=f"{HOOK} {REST}")
+
+    route = respx.post(TTS_URL).mock(return_value=_tts_ok(run.id))
+
+    await _run_tts(session, part, run)
+
+    assert json.loads(route.calls.last.request.content)["text"] == f"{HOOK} {REST}"
+
+
+@respx.mock
+async def test_script_that_does_not_open_with_the_hook_is_sent_whole(session):
+    """Modelo que não copiou a frase literalmente: repetir é melhor que cortar errado."""
+    run = await _make_run(session, hook_audio_key="audio/abc/hook.mp3")
+    part = await _make_part(session, run.id, script=f"{REST} {HOOK}")
+
+    route = respx.post(TTS_URL).mock(return_value=_tts_ok(run.id))
+
+    await _run_tts(session, part, run)
+
+    assert json.loads(route.calls.last.request.content)["text"] == f"{REST} {HOOK}"
 
 
 # ── as duas keys chegam ao render ──────────────────────────────────────────

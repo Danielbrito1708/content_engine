@@ -18,6 +18,7 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `clients/tiktok.py` — `TikTokClient.schedule(...)` + exceção `BufferQueueFull`
 - `clients/http.py` — `request(method, url, *, timeout, attempts)`: política única de retry
 - `backgrounds.py` — `pick_background(keys, run_id, part_number)`, puro
+- `hook_text.py` — `strip_hook(script, hook) -> str | None`, puro: o roteiro sem a frase gancho na frente
 - `storage/client.py` — `upload_bytes(...)` e `list_keys(bucket, prefix)` via boto3 (MinIO/R2)
 - `worker.py` — `run_pipeline(run_id)` + `recover_interrupted_runs()`, `retry_pending_schedules()`, `maintenance_loop()`
 - `api/app.py` — `lifespan`: reconcilia runs órfãos antes de servir, depois sobe o `maintenance_loop`
@@ -86,7 +87,7 @@ Assets estáticos (background + música) em `config.ini [template]`.
 5. **`_process_all_parts`**: para cada part, executa `_run_tts` + `_run_render` sequencialmente
 6. **`_schedule`**: chama `TikTokClient.schedule()` para cada part com `video_key` definido
 
-**`_run_tts`**: chama `POST tts_service/generate` → salva `audio_key` e `srt_key` na part. Recebe o `rate` da narração e o repassa; `None` deixa o `tts_service` aplicar seu `TTS_RATE`.
+**`_run_tts`**: chama `POST tts_service/generate` → salva `audio_key` e `srt_key` na part. Recebe o `rate` da narração e o repassa; `None` deixa o `tts_service` aplicar seu `TTS_RATE`. O texto narrado sai de `_narration_text` — a parte 1 vai sem a frase gancho (ver abaixo).
 
 ### Velocidade da narração (`_narration_rate`)
 
@@ -131,6 +132,10 @@ O card de comentário com a frase gancho é composto uma vez por run (`POST blen
 
 **`_run_hook_tts` agora recebe o `rate`.** Como o gancho é montado na frente da narração, ele tem de ser narrado na mesma velocidade — daí `_narration_rate()` ter subido para antes do primeiro TTS (era lido dentro de `_process_all_parts`, que agora recebe o valor pronto).
 
+**O gancho é dito uma vez só** (`_narration_text` + `hook_text.strip_hook`). O gancho é literalmente a primeira frase da parte 1, então a intro e a narração diriam a mesma coisa em sequência. O corte é feito **no texto, antes do TTS**: comparação de prefixo ignorando espaço em branco, caixa e forma de acentuação (NFC/NFD). Áudio e legenda já nascem certos — a legenda é transcrita do próprio áudio.
+
+Não corta e registra `warning` quando o gancho não abre a parte, quando sobraria texto vazio, ou quando **não há `hook_audio_key`** — sem intro narrada, cortar apagaria a frase do vídeo em vez de repeti-la. `part.script` nunca é reescrito.
+
 Regras completas em `docs/vision.md` → "Abertura do vídeo (intro: card + gancho)".
 
 ### Legendas
@@ -170,4 +175,4 @@ docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE orchestrato
 alembic upgrade head && python -m pytest -q
 ```
 
-65 testes em 8 arquivos: `test_pipeline.py` (6, API layer), `test_worker.py` (10, stages individuais + end-to-end), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (8 — card composto com o gancho, rate do gancho e as duas keys chegando ao render), `test_resilience.py` (10), `test_backgrounds.py` (6) e `test_http.py` (5).
+81 testes em 9 arquivos: `test_pipeline.py` (6, API layer), `test_worker.py` (10, stages individuais + end-to-end), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (12 — card composto com o gancho, rate do gancho, corte do gancho na narração da parte 1 e as duas keys chegando ao render), `test_hook_text.py` (12 — o corte puro: prefixo, espaçamento, acentuação, e os casos em que não corta), `test_resilience.py` (10), `test_backgrounds.py` (6) e `test_http.py` (5).

@@ -13,6 +13,7 @@ from src.orchestrator.clients.tiktok import BufferQueueFull, TikTokClient
 from src.orchestrator.clients.tts import TTSClient
 from src.orchestrator.db.engine import AsyncSessionLocal
 from src.orchestrator.db.models import PartStatus, PipelinePart, PipelineRun, PipelineStatus
+from src.orchestrator.hook_text import strip_hook
 from src.orchestrator.storage.client import list_keys
 
 log = get_logger(__name__)
@@ -183,7 +184,7 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | No
     await session.commit()
 
     audio_key, srt_key = await TTSClient().generate(
-        text=part.script,
+        text=_narration_text(part, run),
         run_id=str(run.id),
         part_number=part.part_number,
         rate=rate,
@@ -194,6 +195,38 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | No
     part.status = PartStatus.tts_done
     await session.commit()
     log.info("audio ready", run_id=str(run.id), part=part.part_number, audio=audio_key, srt=srt_key)
+
+
+def _narration_text(part: PipelinePart, run: PipelineRun) -> str:
+    """O texto que vai ao TTS — a parte 1 sem a frase gancho.
+
+    O gancho é a primeira frase da parte 1 e já é narrado sozinho na abertura,
+    sobre o card. Narrar a parte inteira faz o vídeo dizer a mesma frase duas
+    vezes seguidas, nos segundos em que a retenção se decide.
+
+    Só corta quando o gancho **vai mesmo** para a abertura (`hook_audio_key`
+    preenchido). Sem esse áudio não há intro narrada, e cortar aqui apagaria o
+    gancho do vídeo inteiro — o oposto do que se quer. As duas etapas são
+    degradáveis de propósito, então esse caso não é hipotético.
+
+    `part.script` não é reescrito: o roteiro continua sendo o roteiro, e o corte
+    é decisão de montagem. A legenda não desalinha porque é transcrita do áudio,
+    não do script.
+    """
+    if part.part_number != 1 or not run.hook or not run.hook_audio_key:
+        return part.script
+
+    stripped = strip_hook(part.script, run.hook)
+    if stripped is None:
+        log.warning(
+            "hook not found at the start of part 1, narration will repeat it",
+            run_id=str(run.id),
+            hook=run.hook[:60],
+        )
+        return part.script
+
+    log.info("hook removed from part 1 narration", run_id=str(run.id), chars_cut=len(part.script) - len(stripped))
+    return stripped
 
 
 async def background_key_for(run_id: uuid.UUID, part_number: int) -> str:

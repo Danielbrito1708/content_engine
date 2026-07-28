@@ -318,7 +318,9 @@ Uma observação para quando quiser aumentar mais: a imagem do cabeçalho já es
 
 **Vale para todas as partes da série.** Quando uma história vira duas ou três partes, todas abrem com o mesmo card e a mesma frase. É isso que faz as partes serem reconhecidas como do mesmo vídeo ao aparecerem no feed em dias diferentes.
 
-**Na parte 1 a frase é dita duas vezes** — uma na abertura, sobre o card, e de novo como primeira frase da narração, já que o gancho é literalmente a abertura do roteiro. Foi uma escolha deliberada de formato, não um efeito colateral.
+**A frase é dita uma vez só.** Como o gancho é literalmente a primeira frase do roteiro, narrar a parte 1 inteira faria o vídeo repetir a mesma frase logo em seguida — justamente nos segundos em que a pessoa decide se continua assistindo. A narração da parte 1 passa a começar na segunda frase: quem lê a frase de abertura é a voz da intro, sobre o card. O roteiro guardado não muda; o que muda é só o que vai para a narração.
+
+Se por algum motivo a frase de abertura não corresponder ao começo do roteiro, ou se a narração do gancho tiver falhado, a parte 1 é narrada inteira como antes — melhor o vídeo repetir uma frase do que perdê-la.
 
 **Se faltar alguma peça, o vídeo sai mesmo assim.** Se a narração do gancho falhar, ou se o card não puder ser gerado, o vídeo é montado sem a abertura, exatamente como era antes — nenhuma das duas peças vale perder o vídeo inteiro, que é o que o sistema existe para entregar.
 

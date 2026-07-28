@@ -156,9 +156,9 @@ O gancho sempre foi **regra de escrita** no prompt de refino ("a primeira frase 
 
 **Regra de derivação.** Fim de frase = pontuação terminal (`. ! ? …`, mais aspas/parênteses de fechamento) **seguida de espaço** — exigir o espaço é o que impede `R$ 3.5 mil` de virar fim de frase. Sem pontuação terminal, a parte inteira seria o "gancho", então há um teto de 200 caracteres com corte na última palavra inteira. O teto existe só para a derivação; gancho vindo do modelo é usado como veio.
 
-**O gancho não é removido da parte 1.** Ele continua sendo a primeira frase da narração completa — o campo é uma *cópia identificada*, não um recorte.
+**O gancho não é removido do roteiro.** `parts[0]` continua abrindo com ele e `PipelinePart.script` guarda o roteiro inteiro — o campo `hook` é uma *cópia identificada*, não um recorte.
 
-**E o vídeo montado repete a frase, de propósito.** Desde que a intro passou a montar o áudio do gancho na frente da narração (ver "Abertura do vídeo"), a parte 1 diz a mesma frase duas vezes: uma sobre o card, outra ao abrir a narração. É decisão de formato — o card é lido em voz alta como um título, e a história começa do início logo depois. As alternativas foram consideradas e recusadas: cortar a frase da narração exigiria casar o texto do gancho com o SRT palavra a palavra para achar onde cortar o áudio, e pular a intro só na parte 1 daria à primeira parte uma abertura diferente das outras — justamente a parte que mais precisa ser reconhecida como o começo da série.
+**Mas ele é removido da narração da parte 1.** Desde que a intro passou a montar o áudio do gancho na frente da narração (ver "Abertura do vídeo"), narrar a parte inteira faria o vídeo dizer a mesma frase duas vezes seguidas — exatamente nos segundos em que a retenção se decide. O corte é feito **no texto, antes do TTS** (`_narration_text` → `strip_hook`), não no áudio: o roteiro é o dado, o áudio é o produto, e mexer no texto não exige casar o gancho com o SRT palavra a palavra para achar onde cortar a onda.
 
 ### Áudio do gancho
 
@@ -465,6 +465,20 @@ Medido no render de validação: gancho de 2,60s, `tail` de 0,3s → narração 
 `fit_method="ORIGINAL"` e `blend_type="ALPHA_OVER"`, ambos explícitos. O PNG é composto na largura exata do frame (1080) com margem transparente, então qualquer *fit* só reamostraria a imagem. E o `blend_type` de um strip criado pela API **não** é o `ALPHA_OVER` que a UI dá: sem setar, a moldura transparente do card renderiza como uma caixa preta sobre o vídeo.
 
 `card.y_position` usa a mesma escala do `y_position` da legenda (fração da altura do frame, 0 = base), aplicada como `transform.offset_y` em pixels a partir do centro; clampada a 0..1 porque um valor fora do frame vira card sumido sem erro. O fade é limitado a ⅓ do strip pelo mesmo motivo que o da legenda — um fade maior que o strip nunca chegaria a opacidade cheia.
+
+### O gancho é dito uma vez só (`hook_text.strip_hook`)
+
+O gancho é **literalmente** a primeira frase da parte 1, então a intro e a narração diriam a mesma coisa em sequência. `_narration_text(part, run)` manda ao TTS a parte 1 sem essa frase; as demais partes vão inteiras, porque nelas não há o que cortar.
+
+**Corta no texto, não no áudio.** Um corte no áudio exigiria casar o gancho com o SRT word-level para achar o timestamp, e depois trimar o strip e deslocar a legenda — três lugares para errar sincronia. No texto é comparação de prefixo, e o áudio e a legenda já nascem certos (a legenda é transcrita do próprio áudio).
+
+**A comparação ignora espaço em branco, caixa e forma de acentuação** (NFC/NFD normalizados na string inteira — em NFD o til de `manhã` é um caractere separado, e uma comparação caractere a caractere nem teria o mesmo número de posições dos dois lados). O prompt manda copiar a frase literalmente; a tolerância cobre a diferença de serialização, não uma reescrita.
+
+**`strip_hook` devolve `None` em vez do roteiro intacto** quando o gancho não abre a parte, ou quando sobraria só espaço em branco (a parte inteira era o gancho). Quem chama registra `warning` e narra o roteiro completo: o vídeo sai com a frase repetida — o defeito que isto existe para evitar — e isso não pode acontecer em silêncio.
+
+**Só corta quando o gancho vai mesmo para a abertura** (`hook_audio_key` preenchido). O TTS do gancho é degradável: sem ele não há intro narrada, e cortar assim mesmo apagaria a frase do vídeo inteiro em vez de repeti-la.
+
+**`part.script` não é reescrito.** O roteiro continua sendo o roteiro; o corte é decisão de montagem, e fica visível no log (`hook removed from part 1 narration`).
 
 ### Degradação
 
