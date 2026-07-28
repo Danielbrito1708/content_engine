@@ -404,7 +404,13 @@ Daí `check_card_fits()`: um card grudado demais numa borda cortaria o desfoque 
 
 O topo do card é **um único PNG transparente** com a foto de perfil, o nome e os selos do autor já compostos — não um avatar redondo que o código monta junto de um texto de nome. O guide trata isso como um asset comum na linha do topo, então trocar a identidade do comentário é trocar um arquivo, sem tocar em layout.
 
-O asset é guardado em **2×** (417×61 lógicos → 834×122 no arquivo), que é exatamente o que o `compose` pede com `canvas.supersample: 2`. Assim não há reamostragem intermediária: o arquivo entra no tamanho de device pixel e só é reduzido uma vez, junto com o card inteiro, no downsample final.
+O arquivo tem 834×122. Enquanto o cabeçalho media 417×61 lógicos isso era exatamente o que o `compose` pedia com `canvas.supersample: 2` — o asset entrava no tamanho de device pixel, sem reamostragem intermediária, e só era reduzido uma vez junto com o card inteiro.
+
+**O cabeçalho e a fonte foram aumentados** (581×85 e 50px, contra 417×61 e 36px), porque o card é lido em movimento num feed vertical: no tamanho anterior ele ocupava pouco mais de um terço da largura do card e disputava atenção com a legenda, que é três vezes maior. A escala foi escolhida comparando quatro variantes renderizadas lado a lado; acima disso o texto do gancho passa a quebrar em três linhas e o cabeçalho começa a dominar o card.
+
+**O preço é que o cabeçalho passou a ser pedido acima da resolução do arquivo:** 581 lógicos × supersample 2 = 1162px contra os 834 disponíveis, um upscale de 1,39×. Verificado num render 1080×1920: continua legível e sem artefato visível, mas a nitidez de antes só volta regerando `perfil-azul.png` com ~1200px de largura. Não vale reduzir o `supersample` para disfarçar — isso pioraria o card inteiro para consertar um asset.
+
+O `card.gap` subiu de 18 para 26 no mesmo movimento: o espaçamento entre cabeçalho e texto é proporcional ao tamanho dos dois, e mantê-lo fixo colaria o texto no cabeçalho.
 
 **`assets[].size` é um resize duro, sem preservar proporção.** Enquanto o slot era um quadrado de 72×72 isso era inofensivo; com uma faixa larga, um tamanho de aspecto errado achata a imagem e nada falha. `test_shipped_template_asset_keeps_the_source_aspect_ratio` compara o aspecto do spec com o do arquivo versionado em `blender_worker/assets/`.
 

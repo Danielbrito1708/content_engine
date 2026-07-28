@@ -310,6 +310,10 @@ Antes, o vídeo começava com três segundos de fundo rodando sozinho: o card er
 
 **Como fica na tela.** O card aparece e some suavemente, centralizado, com a mesma folga do lado direito que as demais artes deixam para os botões de curtir e comentar do TikTok. A posição, a duração do aparecer/sumir e a pausa entre o gancho e o início da narração são ajustáveis no template.
 
+**A foto de perfil e o texto do card ficaram maiores** — cerca de 40% em cima do tamanho original, tanto no cabeçalho (foto, nome e selos) quanto na letra da frase. No tamanho anterior o card era lido como uma legendinha no meio da tela; agora ele tem o peso de um card de comentário de verdade, que é o que faz alguém parar de rolar o feed para ler. O espaçamento entre o cabeçalho e o texto acompanhou o aumento. Nada disso é código: são números no arquivo de template do card, ajustáveis a qualquer momento.
+
+Uma observação para quando quiser aumentar mais: a imagem do cabeçalho já está sendo exibida um pouco acima do tamanho em que foi salva, então a partir daqui vale gerar uma versão maior desse arquivo antes de crescer de novo — senão ela começa a perder nitidez.
+
 **Quanto tempo dura.** A abertura dura o tempo da frase falada, mais uma pequena pausa — não um tempo fixo. Se o gancho for curto, a abertura mantém os três segundos mínimos do template; se for longo, ela estica para caber a frase inteira, e a narração espera. Nunca há palavra cortada nem card sumindo antes da hora.
 
 **Vale para todas as partes da série.** Quando uma história vira duas ou três partes, todas abrem com o mesmo card e a mesma frase. É isso que faz as partes serem reconhecidas como do mesmo vídeo ao aparecerem no feed em dias diferentes.
