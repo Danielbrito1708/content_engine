@@ -95,7 +95,11 @@ A file with no decodable video track *still loads* as a movie strip — Blender 
 
 Pure (takes anything with a `frame_duration`), so it is tested without Blender.
 
-**Render length** — `content_end_frame(strips, bed_channels, fallback)` sets `scene.frame_end`. The music **and the background video** are *beds*: each is however long its asset happens to be, so neither may define where the video ends — only the narration and its subtitles do. Measured: a 90s background under a 68s narration rendered 22s of dead air after the last word left the screen. Previously only music was excluded, which went unnoticed because the placeholder background was a single frame. A bed *shorter* than the narration is deliberately not handled: the tail goes black, which is a problem to fix in the asset. Pure, so the rule is tested without Blender.
+**Background coverage** — `background_repeats(clip_frames, first_start, needed_end, max_repeats=MAX_BACKGROUND_REPEATS)` returns the start frames for the extra copies needed to cover the narration; `extend_background(vse, path, channel, strip, needed_end)` lays them down. Called in `main()` **after** `scene.frame_end` is decided.
+
+A bed shorter than the narration used to render a **black tail** — no error, no warning: measured, a 45s clip under a 71s narration gave 26s of black with subtitles still popping over it. That was filed as an asset problem while every render shared one long hand-picked file; with backgrounds now drawn from a clip library (`orchestrator` rotates over `assets/backgrounds/`), a short clip is the normal case. Copies are laid exactly end to end — an overlap makes Blender relocate the strip to another channel, a gap is a black frame. `MAX_BACKGROUND_REPEATS` (60) bounds the degenerate case; past it the tail goes black as before. Pure, tested without Blender.
+
+**Render length** — `content_end_frame(strips, bed_channels, fallback)` sets `scene.frame_end`. The music **and the background video** are *beds*: each is however long its asset happens to be, so neither may define where the video ends — only the narration and its subtitles do. Measured: a 90s background under a 68s narration rendered 22s of dead air after the last word left the screen. Previously only music was excluded, which went unnoticed because the placeholder background was a single frame. A bed *shorter* than the narration is covered by repeating it (see **Background coverage** above) rather than by shrinking the timeline, which would cut narration mid-sentence. Pure, so the rule is tested without Blender.
 
 **`scripts/edit_video.py` VSE layout:**
 - Scene — `fps = frame_rate` **and `fps_base = 1.0`**. Blender's effective fps is `fps / fps_base`, and `fps_base` comes from the `.blend` (the current `template.blend` is `6/0.1` = 60fps). Leaving it alone makes the scene run at `frame_rate / 0.1` — 10x off, which desyncs every frame-based timing and stretches sound strips 10x.
@@ -131,9 +135,15 @@ The `.srt` produced by `tts_service` has **one entry per word** (Whisper `word_t
 
 **Template config** (optional block in `template.json`):
 ```json
-"subtitles": { "fade_frames": 3, "max_hold_seconds": 0.4, "rise_frames": 4, "rise_offset": 0.025 }
+"subtitles": { "fade_frames": 3, "max_hold_seconds": 0.4, "rise_frames": 4, "rise_offset": 0.025, "font_size": 160, "y_position": 0.474 }
 ```
-`rise_offset` is a fraction of frame height (0.025 ≈ 48px at 1080×1920); `rise_frames: 0` disables the animation. Resting position is `SUBTITLE_Y = 0.05`.
+`rise_offset` is a fraction of frame height (0.025 ≈ 48px at 1080×1920); `rise_frames: 0` disables the animation.
+
+**Vertical position** — `y_position` (default `0.5`, dead centre) is a fraction of frame height, clamped to 0..1 because an off-frame value renders as subtitles silently missing rather than as an error. Strips use `align_y = "CENTER"`, so the value positions the text's own middle: the same number means the same place for a tall word and a short one. `0.05` restores the old bottom-anchored look.
+
+The shipped template uses **0.474** — 50px below dead centre at 1920 high (`50/1920 = 0.026`). Verified by rendering the same word at the same size with only `y_position` changing: the glyph centre moved exactly 50.0px. Measure a position change that way, holding size fixed; comparing frames that differ in *both* size and position reads ~3px short, because the x-height box of a smaller font sits differently against the anchor.
+
+⚠️ **`template.json` lives in the bucket, not in the repo.** `render_job` downloads `templates/template.json` from MinIO/R2 — editing the repo copy changes nothing until it is uploaded. These two drifted: the repo declared `font_size: 140` while the deployed template had no typography block at all, so every render used Blender's built-in 60 (measured from the rendered glyphs: 33px for "ano" against 104px at size 190). `font_size` is the only property with no code default, which is exactly why it was the one that silently regressed — font, colour and outline kept working from `DEFAULT_*`, so nothing looked broken.
 
 - Tests: `tests/test_subtitles.py` (16 tests, marked `no_db` — no docker compose, no Blender needed).
 
@@ -157,7 +167,15 @@ Typeface, fill colour and outline for the word-level text strips. Default: **Fut
 
 **Requires Blender 4.2+** — `use_outline`/`outline_color`/`outline_width` do not exist before 4.2 (the Dockerfile pins 4.2.20). Verified against the real RNA, not assumed.
 
-**Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 140, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
+**Per-word auto-fit** — `fit_font_size(text, font_size, max_width, measure, min_size=60)` treats `font_size` as a **ceiling**, not a fixed value: short words render at exactly that size and only the ones that would overrun the frame are scaled down, floored at `MIN_AUTOFIT_FONT_SIZE`. `SUBTITLE_SIDE_MARGIN` (0.04) keeps 4% of the width clear on each side.
+
+Without it, raising the body size clips long words, and the clipping is **silent** — Blender does not wrap a single word and reports nothing. Measured at 1080px wide: `"procedimento,"` already occupied 1037 of 1080px at size 140, and at 170+ it ran off both edges. On a real 178-word narration, size 190 needs fitting on only 13 words (7%), the longest landing at 133.
+
+`make_text_measurer(font_path)` builds the measuring callable from `blf`, the same rasteriser the VSE text strip uses; it returns `None` when the font cannot be loaded, and the caller then skips auto-fit rather than measuring with a typeface it will not render. Verified against a real render: blf reports 1046px for `"procedimento,"` at 140 where the rendered bounding box (outline included) is 1037px — it errs slightly wide, the safe direction for a fits-on-screen test.
+
+`fit_font_size` is pure (the measurer is injected), so the rule is tested without Blender.
+
+**Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 160, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. At 160 the auto-fit touches only 2 of 178 words on a real narration. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
 
 - Tests: `tests/test_subtitles.py` (35 tests total, marked `no_db` — no docker compose, no Blender needed).
 

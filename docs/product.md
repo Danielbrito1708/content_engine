@@ -274,7 +274,55 @@ O vídeo agora termina junto com a narração.
 
 Antes, a duração era ditada pelo mais longo entre todos os arquivos — inclusive o vídeo de fundo e a música, que são apenas pano de fundo. Na prática, um fundo de 90 segundos sob uma narração de 68 gerava 22 segundos de silêncio no fim, com a legenda já fora da tela. Quem define onde a história acaba é a narração; fundo e trilha são decoração e não esticam mais o vídeo.
 
-Se o fundo for **mais curto** que a narração, o final fica preto — isso continua sendo caso de trocar o arquivo de fundo por um mais longo.
+Se o fundo for **mais curto** que a narração, o sistema repete o próprio fundo até cobrir a história inteira. Antes, o trecho que sobrava saía **preto**, com a legenda aparecendo sobre o nada e sem nenhum aviso — um clipe de 45 segundos sob uma narração de 71 gerava 26 segundos de tela preta. Isso deixou de ser um erro do arquivo e passou a ser normal, porque o fundo agora vem de uma biblioteca de clipes curtos (ver abaixo).
+
+## Legenda no centro e maior
+
+A legenda agora aparece **no meio da tela**, não mais no rodapé, e com a fonte bem maior.
+
+O tamanho anterior era o padrão interno do Blender — pequeno demais para vídeo vertical, e menor do que a configuração do projeto dizia usar. O arquivo de template que estava em uso não trazia a definição de tamanho, então a configuração escrita no repositório nunca chegava ao vídeo. Corrigido: a palavra agora sai mais de três vezes maior do que saía antes.
+
+**Palavras longas se ajustam sozinhas.** Uma palavra comprida como "procedimento," não caberia na largura da tela no tamanho novo — e antes seria simplesmente cortada nas bordas, sem aviso. Agora o tamanho escolhido funciona como um teto: a maioria esmagadora das palavras sai nele, e só as poucas que não cabem encolhem o suficiente para caber inteiras. Numa narração real de 178 palavras, apenas 13 precisaram de ajuste.
+
+**Dá para mudar sem mexer em código.** Posição vertical e tamanho são configuração do template: `y_position` (0.5 = centro exato, 0.05 = rodapé como antes) e `font_size`.
+
+Valores em uso hoje: **tamanho 160**, posição **0.474** — ou seja, 50 pixels abaixo do centro da tela.
+
+## Fundo diferente a cada vídeo
+
+Antes, todo vídeo do canal usava **o mesmo arquivo de fundo, começando no mesmo segundo**. Duas partes seguidas da mesma história saíam com exatamente a mesma imagem por trás, mudando só as palavras.
+
+Agora o fundo vem de uma biblioteca: um vídeo longo é cortado em dezenas de clipes curtos, e cada parte sorteia o seu. Partes da mesma história — que vão ao ar uma atrás da outra, onde a repetição seria mais visível — praticamente nunca caem no mesmo clipe.
+
+A escolha é **estável**: se a mesma parte precisar ser montada de novo, ela volta com o mesmo fundo, em vez de virar um vídeo diferente do que já foi revisado.
+
+Se a biblioteca estiver vazia, o sistema continua usando o arquivo único de antes — nada quebra por falta de clipes.
+
+## Fila cheia deixou de jogar vídeo fora
+
+O serviço de agendamento aceita no máximo 10 posts na fila. Quando ela enchia, a história inteira era marcada como **falha** — depois de já ter pago o refinamento do texto, a narração, a transcrição e a montagem do vídeo. O trabalho ia todo para o lixo por causa de um minuto de fila cheia.
+
+Agora a história fica **esperando vaga**, com os vídeos prontos guardados. De tempos em tempos o sistema tenta de novo sozinho, e assim que abre espaço na fila ela é agendada.
+
+Isso também resolveu um desequilíbrio silencioso: a busca de roteiros trazia até dois por hora, enquanto a publicação dá conta de três por dia. Como uma história esperando vaga conta como trabalho em andamento, a busca agora se segura sozinha enquanto a fila está cheia, em vez de produzir vídeos que morreriam na última etapa.
+
+## Nada mais fica preso depois de um reinício
+
+Se a máquina reiniciasse no meio de uma produção, a história ficava **presa para sempre** no estado "em andamento". Ninguém percebia — e como o sistema conta as histórias em andamento para decidir se busca mais roteiro, bastavam cinco presas para a busca parar de vez, em silêncio.
+
+Ao subir, o sistema agora revisa o que ficou pela metade: histórias com todos os vídeos prontos são retomadas direto na etapa de agendamento, e as que pararam antes disso são marcadas como falhas, com o motivo escrito. De um jeito ou de outro, a fila é liberada.
+
+## Tropeços passageiros não derrubam mais a produção
+
+Uma conexão que cai ou um serviço que ainda está subindo devolvia erro e matava a história na hora. Agora cada chamada entre os serviços é repetida algumas vezes, com intervalo crescente, antes de desistir. Erros que são resposta definitiva — como "essa fila está cheia" — não são repetidos, porque insistir neles não muda nada.
+
+## Preparado para ficar ligado sem ninguém olhando
+
+Três mudanças de bastidor para o sistema aguentar rodar sozinho:
+
+- **Volta sozinho.** Os serviços reiniciam automaticamente depois de uma queda ou de um reboot da máquina. Antes ficavam desligados até alguém reparar.
+- **Log não enche mais o disco.** O registro de cada serviço passou a ser resumido em vez de detalhado, e é limitado a um tamanho máximo com descarte do que é antigo. Antes, cada chamada de rede gravava cabeçalhos inteiros, sem limite de tamanho.
+- **O modelo de transcrição não é mais baixado toda vez.** Ele agora fica guardado na máquina; antes, cada atualização de container baixava de novo os 420 MB e dependia do serviço externo estar no ar naquele momento.
 
 ## Fluxo completo resumido
 

@@ -2,9 +2,8 @@ import asyncio
 import time
 import uuid
 
-import httpx
-
 from src.core import settings
+from src.orchestrator.clients.http import request
 
 _POLL_INTERVAL = 10
 _POLL_TIMEOUT = 3600
@@ -21,32 +20,30 @@ class BlenderClient:
         voice_key: str,
         subtitle_key: str,
     ) -> uuid.UUID:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{self._base}/videos",
-                json={
-                    "video_file_key": video_file_key,
-                    "music_key": music_key,
-                    "voice_key": voice_key,
-                    "subtitle_key": subtitle_key,
-                },
-            )
-            resp.raise_for_status()
+        resp = await request(
+            "POST",
+            f"{self._base}/videos",
+            timeout=30,
+            json={
+                "video_file_key": video_file_key,
+                "music_key": music_key,
+                "voice_key": voice_key,
+                "subtitle_key": subtitle_key,
+            },
+        )
         return uuid.UUID(resp.json()["id"])
 
     async def create_job(self, video_id: uuid.UUID, template_id: uuid.UUID) -> uuid.UUID:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{self._base}/jobs",
-                json={"video_id": str(video_id), "template_id": str(template_id)},
-            )
-            resp.raise_for_status()
+        resp = await request(
+            "POST",
+            f"{self._base}/jobs",
+            timeout=30,
+            json={"video_id": str(video_id), "template_id": str(template_id)},
+        )
         return uuid.UUID(resp.json()["id"])
 
     async def get_job_status(self, job_id: uuid.UUID) -> dict:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{self._base}/jobs/{job_id}")
-            resp.raise_for_status()
+        resp = await request("GET", f"{self._base}/jobs/{job_id}", timeout=10)
         return resp.json()
 
     async def poll_job(
