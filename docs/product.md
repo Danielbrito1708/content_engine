@@ -28,6 +28,28 @@ Mas o sistema não pega simplesmente as melhores do topo geral, porque isso fari
 
 O rodízio se mantém sozinho ao longo dos dias, porque o sistema lembra o que já usou e nunca repete.
 
+**Ele lê o começo de cada história e julga se ela prende:**
+
+O ranking do Reddit diz quantas pessoas votaram numa história, mas não diz se ela *se conta bem*. Um desabafo desorganizado pode ter mil upvotes e ainda assim não render vídeo, porque no TikTok o espectador decide em dois segundos se continua assistindo — e ele decide olhando o começo.
+
+Então, antes de escolher, o sistema lê o título e a abertura de cada história coletada e responde duas perguntas.
+
+A primeira: **existe um gancho ali?** Um gancho é uma frase que, sozinha, faz querer saber o resto. Ela tem gente concreta, de preferência uma relação, um conflito já acontecendo, a promessa de um desfecho, e uma curiosidade que fica no ar. Por exemplo: *"minha mãe foi intimidada por outras mães, então ela se vingou de forma doce"* — tem a mãe, tem a agressão, promete a vingança e não conta qual foi. Já *"desabafo"* ou *"preciso de conselhos"* nomeiam um sentimento e não prometem nada.
+
+A segunda: **a história se conta bem?** Isso rende uma nota de 0 a 10. Ganha ponto quem tem conflito claro, gente que age, cenas concretas e sinal de que vem uma virada. Perde ponto quem só reclama, quem apresenta gente demais de uma vez, quem faz pergunta ao fórum em vez de contar o que aconteceu, ou quem escreve uma abertura da qual não se entende nada.
+
+**O que o sistema faz com isso:**
+
+Duas coisas, e nenhuma delas é jogar a história no lixo.
+
+A primeira é **ordenar**. As vagas de cada ciclo passam a ir para as histórias que abrem melhor, não para as que apareceram primeiro no feed. O rodízio entre comunidades continua valendo por cima disso: cada comunidade concorre com a sua melhor abertura, e nenhuma monopoliza.
+
+A segunda é **marcar**. Toda história avaliada recebe uma etiqueta: `strong` quando tem gancho e se conta bem, `no_hook` quando é boa história mas começa longe do assunto — o gancho existe, está enterrado mais adiante — e `weak_storytelling` quando a nota ficou abaixo do corte. A etiqueta viaja junto com o roteiro até a etapa de refinamento, então o modelo que escreve o texto final sabe se está polindo um gancho que já existe ou se vai ter que construir um. Quando existe uma frase que serve de gancho, ela vai junto, identificada.
+
+**Por que marcar e não descartar:** a etiqueta é informação, não veredito. Uma história com abertura fraca e nada melhor atrás dela ainda vai ao ar — recusá-la transformaria um sinal de qualidade em filtro rígido e poderia esvaziar a fila em semanas fracas. O que a nota faz é decidir a *ordem*, e a etiqueta serve para o refinamento trabalhar melhor e para você olhar depois quais notas correspondiam a vídeos que renderam. O ponto de corte entre fraco e forte é ajustável justamente por isso.
+
+**Custo:** a avaliação é uma única consulta ao modelo por ciclo, com o começo de todas as histórias de uma vez, e não uma consulta por história. É o que torna viável avaliar tudo em vez de só o que já foi escolhido — sem isso, não haveria como ordenar. Se essa consulta falhar, o ciclo segue normalmente usando o ranking do Reddit, e as histórias ficam registradas como "não avaliadas", que é diferente de "avaliadas e ruins".
+
 **O que é descartado automaticamente:**
 
 Nem toda história serve. O sistema recusa textos curtos demais, que não têm história suficiente para sustentar um vídeo, e longos demais, que precisariam ser tão cortados que o que iria ao ar já não seria o post original.

@@ -4,7 +4,16 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from src.content_scout.clients.llm import ModerationClient, ModerationError, Verdict
+from src.content_scout.clients.llm import (
+    TAG_NO_HOOK,
+    TAG_STRONG,
+    TAG_WEAK,
+    ModerationClient,
+    ModerationError,
+    StoryQualityClient,
+    StoryScore,
+    Verdict,
+)
 from src.content_scout.clients.orchestrator import OrchestratorClient
 from src.content_scout.db.models import SeenItem, SeenStatus
 from src.content_scout.scout import interleave_by_origin, run_cycle
@@ -108,6 +117,25 @@ def moderation(monkeypatch):
 
     monkeypatch.setattr(ModerationClient, "check", fake_check)
     return SimpleNamespace(calls=calls, set=lambda fn: behavior.__setitem__("fn", fn))
+
+
+@pytest.fixture(autouse=True)
+def story_quality(monkeypatch):
+    """No candidate is scored unless a test says so, and no LLM is called.
+
+    Defaulting to "no scores" keeps every pre-existing test exercising the real
+    code path for an unreachable ``llm_service`` — which is the case that must not
+    change behaviour: candidates keep the source's ranking and still publish.
+    """
+    calls: list[list[str]] = []
+    scores: dict[str, StoryScore] = {}
+
+    async def fake_score(self, candidates):
+        calls.append([c.external_id for c in candidates])
+        return {c.external_id: scores[c.external_id] for c in candidates if c.external_id in scores}
+
+    monkeypatch.setattr(StoryQualityClient, "score", fake_score)
+    return SimpleNamespace(calls=calls, set=scores.update)
 
 
 @pytest.fixture
@@ -644,3 +672,230 @@ async def test_seen_endpoint_exposes_comments(
     assert body[0]["comment_count"] == 7
     assert len(body[0]["comments"]) == 2
     assert body[0]["comments"][0]["text"] == "reação 0"
+
+
+# ─────────────────────── story quality ───────────────────────
+
+
+@pytest.fixture
+def story_cfg(monkeypatch):
+    def _set(story_quality=True, min_story_score=6):
+        monkeypatch.setattr(settings.CONFIG.scout, "story_quality", story_quality)
+        monkeypatch.setattr(settings.CONFIG.scout, "min_story_score", min_story_score)
+    _set()
+    return _set
+
+
+async def test_strongest_opening_wins_the_slot(
+    submissions, set_active_runs, budget, story_cfg, story_quality
+):
+    """The whole point: the slot goes to the best hook, not to feed position."""
+    budget(max_per_cycle=1)
+    story_quality.set({
+        "t3_meh": StoryScore(hook=False, score=3),
+        "t3_bom": StoryScore(hook=True, score=9, hook_line="ela se vingou de forma doce"),
+    })
+    source = FakeSource([_candidate("t3_meh"), _candidate("t3_bom")])
+
+    report = await run_cycle([source])
+
+    assert report.submitted_ids == ["t3_bom"]
+
+
+async def test_weak_storytelling_is_tagged_but_still_published(
+    submissions, set_active_runs, budget, story_cfg, story_quality, session
+):
+    """The score labels candidates, it does not gate them.
+
+    A weak story with nothing better behind it still airs — dropping it would turn
+    a soft quality signal into a hard filter and could empty the queue entirely.
+    """
+    story_quality.set({"t3_a": StoryScore(hook=False, score=1, reason="desabafo sem enredo")})
+
+    report = await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert report.submitted == 1
+    assert report.weak_storytelling == 1
+
+    row = (await _seen_rows(session))[0]
+    assert row.status == SeenStatus.submitted
+    assert row.story_tag == TAG_WEAK
+    assert row.story_score == 1
+    assert row.has_hook is False
+    assert row.story_reason == "desabafo sem enredo"
+
+
+async def test_good_story_without_a_hook_is_tagged_no_hook(
+    submissions, set_active_runs, budget, story_cfg, story_quality, session
+):
+    story_quality.set({"t3_a": StoryScore(hook=False, score=9)})
+
+    report = await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert (await _seen_rows(session))[0].story_tag == TAG_NO_HOOK
+    # A buried lede is not weak storytelling, and must not be counted as such.
+    assert report.weak_storytelling == 0
+
+
+async def test_hook_line_is_recorded_and_forwarded(
+    submissions, set_active_runs, budget, story_cfg, story_quality, session
+):
+    story_quality.set({
+        "t3_a": StoryScore(hook=True, score=9, hook_line="minha mãe se vingou de forma doce")
+    })
+
+    await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    row = (await _seen_rows(session))[0]
+    assert row.hook_line == "minha mãe se vingou de forma doce"
+    assert row.story_tag == TAG_STRONG
+
+    meta = submissions[0]["metadata"]
+    assert meta["story_tag"] == TAG_STRONG
+    assert meta["story_score"] == 9
+    assert meta["has_hook"] is True
+    assert meta["hook_line"] == "minha mãe se vingou de forma doce"
+
+
+async def test_metadata_omits_story_fields_when_unscored(
+    submissions, set_active_runs, budget, story_cfg
+):
+    """The refiner must not be told a story is weak when nobody judged it."""
+    await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    meta = submissions[0]["metadata"]
+    assert "story_tag" not in meta
+    assert "story_score" not in meta
+
+
+async def test_outage_leaves_columns_null_and_still_publishes(
+    submissions, set_active_runs, budget, story_cfg, session
+):
+    """Unlike moderation, losing this signal is not fatal — it gates nothing."""
+    report = await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert report.submitted == 1
+    assert report.story_quality_unavailable is True
+    assert report.story_scored == 0
+
+    row = (await _seen_rows(session))[0]
+    assert row.story_tag is None
+    assert row.story_score is None
+    assert row.has_hook is None
+
+
+async def test_filtered_candidates_are_never_scored(
+    submissions, set_active_runs, budget, story_cfg, story_quality, session
+):
+    """Scoring runs after the cheap filters, so junk costs nothing."""
+    report = await run_cycle([FakeSource([_candidate("t3_short", chars=10)])])
+
+    assert report.filtered == 1
+    assert story_quality.calls == [[]]
+
+    row = (await _seen_rows(session))[0]
+    assert row.story_tag is None
+    assert row.skip_reason.startswith("too_short")
+
+
+async def test_scoring_is_skipped_when_the_queue_is_full(
+    submissions, set_active_runs, budget, story_cfg, story_quality
+):
+    """A full queue publishes nothing, so it must not pay for a judgement."""
+    set_active_runs(5)
+
+    report = await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert report.skipped_no_capacity is True
+    assert story_quality.calls == []
+
+
+async def test_one_batched_call_covers_every_candidate(
+    submissions, set_active_runs, budget, story_cfg, story_quality
+):
+    """Batching is what makes a per-candidate signal affordable."""
+    ids = [f"t3_{i}" for i in range(8)]
+
+    await run_cycle([FakeSource([_candidate(i) for i in ids])])
+
+    assert len(story_quality.calls) == 1
+    assert story_quality.calls[0] == ids
+
+
+async def test_disabled_story_quality_makes_no_call_and_writes_no_tag(
+    submissions, set_active_runs, budget, story_cfg, story_quality, session
+):
+    story_cfg(story_quality=False)
+    story_quality.set({"t3_a": StoryScore(hook=True, score=9)})
+
+    report = await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert report.submitted == 1
+    assert story_quality.calls == []
+    assert report.story_scored == 0
+    assert report.story_quality_unavailable is False
+    assert (await _seen_rows(session))[0].story_tag is None
+
+
+async def test_unsafe_candidate_still_records_its_story_tag(
+    submissions, set_active_runs, budget, story_cfg, story_quality, moderation, session
+):
+    """The audit trail keeps both verdicts — they were both paid for."""
+    moderation.set(lambda title, text: Verdict(safe=False, category="self_harm"))
+    story_quality.set({"t3_a": StoryScore(hook=True, score=8)})
+
+    await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    row = (await _seen_rows(session))[0]
+    assert row.skip_reason == "unsafe:self_harm"
+    assert row.story_tag == TAG_STRONG
+    assert row.story_score == 8
+
+
+async def test_report_counts_scored_and_weak(
+    submissions, set_active_runs, budget, story_cfg, story_quality
+):
+    budget(max_per_cycle=1)
+    story_quality.set({
+        "t3_a": StoryScore(hook=True, score=9),
+        "t3_b": StoryScore(hook=False, score=2),
+        "t3_c": StoryScore(hook=False, score=5),
+    })
+
+    report = await run_cycle([FakeSource([_candidate(i) for i in ("t3_a", "t3_b", "t3_c")])])
+
+    assert report.story_scored == 3
+    # Counted over everything judged this cycle, not just what was published.
+    assert report.weak_storytelling == 2
+
+
+async def test_threshold_is_configurable(
+    submissions, set_active_runs, budget, story_cfg, story_quality, session
+):
+    """Moving the line is how the tag gets calibrated against real data."""
+    story_cfg(min_story_score=3)
+    story_quality.set({"t3_a": StoryScore(hook=True, score=5)})
+
+    await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert (await _seen_rows(session))[0].story_tag == TAG_STRONG
+
+
+async def test_seen_endpoint_filters_by_story_tag(
+    client, submissions, set_active_runs, budget, story_cfg, story_quality, monkeypatch
+):
+    story_quality.set({
+        "t3_bom": StoryScore(hook=True, score=9),
+        "t3_ruim": StoryScore(hook=False, score=1),
+    })
+    monkeypatch.setattr(
+        "src.content_scout.scout.build_sources",
+        lambda: [FakeSource([_candidate("t3_bom"), _candidate("t3_ruim")])],
+    )
+    await client.post("/scout/run")
+
+    weak = (await client.get(f"/scout/seen?story_tag={TAG_WEAK}")).json()
+
+    assert [row["external_id"] for row in weak] == ["t3_ruim"]
+    assert weak[0]["story_score"] == 1
+    assert weak[0]["has_hook"] is False

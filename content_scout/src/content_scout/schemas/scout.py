@@ -17,6 +17,9 @@ class ScoutRunResponse(BaseModel):
     active_runs: int
     submitted_ids: list[str]
     comments_fetched: int
+    story_scored: int
+    weak_storytelling: int
+    story_quality_unavailable: bool
     #: True when a cycle was already in flight, so this call did nothing.
     already_running: bool = False
 
@@ -42,6 +45,15 @@ class SeenItemResponse(BaseModel):
     author: str | None
     #: ``None`` means the item was never enriched, not that it drew no replies.
     comment_count: int | None
+    #: All ``None`` when the item was never judged (filtered out, or scored during
+    #: an ``llm_service`` outage). Not the same as a weak story.
+    has_hook: bool | None
+    story_score: int | None
+    #: ``weak_storytelling`` / ``no_hook`` / ``strong``. Filter on this to see what
+    #: the model is rejecting before moving ``min_story_score``.
+    story_tag: str | None
+    hook_line: str | None
+    story_reason: str | None
     status: SeenStatus
     skip_reason: str | None
     pipeline_run_id: uuid.UUID | None

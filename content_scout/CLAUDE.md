@@ -11,6 +11,7 @@ Descobre roteiros candidatos na internet e submete ao orchestrador. É o serviç
 - `api/routes/health.py` — `GET /health`: ping no DB + flag do loop
 - `api/app.py` — inclui o `lifespan` que sobe o `scout_loop` quando `SCOUT_ENABLED=true`
 - `db/models.py` — `SeenItem` + enum `SeenStatus` + `ItemComment`
+- `clients/llm.py` — `ModerationClient` (segurança) + `StoryQualityClient` (gancho/storytelling)
 - `db/engine.py` — engine async + `AsyncSessionLocal` + `get_session()`
 - `schemas/scout.py` — `ScoutRunResponse`, `SeenItemResponse`
 - `sources/base.py` — `Candidate`, `Comment`, `CommentThread` (dataclasses) + `Source` e `CommentCapableSource` (Protocols)
@@ -41,6 +42,8 @@ Nenhuma chave de API é necessária aqui — o caminho RSS não autentica, e a m
 Config em `config.ini`: `[services] orchestrator_url` + `llm_url`, `[reddit]`, `[filters]`, `[scout]`.
 
 Chaves novas: `[reddit] comments_limit` (0 = default do Reddit), `[scout] fetch_comments` (liga/desliga o enriquecimento) e `[scout] max_comments_stored` (quantos corpos guardar por post).
+
+Qualidade narrativa: `[scout] story_quality` (liga/desliga), `min_story_score` (corte da tag `weak_storytelling`, padrão 6), `story_excerpt_chars` (quanto de cada corpo vai no lote, padrão 700) e `story_timeout`.
 
 ## Features
 
@@ -101,6 +104,40 @@ Segurança **não** mora aqui — ver abaixo.
 
 O ciclo para na primeira falha de moderação em vez de tentar os demais: se o serviço caiu, todos falhariam igual.
 
+### Qualidade narrativa: gancho + storytelling (`src/content_scout/clients/llm.py` → `llm_service POST /story-quality`)
+
+`StoryQualityClient.score(candidates) -> dict[external_id, StoryScore]` — uma chamada em lote por ciclo, com título + abertura de **todos** os candidatos frescos.
+
+`StoryScore(hook, score, hook_line, reason)` + `.tag(min_score)` + `.as_metadata(min_score)`.
+
+**Por que existe.** O ranking do Reddit mede votos, não se a história se conta bem. A retenção no TikTok se decide nos 2 primeiros segundos, e isso depende da abertura. `hook` responde se o título ou as primeiras linhas prometem desfecho; `score` (0–10) responde se a história se sustenta. **As duas discordam nos dois sentidos** e cada discordância é um diagnóstico diferente — título ótimo sobre corpo que se perde, ou história boa com lide enterrado. Colapsar num número só apagaria a distinção.
+
+**Por que em lote, e por que sobre todos.** Isto é sinal de **seleção**, não gate: pontuar só os 2–3 que vão ser publicados seria circular, porque é a nota que define quais são. Uma chamada por candidato seriam ~30/ciclo; em lote é **uma**, ~4k tokens, mais barato que a moderação. Só a abertura vai (`story_excerpt_chars`, padrão 700) — 30 posts inteiros seriam ~180k caracteres. O recorte também é o input honesto: é com essa quantidade de texto que o espectador decide.
+
+⚠️ **Falha aqui NÃO derruba o ciclo — assimetria deliberada com a moderação.** A moderação decide se pode publicar, então "não deu para checar" para tudo. A nota decide só a ordem, então `score()` devolve **mapa vazio em vez de levantar exceção**: o ciclo cai de volta no ranking do Reddit e as colunas ficam `NULL`.
+
+**Tags** (`SeenItem.story_tag`), derivadas da nota contra `min_story_score`:
+
+| Tag | Condição |
+|---|---|
+| `weak_storytelling` | `score < min_story_score` |
+| `no_hook` | nota ok, `hook = false` (lide enterrado) |
+| `strong` | nota ok e `hook = true` |
+
+`weak_storytelling` tem precedência sobre `no_hook`; `has_hook` guarda a resposta crua nos dois casos.
+
+⚠️ **É etiqueta, não filtro.** Candidato marcado `weak_storytelling` **continua sendo publicado** se não houver nada melhor atrás. Virar corte rígido esvaziaria a fila em semana ruim — o custo de um vídeo mediano é menor que o de não publicar. A nota age na **ordem** (`rank_by_story`), a tag age como informação para o refino e para calibragem.
+
+⚠️ **A tag é derivada, não pedida ao modelo.** O corte mora em config, então se move contra dados reais (`GET /scout/seen?story_tag=weak_storytelling`) — mesmo motivo de `min_chars`/`max_chars`. `story_score` fica cru, então mover o corte permite re-derivar as linhas antigas. A derivação acontece na escrita: mover o corte só afeta linhas novas.
+
+⚠️ **`story_tag IS NULL` ≠ fraco.** Nulo = não avaliado — todo filtrado (a nota roda **depois** dos filtros baratos e **depois** do backpressure: fila cheia não publica, então não paga julgamento) e todo candidato de ciclo em que o `llm_service` caiu.
+
+`rank_by_story(candidates, scores, neutral)` — ordena por nota, desc, **estável**: como `interleave_by_origin` preserva a ordem interna de cada grupo, um sort estável na lista plana vira "melhor abertura primeiro dentro de cada origem" sem tocar na justiça entre origens. Empate mantém a posição do feed. **Candidato sem nota ordena no próprio limiar**, não no fim — mandá-lo para o fim converteria falha de modelo em handicap permanente, e são as sobras de cada ciclo que herdariam isso.
+
+Desligável em `[scout] story_quality`.
+
+🚧 **A régua ainda não foi validada.** A medição feita até agora pontuou relatos reais (`r/desabafos`, `r/relacionamentos`), não histórias escritas para entreter — gêneros diferentes, então a taxa de 40% `weak_storytelling` pode estar medindo a fonte e não o corte. Decisões abertas (corpus, corte em 5 vs 6, tamanho do recorte, teto 9–10 nunca usado) e os dados brutos estão em **`content_scout/docs/story_quality_calibration.md`**. Não mexer em `min_story_score` nem no prompt de `story.py` antes de ler esse arquivo.
+
 ### Ciclo do scout (`src/content_scout/scout.py`)
 
 `run_cycle(sources=None) -> ScoutReport` — busca, deduplica, filtra e submete dentro do orçamento.
@@ -111,7 +148,7 @@ O ciclo para na primeira falha de moderação em vez de tentar os demais: se o s
 
 **Orçamento por ciclo** — `min(capacidade_restante, max_per_cycle)`. A lista ordenada é percorrida **além** do orçamento, porque candidato rejeitado pela moderação não consome vaga — a próxima história assume.
 
-**Seleção: `interleave_by_origin(candidates)`** — rodízio entre origens, preservando o ranking interno de cada uma.
+**Seleção: `interleave_by_origin(rank_by_story(...))`** — rodízio entre origens, e dentro de cada origem a nota de qualidade narrativa (ver acima) como ranking interno, com a posição do feed como desempate. O rodízio decide *de quem* é a vez; a nota decide *qual* história daquela origem.
 
 As fontes são concatenadas na ordem do config, então pegar o começo da lista dava todas as vagas ao primeiro subreddit. Medido ao vivo: as duas submissões vieram de `r/desabafos` enquanto `r/relacionamentos` contribuiu 5 candidatos e não ganhou nenhuma — configurar mais subreddits era decorativo.
 
@@ -134,13 +171,15 @@ Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando
 ### Endpoints (`src/content_scout/api/routes/scout.py`)
 
 - `POST /scout/run` — roda um ciclo agora, síncrono, e devolve os contadores. Feito para calibrar filtros vendo o resultado na hora.
-- `GET /scout/seen?status=&limit=&offset=` — trilha de auditoria; filtre por `filtered` para ver o que foi rejeitado e por quê.
+- `GET /scout/seen?status=&story_tag=&limit=&offset=` — trilha de auditoria; filtre por `filtered` para ver o que foi rejeitado e por quê, e por `story_tag=weak_storytelling` para calibrar `min_story_score`.
 
-**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `already_running`.
+**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `story_scored`, `weak_storytelling`, `story_quality_unavailable`, `already_running`.
 
 `already_running=true` (com todos os contadores em zero) significa que já havia um ciclo em andamento e esta chamada não fez nada — não é erro.
 
-`GET /scout/seen` devolve também `author`, `comment_count` (nulo = não consultado) e `comments[]` com `external_id`, `author`, `text`, `position`, `published`.
+`weak_storytelling` conta tudo que foi julgado no ciclo, não só o que foi publicado.
+
+`GET /scout/seen` devolve também `author`, `comment_count` (nulo = não consultado), `has_hook`, `story_score`, `story_tag`, `hook_line`, `story_reason` (todos nulos = não avaliado) e `comments[]` com `external_id`, `author`, `text`, `position`, `published`.
 
 ### Adicionando uma fonte nova (ex.: YouTube)
 
@@ -153,7 +192,8 @@ Nada mais muda: dedup, filtros, backpressure e orçamento tratam toda fonte igua
 
 ## Testing rules
 
-- `tests/test_reddit_source.py` (25) e `tests/test_filters.py` (5) - marcados `no_db`, rodam sem docker.
-- `tests/test_scout.py` (38) — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
+- `tests/test_reddit_source.py` (25), `tests/test_filters.py` (5) e `tests/test_story_quality.py` (23) — marcados `no_db`, rodam sem docker. O último usa `respx` para o cliente HTTP.
+- `tests/test_scout.py` (52) — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
+- A fixture autouse `story_quality` não pontua ninguém por padrão, então toda a suíte antiga exercita o caminho de `llm_service` inacessível — que é justamente o caso que não pode mudar de comportamento.
 - Rodar com `poetry run python -m pytest` (não `poetry run pytest`): os imports são `src.*` e dependem do cwd no `sys.path`, que só o `-m` insere.
 - `conftest.py` força `SCOUT_ENABLED=false` — o loop periódico jamais pode subir sob teste, senão dispara HTTP real.
