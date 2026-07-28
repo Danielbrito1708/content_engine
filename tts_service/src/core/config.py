@@ -10,6 +10,15 @@ from pydantic import create_model
 _RATE_RE = re.compile(r"^[+-]\d+%$")
 
 
+def validate_rate(rate: str) -> str:
+    """Raises ValueError unless `rate` is a signed SSML percentage ('+15%', '-10%')."""
+    if not _RATE_RE.match(rate):
+        raise ValueError(
+            f"TTS_RATE must be a signed percentage like '+15%' or '-10%', got {rate!r}"
+        )
+    return rate
+
+
 def _infer_type(value: str) -> Any:
     lower = value.strip().lower()
     if lower in ("true", "false"):
@@ -103,10 +112,7 @@ class TTSEnvSettings(BaseModel):
 
     @model_validator(mode="after")
     def _check_rate_format(self) -> "TTSEnvSettings":
-        if not _RATE_RE.match(self.tts_rate):
-            raise ValueError(
-                f"TTS_RATE must be a signed percentage like '+15%' or '-10%', got {self.tts_rate!r}"
-            )
+        validate_rate(self.tts_rate)
         return self
 
     @model_validator(mode="after")

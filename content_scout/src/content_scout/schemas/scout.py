@@ -20,6 +20,8 @@ class ScoutRunResponse(BaseModel):
     story_scored: int
     weak_storytelling: int
     story_quality_unavailable: bool
+    #: True when a cycle was already in flight, so this call did nothing.
+    already_running: bool = False
 
 
 class ItemCommentResponse(BaseModel):

@@ -4,6 +4,7 @@ from itertools import zip_longest
 
 import structlog
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from src.content_scout.clients.llm import (
     TAG_WEAK,
@@ -43,6 +44,33 @@ class ScoutReport:
     story_scored: int = 0
     weak_storytelling: int = 0
     story_quality_unavailable: bool = False
+    already_running: bool = False
+
+
+# One cycle at a time, process-wide. The periodic loop fires a cycle on startup,
+# so a manual POST /scout/run right after a deploy used to run head-to-head with
+# it: both walked the same candidate list, both passed the same dedup read, and
+# the second commit died on the unique index — taking down a cycle that had
+# already created pipeline runs.
+_cycle_lock = asyncio.Lock()
+
+
+async def _record(session, row: "SeenItem") -> bool:
+    """Persist one audit row now, tolerating a duplicate from a racing writer.
+
+    Committing per row rather than once at the end is the point: the batch commit
+    meant a single conflict rolled back *every* row of the cycle, including the
+    ones whose pipeline runs had already been created. Those stories came back as
+    unseen on the next cycle and would have been published twice.
+    """
+    session.add(row)
+    try:
+        await session.commit()
+        return True
+    except IntegrityError:
+        await session.rollback()
+        log.info("scout_seen_duplicate", external_id=row.external_id)
+        return False
 
 
 def build_sources() -> list[Source]:
@@ -161,6 +189,21 @@ async def _known_ids(session, external_ids: list[str]) -> set[str]:
 
 
 async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
+    """One scouting pass, serialized against any other pass in this process.
+
+    A caller that arrives mid-cycle gets an empty report flagged
+    ``already_running`` instead of waiting out a cycle that can take minutes —
+    and instead of racing it, which is what produced duplicate submissions and a
+    500 on the unique index.
+    """
+    if _cycle_lock.locked():
+        log.info("scout_cycle_already_running")
+        return ScoutReport(already_running=True)
+    async with _cycle_lock:
+        return await _run_cycle(sources)
+
+
+async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
     """One scouting pass: fetch, dedup, filter, submit within budget.
 
     Ordering matters. Capacity is checked before anything is submitted but after
@@ -169,7 +212,10 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
     smaller pile.
     """
     report = ScoutReport()
-    sources = sources or build_sources()
+    # `is None`, not truthiness: an explicitly empty list means "no sources", and
+    # falling back to the configured ones there turns a caller asking for nothing
+    # into live Reddit traffic.
+    sources = build_sources() if sources is None else sources
     scout_cfg = settings.CONFIG.scout
     filter_cfg = settings.CONFIG.filters
 
@@ -202,11 +248,9 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
             )
             if reason:
                 report.filtered += 1
-                session.add(_seen_row(candidate, SeenStatus.filtered, skip_reason=reason))
+                await _record(session, _seen_row(candidate, SeenStatus.filtered, skip_reason=reason))
                 continue
             fresh.append(candidate)
-
-        await session.commit()
 
         report.active_runs = await orchestrator.count_active_runs()
         capacity = scout_cfg.max_pending_runs - report.active_runs
@@ -266,14 +310,15 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
             if not verdict.safe:
                 report.unsafe += 1
                 report.filtered += 1
-                session.add(
+                await _record(
+                    session,
                     _seen_row(
                         candidate,
                         SeenStatus.filtered,
                         skip_reason=verdict.as_skip_reason(),
                         story=story,
                         min_story_score=scout_cfg.min_story_score,
-                    )
+                    ),
                 )
                 log.info(
                     "scout_rejected_unsafe",
@@ -310,7 +355,8 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 )
             except Exception as exc:  # noqa: BLE001 — one bad submit must not end the cycle
                 log.warning("scout_submit_failed", external_id=candidate.external_id, error=str(exc))
-                session.add(
+                await _record(
+                    session,
                     _seen_row(
                         candidate,
                         SeenStatus.failed,
@@ -319,13 +365,17 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                         max_comments=scout_cfg.max_comments_stored,
                         story=story,
                         min_story_score=scout_cfg.min_story_score,
-                    )
+                    ),
                 )
                 continue
 
             report.submitted += 1
             report.submitted_ids.append(candidate.external_id)
-            session.add(
+            # Committed immediately, while the run id is in hand: anything that
+            # fails later in this cycle must not be able to erase the record of a
+            # story that is already in the pipeline.
+            await _record(
+                session,
                 _seen_row(
                     candidate,
                     SeenStatus.submitted,
@@ -334,7 +384,7 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                     max_comments=scout_cfg.max_comments_stored,
                     story=story,
                     min_story_score=scout_cfg.min_story_score,
-                )
+                ),
             )
             log.info(
                 "scout_submitted",
@@ -344,8 +394,6 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 story_score=story.score if story else None,
                 story_tag=story.tag(scout_cfg.min_story_score) if story else None,
             )
-
-        await session.commit()
 
     return report
 

@@ -31,6 +31,13 @@ def mock_run_pipeline(monkeypatch):
     monkeypatch.setattr("src.orchestrator.api.routes.pipeline.run_pipeline", noop)
 
 
+@pytest.fixture(autouse=True)
+def no_retry_backoff(monkeypatch):
+    """Retries are exercised in test_http.py; everywhere else the exponential
+    backoff is just dead time in front of a test that mocks a 500 on purpose."""
+    monkeypatch.setattr("src.orchestrator.clients.http.BACKOFF", 0)
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def clean_db():
     yield

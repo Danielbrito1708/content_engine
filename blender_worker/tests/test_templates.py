@@ -1,4 +1,25 @@
+import json
 import uuid
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+
+async def _make_template(client, name="T"):
+    resp = await client.post("/templates", json={
+        "name": name,
+        "blend_key": f"templates/{name}.blend",
+        "json_key": f"templates/{name}.json",
+    })
+    return resp.json()["id"]
+
+
+def _mock_download(payload):
+    """Patches the MinIO read behind GET /templates/{id}/config."""
+    return patch(
+        "src.blender_worker.api.routes.templates.download_bytes",
+        new=AsyncMock(return_value=payload),
+    )
 
 
 async def test_create_template_returns_201(client):
@@ -31,3 +52,86 @@ async def test_get_template_not_found(client):
     response = await client.get(f"/templates/{uuid.uuid4()}")
     assert response.status_code == 404
     assert response.json()["detail"] == "Template not found"
+
+
+# ── GET /templates/{id}/config ───────────────────────────────────
+
+
+async def test_get_config_returns_parsed_json(client):
+    tmpl_id = await _make_template(client, "cfg-ok")
+    config = {"frame_rate": 30, "narration": {"rate": "+20%"}}
+
+    with _mock_download(json.dumps(config).encode()):
+        resp = await client.get(f"/templates/{tmpl_id}/config")
+
+    assert resp.status_code == 200
+    assert resp.json() == config
+
+
+async def test_get_config_exposes_narration_rate(client):
+    tmpl_id = await _make_template(client, "cfg-rate")
+
+    with _mock_download(b'{"narration": {"rate": "-10%"}}'):
+        resp = await client.get(f"/templates/{tmpl_id}/config")
+
+    assert resp.json()["narration"]["rate"] == "-10%"
+
+
+async def test_get_config_without_narration_block(client):
+    """A template predating the narration block must still serve its config."""
+    tmpl_id = await _make_template(client, "cfg-legacy")
+
+    with _mock_download(b'{"frame_rate": 30, "frame_end": 900}'):
+        resp = await client.get(f"/templates/{tmpl_id}/config")
+
+    assert resp.status_code == 200
+    assert "narration" not in resp.json()
+
+
+async def test_get_config_downloads_the_templates_json_key(client):
+    tmpl_id = await _make_template(client, "cfg-key")
+
+    mock = AsyncMock(return_value=b"{}")
+    with patch("src.blender_worker.api.routes.templates.download_bytes", new=mock):
+        await client.get(f"/templates/{tmpl_id}/config")
+
+    _, key = mock.call_args[0]
+    assert key == "templates/cfg-key.json"
+
+
+async def test_get_config_not_found(client):
+    resp = await client.get(f"/templates/{uuid.uuid4()}/config")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Template not found"
+
+
+async def test_get_config_returns_502_on_download_failure(client):
+    tmpl_id = await _make_template(client, "cfg-missing")
+
+    mock = AsyncMock(side_effect=RuntimeError("NoSuchKey"))
+    with patch("src.blender_worker.api.routes.templates.download_bytes", new=mock):
+        resp = await client.get(f"/templates/{tmpl_id}/config")
+
+    assert resp.status_code == 502
+    assert "Failed to fetch template config" in resp.json()["detail"]
+
+
+async def test_get_config_returns_502_on_invalid_json(client):
+    tmpl_id = await _make_template(client, "cfg-broken")
+
+    with _mock_download(b"{not json"):
+        resp = await client.get(f"/templates/{tmpl_id}/config")
+
+    assert resp.status_code == 502
+    assert "not valid JSON" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("payload", [b"[1, 2]", b'"a string"', b"42"])
+async def test_get_config_rejects_non_object_json(client, payload):
+    tmpl_id = await _make_template(client, "cfg-nonobj")
+
+    with _mock_download(payload):
+        resp = await client.get(f"/templates/{tmpl_id}/config")
+
+    assert resp.status_code == 502
+    assert "must be a JSON object" in resp.json()["detail"]
