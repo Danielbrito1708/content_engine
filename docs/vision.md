@@ -426,6 +426,21 @@ O texto é **Arial Bold preta sobre card branco**. A fonte é versionada em `ble
 
 ---
 
+## Trilha sonora
+
+O `music_key` do `config.ini` apontava para `assets/music.mp3`, um arquivo de 35 segundos de **silêncio digital** — 1.543.500 amostras, nenhuma delas não-nula, pico 0. Não era um arquivo quebrado: era um placeholder que nunca foi trocado, e como o render não tem nada a dizer sobre o conteúdo de um áudio, todo vídeo publicado saiu sem trilha sem que nada falhasse. É o mesmo tipo de defeito silencioso do fundo preto e da legenda em DejaVu: o job reporta `completed` e o MP4 tem duração e tamanho plausíveis.
+
+Trocado por uma faixa real (`assets/music/lofi-goularte.mp3`). Medido no render de validação: a trilha isolada dentro da mixagem dá **-29,7 LUFS** contra **-16,7 LUFS** da mixagem cheia — 13 LU abaixo, que é onde uma cama sonora se ouve sem disputar com a narração (o alvo da narração é -16 LUFS, ver "Normalização de loudness").
+
+O prefixo `assets/music/` já é o formato de biblioteca dos fundos, então acrescentar faixas é subir arquivo; o rodízio entre elas ainda não está ligado (com uma faixa só seria no-op).
+
+**Duas coisas que a trilha real expôs e ainda não foram resolvidas:**
+
+- **O fade começa cedo demais.** `timing.music_fade_out` é o frame 840 (28s), número escrito quando `frame_end` era 900 (30s) — a trilha sumia "ao final". Com vídeos de 50-60s ela agora começa a sumir na metade e chega a zero no fim, ou seja, mais da metade do vídeo com a música em declínio. O conserto é o fade passar a ser contado a partir do fim (*N* segundos antes de `frame_end`) em vez de um frame fixo.
+- **Só o primeiro minuto da faixa é ouvido.** O strip começa sempre no 0:00 do arquivo, então uma mix de 34 minutos rende sempre o mesmo trecho, e os 32 MB são baixados a cada render. Alternativas: cortar um trecho curto, ou dar um deslocamento determinístico de entrada por vídeo (`frame_offset_start`), no mesmo espírito do rodízio de fundos.
+
+---
+
 ## Abertura do vídeo (intro: card + gancho)
 
 O vídeo abre com o **card de comentário** trazendo a frase gancho, e com essa frase **narrada por cima dele**. A narração da parte começa quando o gancho termina. As duas peças já existiam separadas — o card (`POST /images/render`) e o `hook.mp3` (`_run_hook_tts`) — e nenhuma chegava ao vídeo: a intro era um bloco de 3 segundos de fundo rodando sozinho.

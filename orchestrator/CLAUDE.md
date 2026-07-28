@@ -110,7 +110,9 @@ O orchestrador **não valida o formato** do rate — quem valida é o `tts_servi
 4. Polling via `poll_job()` até `completed` ou `failed`
 5. Salva `video_key = output_key` na part
 
-**Pré-requisito de infra**: o template (`.blend` + `template.json`) e os assets estáticos (background.mp4, music.mp3) devem estar pré-registrados no blender_worker e no MinIO antes de rodar o pipeline.
+**Pré-requisito de infra**: o template (`.blend` + `template.json`) e os assets estáticos (fundos, trilha) devem estar pré-registrados no blender_worker e no MinIO antes de rodar o pipeline.
+
+⚠️ **`[template] music_key`** apontava para `assets/music.mp3`, que é **35s de silêncio digital** (medido: zero amostras não-nulas) — todo vídeo publicado até aqui saiu sem trilha, sem nenhuma falha. Agora aponta para `assets/music/lofi-goularte.mp3`. O render não valida conteúdo de áudio: um arquivo mudo continua sendo um render bem-sucedido. Ver `docs/vision.md` → "Trilha sonora".
 
 ### Áudio da frase gancho (`_run_hook_tts`)
 

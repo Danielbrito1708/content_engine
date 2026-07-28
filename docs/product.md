@@ -180,7 +180,9 @@ Com o áudio pronto, o sistema monta o vídeo no Blender. A montagem segue um te
 
 **O que compõe o vídeo:**
 
-O vídeo de fundo toca durante todo o tempo. A trilha sonora começa junto, com volume baixo, e some gradualmente ao final. A narração em áudio (gerada na etapa anterior) entra no momento certo, de acordo com o timing definido no template. As legendas aparecem e somem de forma animada, sincronizadas com o texto narrado.
+O vídeo de fundo toca durante todo o tempo. A trilha sonora começa junto, com volume baixo, e some gradualmente ao final.
+
+⚠️ **Até agora a trilha nunca tocou.** O arquivo de música configurado era um placeholder de 35 segundos de silêncio puro — silêncio digital mesmo, medido amostra por amostra. Todos os vídeos publicados saíram só com narração e fundo. Isso foi corrigido: existe uma trilha de verdade no lugar, e ela sai 13 unidades de volume abaixo da narração, que é a distância em que uma cama sonora se ouve sem competir com a voz. A narração em áudio (gerada na etapa anterior) entra no momento certo, de acordo com o timing definido no template. As legendas aparecem e somem de forma animada, sincronizadas com o texto narrado.
 
 **Legendas:**
 
