@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from src.core.config import validate_rate
 
@@ -6,7 +6,12 @@ from src.core.config import validate_rate
 class GenerateRequest(BaseModel):
     text: str
     run_id: str
-    part_number: int
+    part_number: int = 1
+    #: Nome do arquivo dentro do run, quando o áudio não é uma parte do roteiro
+    #: (ex.: ``"hook"`` → ``audio/{run_id}/hook.mp3``). O padrão continua sendo
+    #: ``part_{part_number}``. O pattern não é cosmético: a key é montada por
+    #: interpolação, e um label com ``/`` ou ``..`` escreveria fora do run.
+    label: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
     rate: str | None = None
     """Narration speed for this request ('+15%'). Overrides TTS_RATE; None falls back to it."""
 

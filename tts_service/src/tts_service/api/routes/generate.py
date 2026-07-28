@@ -16,11 +16,12 @@ log = get_logger(__name__)
 
 @router.post("/generate", response_model=GenerateResponse, status_code=201)
 async def generate(body: GenerateRequest) -> GenerateResponse:
+    slug = body.label or f"part_{body.part_number}"
     rate = body.rate or settings.env.tts_rate
     log.info(
         "tts request",
         run_id=body.run_id,
-        part=body.part_number,
+        slug=slug,
         chars=len(body.text),
         rate=rate,
         rate_source="request" if body.rate else "env",
@@ -52,7 +53,7 @@ async def generate(body: GenerateRequest) -> GenerateResponse:
             log.warning("audio postprocessing failed, using original audio", error=str(exc))
 
     bucket = settings.CONFIG.storage.bucket
-    audio_key = f"audio/{body.run_id}/part_{body.part_number}.mp3"
+    audio_key = f"audio/{body.run_id}/{slug}.mp3"
 
     try:
         await upload_audio(bucket, audio_key, audio_bytes)
@@ -69,7 +70,7 @@ async def generate(body: GenerateRequest) -> GenerateResponse:
             settings.env.whisper_language,
             settings.env.whisper_model,
         )
-        srt_key = f"subs/{body.run_id}/part_{body.part_number}.srt"
+        srt_key = f"subs/{body.run_id}/{slug}.srt"
         await upload_bytes(bucket, srt_key, srt_bytes, "text/plain")
         log.info("srt ready", key=srt_key)
     except Exception as exc:

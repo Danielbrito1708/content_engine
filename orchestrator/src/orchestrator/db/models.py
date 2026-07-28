@@ -39,6 +39,12 @@ class PipelineRun(Base):
     raw_script: Mapped[str] = mapped_column(Text, nullable=False)
     input_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     refined_script: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Frase gancho devolvida pelo refino — a primeira frase da parte 1.
+    hook: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Áudio da frase gancho, narrado sozinho. `None` quando o refino não
+    #: devolveu gancho ou quando o TTS do gancho falhou (ver `_run_hook_tts`).
+    hook_audio_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    hook_srt_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     parts_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[PipelineStatus] = mapped_column(Enum(PipelineStatus), nullable=False, default=PipelineStatus.pending)

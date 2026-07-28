@@ -17,6 +17,9 @@ from src.orchestrator.storage.client import list_keys
 
 log = get_logger(__name__)
 
+#: Nome do arquivo do gancho dentro do run: `audio/{run_id}/hook.mp3`.
+HOOK_LABEL = "hook"
+
 #: States that mean "work is supposed to be happening". The scout counts these as
 #: occupied capacity, so nothing may sit in one of them without an owner.
 ACTIVE_STATUSES = (
@@ -37,6 +40,7 @@ async def run_pipeline(run_id: uuid.UUID) -> None:
 
         try:
             await _refine(session, run)
+            await _run_hook_tts(session, run)
             await _process_all_parts(session, run)
             await _schedule(session, run)
         except Exception as exc:
@@ -54,6 +58,7 @@ async def _refine(session, run: PipelineRun) -> None:
     result = await LLMClient().refine(run.raw_script, run.input_metadata or {})
 
     run.refined_script = "\n\n".join(result.parts)
+    run.hook = result.hook or None
     run.classification = result.classification
     run.parts_count = len(result.parts)
     run.status = PipelineStatus.refined
@@ -63,7 +68,42 @@ async def _refine(session, run: PipelineRun) -> None:
         session.add(PipelinePart(run_id=run.id, part_number=i, script=script))
     await session.commit()
 
-    log.info("script refined", run_id=str(run.id), parts=run.parts_count)
+    log.info("script refined", run_id=str(run.id), parts=run.parts_count, hook=bool(run.hook))
+
+
+async def _run_hook_tts(session, run: PipelineRun) -> None:
+    """Narra a frase gancho num arquivo próprio, separado das partes.
+
+    Não derruba o run em caso de falha: o gancho já é narrado dentro da parte 1
+    (é a primeira frase dela), então esse arquivo é um extra — perder o extra
+    não pode custar o vídeo inteiro, que é o que o pipeline existe para
+    entregar. A ausência fica visível em `hook_audio_key` nulo.
+
+    Sai sem `rate`, então o gancho é narrado no `TTS_RATE` do tts_service e não
+    no `narration.rate` do template que as partes usam. Enquanto o gancho for só
+    um extra isso não aparece no vídeo; se ele passar a ser montado junto, o
+    rate tem de vir junto.
+    """
+    if not run.hook:
+        log.info("no hook returned by refine, skipping hook audio", run_id=str(run.id))
+        return
+
+    log.info("generating hook audio", run_id=str(run.id), chars=len(run.hook))
+
+    try:
+        audio_key, srt_key = await TTSClient().generate(
+            text=run.hook,
+            run_id=str(run.id),
+            label=HOOK_LABEL,
+        )
+    except Exception as exc:
+        log.warning("hook audio failed, continuing without it", run_id=str(run.id), error=str(exc))
+        return
+
+    run.hook_audio_key = audio_key
+    run.hook_srt_key = srt_key
+    await session.commit()
+    log.info("hook audio ready", run_id=str(run.id), audio=audio_key, srt=srt_key)
 
 
 async def _narration_rate() -> str | None:

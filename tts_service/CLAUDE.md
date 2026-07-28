@@ -23,16 +23,27 @@ Serviço de geração de áudio a partir de texto. Expõe `POST /generate` que o
 **Request** (`GenerateRequest`):
 - `text` (str) — texto a ser narrado
 - `run_id` (str) — UUID do pipeline run (usado na key MinIO)
-- `part_number` (int) — número da parte (1, 2, ...)
+- `part_number` (int, padrão `1`) — número da parte (1, 2, ...)
+- `label` (str | None) — nome do arquivo dentro do run, quando o áudio **não** é uma parte do roteiro
 - `rate` (str, opcional) — velocidade da narração desta request (`+15%`). Vem do `narration.rate` do `template.json`. Ausente ou `null` → usa `TTS_RATE`. Formato inválido → `422` antes de qualquer chamada ao TTS.
 
 **Response** (`GenerateResponse`):
-- `audio_key` (str) — key MinIO do áudio gerado: `audio/{run_id}/part_{part_number}.mp3`
-- `srt_key` (str) — key MinIO da legenda word-level: `subs/{run_id}/part_{part_number}.srt`
+- `audio_key` (str) — key MinIO do áudio gerado: `audio/{run_id}/{slug}.mp3`
+- `srt_key` (str) — key MinIO da legenda word-level: `subs/{run_id}/{slug}.srt`
+
+`slug` = `label` quando presente, senão `part_{part_number}` — o comportamento antigo, byte a byte, para quem não manda `label`.
 
 **Ordem das etapas:** TTS → pós-processamento (silêncio + loudness) → upload do áudio → transcrição → upload do SRT. A transcrição roda **depois** do pós-processamento, sobre o mesmo áudio que vai ao vídeo — é o que mantém a legenda em sincronia.
 
-Erros: `502` se o TTS, o upload ao MinIO ou a transcrição falharem.
+Erros: `502` se o TTS, o upload ao MinIO ou a transcrição falharem. `422` se o `label` não casar com o pattern.
+
+### Nome do arquivo (`label`)
+
+Existe porque a frase gancho é narrada sozinha (`_run_hook_tts` no orchestrador) e precisa de key própria: sem `label`, ela sobrescreveria `part_1.mp3`, que é a narração da parte inteira.
+
+`label="hook"` → `audio/{run_id}/hook.mp3` + `subs/{run_id}/hook.srt`.
+
+⚠️ **O pattern `^[a-z0-9][a-z0-9_-]{0,63}$` não é cosmético.** A key é montada por interpolação de string; um label com `/` ou `..` escreveria fora do prefixo do run. Rejeitar no schema é mais barato que sanitizar depois — 4 testes em `test_label.py` fixam isso.
 
 ### Providers TTS (`src/tts_service/tts/`)
 
@@ -184,6 +195,8 @@ O consumo dessa legenda (offset de sincronia, hold entre palavras, fades) é res
 ## Testes
 
 `tests/test_generate.py` — 12 testes; edge-tts e MinIO sempre mockados; `REMOVE_SILENCE=false` **e `NORMALIZE_AUDIO=false`** no conftest, para que nenhum teste de endpoint chame ffmpeg.
+
+`tests/test_label.py` — 10 testes do `label`: as duas keys, precedência sobre `part_number`, `part_number` opcional, e a rejeição de `/`, `..`, maiúscula e string vazia. Mesmos mocks de `test_generate.py`.
 
 `tests/test_postprocess.py` — 31 testes (era `test_silence.py`); áudio gerado por `wave` + ffmpeg (`_make_mp3`, com `amplitude` para material quiet/hot; `_make_24khz_mp3` para imitar a saída do `edge`). Cobre a montagem da filter chain, o corte de silêncio, o **teto de pausa** (6 testes, via `_pause_durations_ms` com `silencedetect`), sample rate e bitrate de saída via `ffprobe`, a loudness medida via filtro `ebur128`, o casamento com a fonte (não faz upsample) e 4 testes de integração com o endpoint. Requer `ffmpeg` **e `ffprobe`** instalados.
 

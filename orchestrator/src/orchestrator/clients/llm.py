@@ -8,6 +8,9 @@ from src.orchestrator.clients.http import request
 class RefineResult:
     parts: list[str]
     classification: dict
+    #: Frase gancho do roteiro. Vazia quando o `llm_service` do outro lado
+    #: ainda não devolve o campo — deploy dos dois serviços não é atômico.
+    hook: str = ""
 
 
 class LLMClient:
@@ -22,4 +25,8 @@ class LLMClient:
             json={"script": script, "metadata": metadata},
         )
         data = resp.json()
-        return RefineResult(parts=data["parts"], classification=data["classification"])
+        return RefineResult(
+            parts=data["parts"],
+            classification=data["classification"],
+            hook=(data.get("hook") or "").strip(),
+        )

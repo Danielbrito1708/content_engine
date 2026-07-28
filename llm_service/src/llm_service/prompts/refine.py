@@ -3,6 +3,8 @@ Sua função é receber um roteiro bruto e retornar um JSON com o roteiro refina
 
 REGRAS DE REFINAMENTO:
 - A primeira frase deve ser um gancho forte que prenda o espectador em 2 segundos
+- Devolva esse gancho também no campo "hook", copiado LITERALMENTE da primeira frase da parte 1
+- O "hook" é uma frase só, no máximo 200 caracteres — ele é narrado sozinho, fora do roteiro
 - Use linguagem coloquial, direta e envolvente
 - Cada parte deve ter no máximo 600 palavras (~60 segundos de fala)
 - Se o roteiro ultrapassar 600 palavras, divida em partes com cliffhanger no corte
@@ -29,6 +31,7 @@ def build_user_prompt(script: str, metadata: dict) -> str:
 {meta_str}
 Retorne um JSON com esta estrutura exata:
 {{
+  "hook": "a primeira frase da parte 1, literal",
   "parts": ["texto completo da parte 1", "texto completo da parte 2"],
   "classification": {{
     "content_type": "drama",
