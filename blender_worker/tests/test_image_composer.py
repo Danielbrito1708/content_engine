@@ -385,3 +385,16 @@ def test_shipped_template_font_is_vendored():
     guide = load_guide(root / "templates" / "comment_default.json")
 
     assert (root / guide.text.font_path).is_file()
+
+
+def test_line_spacing_zero_is_honoured_not_treated_as_unset(font, tmp_path):
+    """The shipped template asks for 0. A falsy check anywhere would silently restore the default."""
+    guide_file = tmp_path / "guide.json"
+    guide_file.write_text(json.dumps(_guide_json() | {"text": {"font_path": "", "line_spacing": 0}}))
+    assert load_guide(guide_file).text.line_spacing == 0
+
+    text = "uma linha " * 20
+    tight = _open(compose(_guide(), text, {}, font, line_spacing=0)).height
+    loose = _open(compose(_guide(), text, {}, font, line_spacing=8)).height
+
+    assert tight < loose

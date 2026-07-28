@@ -645,7 +645,7 @@ Arquivo JSON versionado em `templates/`. Define o layout visual completo da imag
     "size": 36,
     "color": [0, 0, 0, 255],
     "offset": { "x": 0, "y": 0 },
-    "line_spacing": 2
+    "line_spacing": 0
   }
 }
 ```
