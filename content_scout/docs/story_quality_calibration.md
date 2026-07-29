@@ -1,8 +1,48 @@
 # TODO — calibrar a classificação de storytelling
 
-> **Status:** aberto. Feature implementada (PR #12), **régua não validada.**
-> **Ação esperada do Daniel:** ler este arquivo e responder as perguntas da seção
+> **Status:** decisão 1 RESOLVIDA (28/07/2026), decisões 2–4 ainda abertas.
+> **Ação esperada do Daniel:** responder as perguntas 2, 3 e 4 da seção
 > "Decisões pendentes". Enquanto isso a feature roda com `min_story_score = 6`.
+
+---
+
+## ✅ Decisão 1 — resolvida: rota (a), trocar as fontes
+
+O Daniel apontou o `r/story`. Medição ao vivo dos candidatos (28/07/2026, feed
+real, `parse_feed` do pipeline, filtros de produção 600–6000 chars):
+
+| Sub | passam | mediana | idioma |
+|---|---|---|---|
+| `EuSouOBabaca` | **15/15** | 1831 | pt-BR |
+| `story` | 13/15 | 1704 | inglês |
+| `stories` | 12/15 | 1587 | inglês |
+| `desabafosdavida` | 15/15 | 1278 | pt-BR, mas é o gênero antigo |
+| `opiniaoimpopular` | 7/15 | 551 | opinião, não história |
+| `HistoriasDeReddit`, `HistoriasdeTerror` | — | — | **espanhol**, descartados |
+| `Quem_Foi_O_Babaca`, `EuSouOBabacaButAdult`, `contosdevidareal`, `HistoriasBrasil`, `contosdamadrugada`, `Creepypastas_Brasil`, `DesabafosAbsurdos`, `assombracao` | 0 | — | subs mortos |
+
+Não existe sub de vingança em pt-BR (a busca voltou vazia).
+
+`config.ini` passou a `EuSouOBabaca,story,stories`. Duas mudanças de prompt
+vieram junto, porque sem elas o corpus novo seria mal servido:
+
+1. **`refine.py`** — roteiro final sempre em pt-BR, traduzindo quando a fonte é
+   inglesa. Antes o prompt só dizia "preserve a essência", e `r/story` sairia em
+   inglês direto para um TTS pt-BR.
+2. **`story.py`** — parou de descontar por "pergunta direta ao fórum" sem
+   qualificar. *Todo* post do `EuSouOBabaca` é "Sou babaca por…?"; a régua antiga
+   puniria o melhor corpus pelo motivo errado. Agora só desconta a pergunta que
+   substitui a cena, não a que emoldura o conflito.
+
+⚠️ **Consequência para os dados abaixo:** a medição dos 30 posts foi feita em
+`r/desabafos` + `r/relacionamentos`, que **não são mais fontes configuradas**. A
+taxa de 40% `weak_storytelling` descreve um corpus aposentado. Os números seguem
+aqui como registro histórico e como base de comparação — não como a régua atual.
+Refazer com `--subreddits EuSouOBabaca,story,stories` antes de mexer no corte.
+
+Por origem, aliás, os dois subs antigos empatam: `r/desabafos` média 5.7 (4
+fracos de 15), `r/relacionamentos` média 5.3 (8 fracos de 15). **Nunca houve dado
+que singularizasse o `desabafos` como pior** — o problema era o gênero.
 
 ---
 
@@ -116,23 +156,10 @@ a moderação barra por abuso — mas serve de aviso sobre o que a nota mede.
 
 ## Decisões pendentes (é aqui que eu preciso da tua resposta)
 
-### 1. Qual é o corpus certo?
+### 1. Qual é o corpus certo? — ✅ RESOLVIDA, ver o topo do arquivo
 
-A régua só pode ser calibrada contra o material que a gente pretende usar. Duas
-rotas:
-
-- **(a) Trocar/ampliar as fontes** para subs de história-entretenimento e
-  recalibrar contra elas. Os candidatos óbvios são em inglês
-  (`TrueOffMyChest`, `AmITheAsshole`, `pettyrevenge`, `MaliciousCompliance`,
-  `EntitledParents`, `ProRevenge`) — o que levanta a questão de tradução no
-  `/refine`, hoje não prevista.
-- **(b) Manter as fontes em pt-BR** e aceitar que o gênero é "relato real". Aí
-  **o prompt precisa mudar**: o exemplo-guia atual pede uma estrutura de vingança
-  com desfecho, que desabafo não tem. A régua passaria a premiar conflito +
-  cena + tensão, sem exigir terceiro ato.
-
-Não dá pra fazer as duas com o mesmo prompt sem que uma das duas fique mal
-servida.
+Rota (a): fontes trocadas para `EuSouOBabaca,story,stories`, com tradução no
+`/refine` e a régua de "pergunta ao fórum" corrigida no `story.py`.
 
 ### 2. Nota 5 é fraco ou é aceitável?
 

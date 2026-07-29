@@ -35,6 +35,13 @@ class SeenItem(Base):
     url: Mapped[str] = mapped_column(String(1024), nullable=False)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     author: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: Fingerprint of the body, for catching the same *story* posted again under a
+    #: different id — which ``external_id`` cannot see. Indexed but deliberately
+    #: **not** unique: a repost has to be recorded with its own audit row saying it
+    #: was skipped, and a unique constraint would reject that row instead.
+    #: ``None`` on every row written before the archive sweep existed — bodies are
+    #: not stored, so the backlog cannot be fingerprinted retroactively.
+    content_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     #: Comments the source reported, ``None`` when they were never fetched.
     #: Enrichment costs a rate-limit window per item, so only published
     #: candidates carry it — ``None`` means "not looked at", not "zero replies".
@@ -60,6 +67,39 @@ class SeenItem(Base):
 
     comments: Mapped[list["ItemComment"]] = relationship(
         back_populates="item", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class ArchiveCursor(Base):
+    """How far a historical sweep has read into one subreddit's all-time top.
+
+    The weekly feed renews itself; ``top?t=all`` does not. Re-requesting it every
+    cycle returns the *same* fifteen posts forever, all of them already in
+    ``seen_items`` after the first pass — a rate-limit window spent to learn
+    nothing. Reddit's Atom feeds accept ``?count=&after=``, verified live to
+    return a page with zero overlap, so the sweep pages forward instead and this
+    row remembers where it stopped.
+
+    ``last_swept_at`` is also the cadence: the sweep is due when it is older than
+    the configured interval. Keeping the schedule in the database rather than a
+    process counter is what makes it survive a restart — a counter would reset on
+    every deploy and re-sweep immediately.
+    """
+
+    __tablename__ = "archive_cursors"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: ``r/{sub}`` — the same shape as ``SeenItem.origin``, so the two join by eye.
+    origin: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    #: Reddit fullname of the last post read. ``None`` means "start from the top",
+    #: which is both the initial state and where an exhausted sweep wraps back to.
+    after_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: Pages read since the cursor last wrapped. Purely diagnostic — it answers
+    #: "is this sub still yielding?" without replaying the audit trail.
+    pages_read: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_swept_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
 
 

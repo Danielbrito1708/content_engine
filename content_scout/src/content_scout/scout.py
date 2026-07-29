@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from itertools import zip_longest
 
 import structlog
@@ -15,9 +16,10 @@ from src.content_scout.clients.llm import (
 )
 from src.content_scout.clients.orchestrator import OrchestratorClient
 from src.content_scout.db.engine import AsyncSessionLocal
-from src.content_scout.db.models import ItemComment, SeenItem, SeenStatus
-from src.content_scout.filters import evaluate
+from src.content_scout.db.models import ArchiveCursor, ItemComment, SeenItem, SeenStatus
+from src.content_scout.filters import content_fingerprint, evaluate
 from src.content_scout.sources.base import (
+    ArchiveCapableSource,
     Candidate,
     CommentCapableSource,
     CommentThread,
@@ -45,6 +47,13 @@ class ScoutReport:
     weak_storytelling: int = 0
     story_quality_unavailable: bool = False
     already_running: bool = False
+    #: Origin swept this cycle, ``None`` when none was due.
+    archive_swept: str | None = None
+    archive_fetched: int = 0
+    #: The sweep reached the end of the listing and wrapped back to the top.
+    archive_wrapped: bool = False
+    #: Candidates dropped because the same story was already seen under another id.
+    duplicate_story: int = 0
 
 
 # One cycle at a time, process-wide. The periodic loop fires a cycle on startup,
@@ -91,6 +100,8 @@ def build_sources() -> list[Source]:
             timeout=cfg.request_timeout,
             request_delay=cfg.request_delay_seconds,
             comments_limit=cfg.comments_limit,
+            archive_time_filter=cfg.archive_time_filter,
+            archive_limit=cfg.archive_limit,
         )
     ]
 
@@ -179,6 +190,125 @@ async def _fetch_thread(
         return None
 
 
+async def _pick_sweep_target(
+    session, source: ArchiveCapableSource, interval_hours: float
+) -> tuple[str, ArchiveCursor | None] | None:
+    """The subreddit whose historical sweep is due, or ``None`` when none is.
+
+    Never-swept subreddits go first, then the least recently swept — so a newly
+    configured sub is picked up on the next cycle instead of waiting behind the
+    rotation. Exactly one target per cycle: a sweep costs a full rate-limit
+    window, and spending one per configured sub would multiply the cycle's floor.
+    """
+    subreddits = source.subreddits
+    if not subreddits:
+        return None
+
+    result = await session.execute(
+        select(ArchiveCursor).where(ArchiveCursor.origin.in_([f"r/{s}" for s in subreddits]))
+    )
+    cursors = {c.origin: c for c in result.scalars().all()}
+
+    for subreddit in subreddits:
+        if f"r/{subreddit}" not in cursors:
+            return subreddit, None
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=interval_hours)
+    due = [c for c in cursors.values() if c.last_swept_at <= cutoff]
+    if not due:
+        return None
+
+    oldest = min(due, key=lambda c: c.last_swept_at)
+    return oldest.origin.removeprefix("r/"), oldest
+
+
+async def _sweep_archive(
+    session, source: ArchiveCapableSource, subreddit: str, cursor: ArchiveCursor | None
+) -> tuple[list[Candidate], bool]:
+    """Read one page of ``subreddit``'s all-time top and advance its cursor.
+
+    Returns the page's candidates and whether the listing wrapped. Wrapping is
+    normal, not an error: the archive is finite, so a sweep that runs off the end
+    resets to the top and starts over. By then everything it re-reads is already
+    in ``seen_items``, so a lap costs requests but can never republish.
+
+    The cursor is written even when the page yields nothing usable — otherwise a
+    stretch of link posts would pin the sweep in place forever.
+    """
+    after = cursor.after_id if cursor is not None else None
+    candidates, next_after = await source.fetch_archive(subreddit, after)
+    wrapped = next_after is None
+
+    if cursor is None:
+        # ``pages_read`` is set explicitly rather than left to the column default:
+        # that default is applied at INSERT, so the attribute is still None on a
+        # pending object and the increment below would raise.
+        cursor = ArchiveCursor(source=source.name, origin=f"r/{subreddit}", pages_read=0)
+        session.add(cursor)
+
+    cursor.after_id = next_after
+    cursor.pages_read = 0 if wrapped else cursor.pages_read + 1
+    cursor.last_swept_at = datetime.now(timezone.utc)
+    await session.commit()
+
+    return candidates, wrapped
+
+
+async def _known_fingerprints(session, fingerprints: list[str]) -> set[str]:
+    """Which of these bodies the scout has already evaluated, under any id.
+
+    ``external_id`` only catches the identical post. The archive sweep reaches
+    years back and into subs that repost each other, so the same story genuinely
+    arrives twice with two ids — this is what sees that.
+    """
+    if not fingerprints:
+        return set()
+    result = await session.execute(
+        select(SeenItem.content_fingerprint).where(
+            SeenItem.content_fingerprint.in_(fingerprints)
+        )
+    )
+    return set(result.scalars().all())
+
+
+async def _run_sweep(
+    session, sources: list[Source], interval_hours: float, report: ScoutReport
+) -> list[Candidate]:
+    """Sweep one archive page, if any source has one due.
+
+    At most one sweep per cycle across all sources — the budget being protected
+    is the shared rate-limit window, which does not care which source spends it.
+
+    A failure here returns an empty page rather than propagating: the archive is
+    a bonus supply of candidates on top of the live feeds, so losing it must not
+    cost the cycle its regular fetch.
+    """
+    for source in sources:
+        if not isinstance(source, ArchiveCapableSource):
+            continue
+        try:
+            target = await _pick_sweep_target(session, source, interval_hours)
+            if target is None:
+                continue
+            subreddit, cursor = target
+            candidates, wrapped = await _sweep_archive(session, source, subreddit, cursor)
+        except Exception as exc:  # noqa: BLE001 — the archive is a bonus, never a blocker
+            log.warning("scout_archive_sweep_failed", error=str(exc))
+            return []
+
+        report.archive_swept = f"r/{subreddit}"
+        report.archive_fetched = len(candidates)
+        report.archive_wrapped = wrapped
+        log.info(
+            "scout_archive_swept",
+            origin=report.archive_swept,
+            fetched=len(candidates),
+            wrapped=wrapped,
+        )
+        return candidates
+    return []
+
+
 async def _known_ids(session, external_ids: list[str]) -> set[str]:
     if not external_ids:
         return set()
@@ -218,6 +348,7 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
     sources = build_sources() if sources is None else sources
     scout_cfg = settings.CONFIG.scout
     filter_cfg = settings.CONFIG.filters
+    reddit_cfg = settings.CONFIG.reddit
 
     candidates: list[Candidate] = []
     for source in sources:
@@ -231,7 +362,18 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
     orchestrator = OrchestratorClient()
 
     async with AsyncSessionLocal() as session:
+        # The historical sweep rides along with the regular fetch, before the
+        # capacity check, for the same reason the fetch does: what it costs is a
+        # rate-limit window, and skipping it on a full queue would mean the
+        # archive only ever advances on quiet cycles.
+        if reddit_cfg.archive_interval_hours > 0:
+            archived = await _run_sweep(session, sources, reddit_cfg.archive_interval_hours, report)
+            candidates.extend(archived)
+
         seen = await _known_ids(session, [c.external_id for c in candidates])
+        fingerprints = await _known_fingerprints(
+            session, [f for f in (content_fingerprint(c.text) for c in candidates) if f]
+        )
 
         fresh: list[Candidate] = []
         for candidate in candidates:
@@ -246,9 +388,25 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 min_chars=filter_cfg.min_chars,
                 max_chars=filter_cfg.max_chars,
             )
+            # Fingerprint dedup runs after the cheap length check and before
+            # anything that costs a model call: a repost is the cheapest possible
+            # rejection and should never reach moderation or scoring.
+            fingerprint = content_fingerprint(candidate.text)
+            if reason is None and fingerprint is not None and fingerprint in fingerprints:
+                reason = "duplicate_story"
+                report.duplicate_story += 1
+            if fingerprint is not None:
+                # Added even when this candidate is being rejected: two copies
+                # arriving in the *same* cycle are not in the database yet, and
+                # without this the second would sail through.
+                fingerprints.add(fingerprint)
+
             if reason:
                 report.filtered += 1
-                await _record(session, _seen_row(candidate, SeenStatus.filtered, skip_reason=reason))
+                await _record(
+                    session,
+                    _seen_row(candidate, SeenStatus.filtered, skip_reason=reason),
+                )
                 continue
             fresh.append(candidate)
 
@@ -424,6 +582,10 @@ def _seen_row(candidate: Candidate, status: SeenStatus, skip_reason: str | None 
         url=candidate.url,
         char_count=candidate.char_count,
         author=candidate.extra.get("author") or None,
+        # Written for every row, including rejected ones: a repost of a story that
+        # was filtered for length is still a repost, and recording the fingerprint
+        # is what lets the next copy be recognised without re-deriving it.
+        content_fingerprint=content_fingerprint(candidate.text),
         comment_count=thread.total if thread is not None else None,
         has_hook=story.hook if story is not None else None,
         story_score=story.score if story is not None else None,
@@ -467,6 +629,10 @@ async def scout_loop() -> None:
                 comments_fetched=report.comments_fetched,
                 story_scored=report.story_scored,
                 weak_storytelling=report.weak_storytelling,
+                archive_swept=report.archive_swept,
+                archive_fetched=report.archive_fetched,
+                archive_wrapped=report.archive_wrapped,
+                duplicate_story=report.duplicate_story,
                 no_capacity=report.skipped_no_capacity,
                 moderation_unavailable=report.moderation_unavailable,
                 story_quality_unavailable=report.story_quality_unavailable,

@@ -20,6 +20,14 @@ class ScoutRunResponse(BaseModel):
     story_scored: int
     weak_storytelling: int
     story_quality_unavailable: bool
+    #: Origin whose all-time archive was paged this cycle, ``None`` when none was
+    #: due. A sweep costs one rate-limit window, so at most one runs per cycle.
+    archive_swept: str | None = None
+    archive_fetched: int = 0
+    #: The sweep ran off the end of the listing and wrapped back to the top.
+    archive_wrapped: bool = False
+    #: Candidates skipped because the same story was already seen under another id.
+    duplicate_story: int = 0
     #: True when a cycle was already in flight, so this call did nothing.
     already_running: bool = False
 

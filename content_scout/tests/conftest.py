@@ -14,7 +14,7 @@ from sqlalchemy import delete
 
 from src.content_scout.api.app import app  # triggers bootstrap
 from src.content_scout.db.engine import AsyncSessionLocal
-from src.content_scout.db.models import SeenItem
+from src.content_scout.db.models import ArchiveCursor, SeenItem
 from src.content_scout.sources.reddit import shared_throttle
 
 
@@ -47,4 +47,8 @@ async def clean_db(request):
         return
     async with AsyncSessionLocal() as s:
         await s.execute(delete(SeenItem))
+        # Cursors outlive seen_items otherwise, and a leftover one makes the next
+        # test think its subreddit was already swept — the sweep tests would pass
+        # or fail depending on execution order.
+        await s.execute(delete(ArchiveCursor))
         await s.commit()
