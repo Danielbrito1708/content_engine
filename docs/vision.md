@@ -772,6 +772,8 @@ O alvo é uma máquina ligada o tempo todo, sem ninguém olhando. O que o `docke
 - Backup do Postgres e retenção dos `outputs/` no R2 — nada é apagado hoje.
 - Alerta de falha: um run `failed` não notifica ninguém.
 
+**O plano de deploy está em [`deploy.md`](deploy.md)** — máquina alvo, orçamento de RAM, os ajustes a aplicar antes de subir (o principal: `max_pending_runs = 5` permite 5 renders Blender simultâneos, o que não cabe em 8 GB) e o desenho do monitoramento em quatro camadas com notificação por WhatsApp. Nada daquele documento foi aplicado ainda.
+
 ---
 
 ## Tech Stack por Serviço
