@@ -131,3 +131,22 @@ async def test_factory_unknown_provider_raises(monkeypatch):
     from src.llm_service.llm.factory import get_llm_client
     with pytest.raises(ValueError, match="Unknown LLM_PROVIDER"):
         get_llm_client()
+
+
+# --- o texto narrado não tem finalização -------------------------------------
+
+
+def test_prompt_forbids_a_closing_line_in_the_narrated_text():
+    """O vídeo acaba quando a história acaba. O CTA continua existindo, mas só
+    como campo — o `tiktok_poster` o usa na legenda do post."""
+    from src.llm_service.prompts.refine import SYSTEM_PROMPT
+
+    assert "Cada parte termina com um CTA" not in SYSTEM_PROMPT
+    assert "sem CTA" in SYSTEM_PROMPT
+    assert "cta_per_part" in SYSTEM_PROMPT
+
+
+def test_prompt_still_asks_for_the_cta_field():
+    from src.llm_service.prompts.refine import build_user_prompt
+
+    assert "cta_per_part" in build_user_prompt("roteiro", {})

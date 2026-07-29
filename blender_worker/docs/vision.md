@@ -75,17 +75,19 @@ Define a estrutura de montagem. Reutilizado em múltiplos jobs.
     "voice": 3,
     "subtitles": 4
   },
+  "music": {
+    "fade_out_seconds": 1.5
+  },
   "timing": {
     "intro_start": 0,
     "intro_end": 90,
     "speech_start": 90,
-    "speech_end": 750,
-    "outro_start": 750,
-    "outro_end": 900,
-    "music_fade_out": 840
+    "speech_end": 750
   }
 }
 ```
+
+O bloco `music` é opcional (padrão 1,5s no código) e define o fade da trilha, contado **a partir do último frame** — não há seção de outro, o vídeo termina na última palavra da narração. As chaves `outro_start`, `outro_end` e `music_fade_out` foram removidas: nenhuma era lida, e a última fazia a trilha decair pelo vídeo inteiro. Ver a seção "O vídeo não tem finalização" no `docs/vision.md` da raiz.
 
 O bloco `narration` é opcional e **não é consumido pelo blender_worker** — ele existe no `template.json` porque a velocidade da narração é uma decisão de design do template, junto com tipografia e timing. Quem lê é o orchestrador, via `GET /templates/{id}/config`, antes de chamar o `tts_service`. Templates sem o bloco continuam válidos.
 

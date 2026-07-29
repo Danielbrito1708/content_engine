@@ -106,7 +106,9 @@ A primeira frase é transformada para prender o espectador nos primeiros dois se
 
 Além de abrir o roteiro, esse gancho volta separado, como uma frase à parte. Antes ele era só a primeira linha de um texto corrido, e ninguém sabia dizer onde ele terminava; agora o sistema devolve a frase inteira, identificada, para poder ser usada sozinha. Se o modelo esquecer de mandá-la, o sistema a recupera pegando a primeira frase da parte 1 — o gancho nunca fica faltando.
 
-Cada parte termina com uma chamada para ação clara: um pedido para comentar, seguir, ver a parte 2, ou qualquer comportamento específico que maximize o engajamento.
+**O texto narrado acaba junto com a história.** Antes, o modelo era instruído a fechar cada parte com uma chamada para ação — "comenta o que você faria", "segue para a parte 2" — e isso era narrado no vídeo. Virava um recado colado no fim de uma história que já tinha terminado: o espectador ouvia o desfecho e, em seguida, um pedido. Agora a última frase narrada é a última coisa que acontece na história, sem despedida, sem moral e sem pedido de like.
+
+A chamada para ação não deixou de existir — ela continua sendo escrita para cada parte, mas só como **legenda do post**, que é onde o TikTok mostra esse tipo de texto e onde ele não interrompe a narração.
 
 **Divisão em partes:**
 
@@ -353,6 +355,14 @@ O vídeo agora termina junto com a narração.
 Antes, a duração era ditada pelo mais longo entre todos os arquivos — inclusive o vídeo de fundo e a música, que são apenas pano de fundo. Na prática, um fundo de 90 segundos sob uma narração de 68 gerava 22 segundos de silêncio no fim, com a legenda já fora da tela. Quem define onde a história acaba é a narração; fundo e trilha são decoração e não esticam mais o vídeo.
 
 Se o fundo for **mais curto** que a narração, o sistema repete o próprio fundo até cobrir a história inteira. Antes, o trecho que sobrava saía **preto**, com a legenda aparecendo sobre o nada e sem nenhum aviso — um clipe de 45 segundos sob uma narração de 71 gerava 26 segundos de tela preta. Isso deixou de ser um erro do arquivo e passou a ser normal, porque o fundo agora vem de uma biblioteca de clipes curtos (ver abaixo).
+
+## O fim do vídeo é a última palavra da história
+
+O vídeo não tem finalização. Nada é acrescentado depois que a narração termina: a última palavra da história é o último frame, e a única coisa que marca o encerramento é a **música de fundo sumindo por baixo dessa última frase** — um fade de 1,5 segundo.
+
+Antes o fade era escrito como um instante fixo na linha do tempo: "comece a sumir no segundo 28", número anotado quando os vídeos eram rascunhos de 30 segundos. Como a duração passou a ser a da narração, esse instante deixou de significar "no finalzinho". Medido num vídeo de 23 segundos: a trilha começava a cair **desde o primeiro segundo** e chegava ao fim praticamente inaudível — de -26 dBFS no começo para -73 dBFS no fim, ou seja, mais da metade do vídeo com a música morrendo. Era esse o motivo de a trilha "não estar lá" mesmo estando no arquivo.
+
+Agora o fade é contado de trás para frente, a partir do fim. Medido no mesmo vídeo: a trilha fica no mesmo volume do começo até 21,9s, e só então cai até o silêncio no último frame, em 23,4s. A duração do fade é configuração do template (`fade_out_seconds`), e zero desliga.
 
 ## Legenda no centro e maior
 
