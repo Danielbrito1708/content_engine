@@ -428,3 +428,139 @@ async def test_comment_fetch_shares_the_feed_throttle(monkeypatch):
 
     await source.fetch_comments(_candidate())
     assert len(slept) == 1 and 0 < slept[0] <= 60
+
+
+# ------------------------------------------------------------- archive sweep
+
+
+def test_archive_url_first_page_has_no_cursor():
+    assert _source(archive_limit=15).archive_url("story") == (
+        "https://www.reddit.com/r/story/top/.rss?t=all&limit=15"
+    )
+
+
+def test_archive_url_pages_with_count_and_after():
+    """``count`` travels with ``after`` — ``after`` alone stops advancing."""
+    assert _source(archive_limit=15).archive_url("story", "t3_zzz") == (
+        "https://www.reddit.com/r/story/top/.rss?t=all&limit=15&count=15&after=t3_zzz"
+    )
+
+
+def test_archive_url_honours_a_narrower_window():
+    assert _source(archive_time_filter="year", archive_limit=5).archive_url("story") == (
+        "https://www.reddit.com/r/story/top/.rss?t=year&limit=5"
+    )
+
+
+async def test_fetch_archive_returns_page_and_next_cursor(monkeypatch):
+    import httpx
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(
+            200,
+            text=_feed(
+                _entry("t3_one", "Primeiro", REAL_CONTENT),
+                _entry("t3_two", "Segundo", REAL_CONTENT),
+            ),
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    candidates, next_after = await _source().fetch_archive("story")
+    assert [c.external_id for c in candidates] == ["t3_one", "t3_two"]
+    assert next_after == "t3_two"
+
+
+async def test_fetch_archive_cursor_counts_dropped_entries(monkeypatch):
+    """The cursor is the last *entry*, not the last candidate.
+
+    Link and image posts are discarded by ``parse_feed``. Paging from the last
+    surviving candidate would re-request the discarded tail on every sweep and
+    the cursor would crawl.
+    """
+    import httpx
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(
+            200,
+            text=_feed(
+                _entry("t3_with_body", "Tem corpo", REAL_CONTENT),
+                _entry("t3_link_post", "Sem corpo", ""),
+            ),
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    candidates, next_after = await _source().fetch_archive("story")
+    assert [c.external_id for c in candidates] == ["t3_with_body"]
+    assert next_after == "t3_link_post"
+
+
+async def test_fetch_archive_empty_feed_signals_exhaustion(monkeypatch):
+    """No entries means the listing ran out — the caller wraps back to the top."""
+    import httpx
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(200, text=_feed(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    candidates, next_after = await _source().fetch_archive("story", "t3_last")
+    assert candidates == []
+    assert next_after is None
+
+
+async def test_fetch_archive_keeps_cursor_when_request_fails(monkeypatch):
+    """A 429 must not look like exhaustion, or the sweep would restart the sub."""
+    import httpx
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(429, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    candidates, next_after = await _source().fetch_archive("story", "t3_here")
+    assert candidates == []
+    assert next_after == "t3_here"
+
+
+async def test_fetch_archive_survives_malformed_xml(monkeypatch):
+    import httpx
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(200, text="<not-xml", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    candidates, next_after = await _source().fetch_archive("story", "t3_here")
+    assert candidates == []
+    assert next_after == "t3_here"
+
+
+async def test_archive_fetch_shares_the_feed_throttle(monkeypatch):
+    """A sweep spends the same window a listing does — it has to queue behind it."""
+    import httpx
+
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(
+            200,
+            text=_feed(_entry("t3_abc", "T", REAL_CONTENT)),
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr("src.content_scout.sources.reddit.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    source = _source(subreddits=["a"], request_delay=60)
+    await source.fetch()
+    assert slept == []
+
+    await source.fetch_archive("a")
+    assert len(slept) == 1 and 0 < slept[0] <= 60

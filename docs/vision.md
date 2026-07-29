@@ -605,6 +605,49 @@ O `.json` sem autenticação do Reddit foi desativado em maio/2026 e responde 40
 
 **Por que o YouTube não vira roteiro.** A transcrição de um vídeo *é* o roteiro de outra pessoa — republicá-lo com outra voz é cópia, não inspiração. Além disso, visualizações medem o canal, a thumbnail e o algoritmo, não o texto: otimizar por elas é perseguir o proxy errado. E o custo é ordens de grandeza maior (download + Whisper por vídeo, contra texto já pronto). Se o YouTube entrar, entra como **minerador de tema** — `search.list` para descobrir assuntos em alta, e o `llm_service` escreve roteiro original a partir do tema. Sem download, sem transcrição, sem risco de cópia.
 
+### Escolha das comunidades
+
+As fontes originais (`desabafos`, `relacionamentos`, `conselhos`) eram **relato real**: gente desabafando ou pedindo conselho. É um gênero sem terceiro ato — não há virada nem desfecho —, e o pipeline foi construído para história de entretenimento. A régua de storytelling chegava a pedir uma estrutura que aquele corpus não produz.
+
+A troca foi decidida com medição ao vivo (28/07/2026), não por intuição: feed real, mesmo parser do pipeline, mesmos filtros de 600–6000 caracteres.
+
+| Sub | passam os filtros | mediana | por quê |
+|---|---|---|---|
+| `EuSouOBabaca` | 15/15 | 1831 | o AITA brasileiro; o título já é o gancho |
+| `story` | 13/15 | 1704 | história de entretenimento, em inglês |
+| `stories` | 12/15 | 1587 | idem, e reposta muito de `r/story` |
+
+Descartados por medição: `HistoriasDeReddit` e `HistoriasdeTerror` são em **espanhol**; `opiniaoimpopular` é opinião e não história (só 7/15 passam, mediana 551); e oito candidatos plausíveis (`Quem_Foi_O_Babaca`, `contosdevidareal`, `HistoriasBrasil`, `Creepypastas_Brasil` entre outros) devolveram **zero** posts na semana — são subs mortos. Não há sub de vingança em pt-BR.
+
+**Consequência de interface:** duas das três fontes são em inglês, então o `/refine` passou a ter regra explícita de idioma — o roteiro final é sempre pt-BR, traduzido como quem reconta. Antes o prompt só pedia "preserve a essência", e o roteiro sairia em inglês para um TTS pt-BR. O `/story-quality` foi avisado do mesmo: julga a história, não o idioma.
+
+**A régua também teve que mudar.** O prompt descontava por "pergunta direta ao fórum no lugar de história" — e todo post do `EuSouOBabaca` é literalmente "Sou babaca por…?". Sem qualificar a regra, o melhor corpus disponível tiraria nota baixa pelo motivo errado. Agora a distinção é explícita: a pergunta que vem *depois* do conflito e pede um veredito é estrutura de história; o que desconta é a pergunta que aparece *no lugar* da cena.
+
+### Varredura do arquivo histórico
+
+O feed `t=week` se renova sozinho; o `t=all` não. Pedir `top?t=all` a cada ciclo devolve **os mesmos quinze posts para sempre** — todos já em `seen_items` depois da primeira passada, ou seja, uma janela de rate limit gasta para não achar nada.
+
+Os feeds Atom aceitam `?count=&after=`, verificado ao vivo: a segunda página voltou com **overlap zero** com a primeira. Então a varredura pagina para trás e um cursor por origem (`archive_cursors`) lembra onde parou. Isso destrava anos de acervo em vez de um top-15 fixo.
+
+Regras de projeto:
+
+- **Cadência no banco, não em contador de processo.** A varredura fica devida quando `last_swept_at` é mais velho que `archive_interval_hours`. Um contador em memória zeraria a cada deploy e dispararia varredura imediata.
+- **No máximo uma varredura por ciclo, entre todas as fontes.** O recurso protegido é a janela de rate limit compartilhada, que não distingue quem a gastou. Subreddit nunca varrido tem prioridade, senão um sub recém-configurado esperaria o rodízio inteiro.
+- **O cursor é o id da última `<entry>`, não do último candidato aproveitável.** Link e image posts são descartados na análise; paginar a partir do último sobrevivente faria a varredura re-pedir a cauda descartada toda vez.
+- **Esgotar é normal.** Feed vazio devolve o cursor a `None` e a varredura recomeça do topo. O que a nova volta relê já está em `seen_items`, então uma volta custa requisição mas nunca republica.
+- **Falha não derruba o ciclo, e o cursor não avança.** O arquivo é oferta extra sobre os feeds ao vivo — mesma assimetria da nota de storytelling. Tratar um 429 como esgotamento reiniciaria o sub do zero.
+
+### Dedup por conteúdo: o mesmo texto sob outro id
+
+`external_id` só reconhece o **mesmo post**. A varredura histórica alcança anos atrás e entra em comunidades que repostam umas às outras (`r/story` ↔ `r/stories`), então a mesma história chega de verdade duas vezes, com dois ids e títulos diferentes — e viraria dois vídeos iguais.
+
+`seen_items.content_fingerprint` é o sha256 dos **1000 primeiros caracteres alfanuméricos** do corpo, minúsculo e sem acento. Cada decisão aí responde a uma forma de repost: descartar pontuação e caixa faz um texto redigitado casar; cortar no começo impede que um bloco `EDIT:` no fim derrube a comparação; tirar acento cobre o texto redigitado sem diacrítico.
+
+- **Corpo que normaliza para vazio devolve `None`, não o hash de `""`.** Com o hash, todo candidato desses colidiria com todos os outros e o segundo seria descartado como repost do primeiro.
+- **A coluna é indexada mas não é única.** Um repost precisa ser gravado com a própria linha de auditoria dizendo que foi pulado; uma constraint única rejeitaria exatamente essa linha e não sobraria registro da rejeição.
+- **Cobertura começa na migration 004.** `seen_items` nunca guardou o corpo, só título, url e contagem de caracteres — o histórico anterior não pode ser reprocessado e fica `NULL`.
+- A checagem roda **depois** do filtro barato de tamanho e **antes** de moderação e nota: repost é a rejeição mais barata que existe e não pode custar chamada de modelo.
+
 ### Sinal de qualidade
 
 O feed RSS **não carrega score**. Por isso pedimos `/r/{sub}/top/.rss?t=week`: a ordenação é feita pelo próprio Reddit e chega implícita na posição das entradas. É um sinal mais fraco que o upvote numérico, mas suficiente — o gargalo real é a fila de publicação, não a escassez de candidatos.
@@ -622,7 +665,7 @@ As fontes são buscadas e concatenadas na ordem do config. Pegar o começo dessa
 A seleção é por **rodízio entre origens** (`interleave_by_origin`), preservando o ranking interno de cada uma:
 
 ```
-desabafos[0], relacionamentos[0], conselhos[0], desabafos[1], ...
+EuSouOBabaca[0], story[0], stories[0], EuSouOBabaca[1], ...
 ```
 
 Isso mantém o ranking do Reddit como critério — continuamos pegando o melhor *disponível* de cada — e garante variedade de origem e tom entre vídeos consecutivos. Combinado com o dedup, o rodízio entre ciclos emerge sozinho, sem estado de rotação persistido.

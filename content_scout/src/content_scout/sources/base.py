@@ -78,6 +78,27 @@ class Source(Protocol):
 
 
 @runtime_checkable
+class ArchiveCapableSource(Protocol):
+    """Optional capability: a source whose back catalogue can be paged through.
+
+    Separate from ``Source`` for the same reason comments are — a feed with no
+    stable paging (or none worth the request budget) is still a valid source, and
+    the scout probes with ``isinstance`` and skips the sweep when it is absent.
+
+    ``subreddits`` is the list of origins the source covers; the scout needs it to
+    decide which one is due for a sweep. ``fetch_archive`` returns one page plus
+    the cursor for the next, with ``None`` meaning the listing is exhausted.
+    """
+
+    name: str
+    subreddits: list[str]
+
+    async def fetch_archive(
+        self, subreddit: str, after: str | None = None
+    ) -> tuple[list["Candidate"], str | None]: ...
+
+
+@runtime_checkable
 class CommentCapableSource(Protocol):
     """Optional capability: a source that can also return reactions to a candidate.
 

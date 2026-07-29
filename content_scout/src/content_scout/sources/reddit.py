@@ -180,6 +180,20 @@ def parse_comments(xml_text: str) -> CommentThread:
     return CommentThread(total=total, comments=comments)
 
 
+def _last_entry_id(xml_text: str) -> str | None:
+    """Id of the final entry in a feed, or ``None`` when the feed is empty.
+
+    This is the paging cursor, so it counts *every* entry — including the link
+    and image posts ``parse_feed`` discards. An empty feed is how Reddit says the
+    listing is exhausted.
+    """
+    root = ET.fromstring(xml_text)
+    entries = root.findall("a:entry", ATOM_NS)
+    if not entries:
+        return None
+    return _text(entries[-1], "a:id") or None
+
+
 def _text(entry: ET.Element, path: str) -> str:
     el = entry.find(path, ATOM_NS)
     return (el.text or "") if el is not None else ""
@@ -204,7 +218,8 @@ class RedditSource:
 
     def __init__(self, base_url: str, subreddits: list[str], time_filter: str,
                  limit_per_subreddit: int, user_agent: str, timeout: int = 20,
-                 request_delay: float = 60.0, comments_limit: int = 0):
+                 request_delay: float = 60.0, comments_limit: int = 0,
+                 archive_time_filter: str = "all", archive_limit: int = 15):
         self._base_url = base_url.rstrip("/")
         self._subreddits = subreddits
         self._time_filter = time_filter
@@ -212,13 +227,36 @@ class RedditSource:
         self._user_agent = user_agent
         self._timeout = timeout
         self._comments_limit = comments_limit
+        self._archive_time_filter = archive_time_filter
+        self._archive_limit = archive_limit
         self._throttle = shared_throttle(request_delay)
+
+    @property
+    def subreddits(self) -> list[str]:
+        """The configured subreddits. The scout needs them to pick a sweep target."""
+        return list(self._subreddits)
 
     def feed_url(self, subreddit: str) -> str:
         return (
             f"{self._base_url}/r/{subreddit}/top/.rss"
             f"?t={self._time_filter}&limit={self._limit}"
         )
+
+    def archive_url(self, subreddit: str, after: str | None = None) -> str:
+        """One page of a subreddit's all-time top.
+
+        ``count`` travels with ``after``: Reddit treats it as how many items have
+        already been consumed, and the pair is what makes the listing advance.
+        Sending ``after`` alone works on the first page and then starts repeating
+        results, so the two are always written together.
+        """
+        url = (
+            f"{self._base_url}/r/{subreddit}/top/.rss"
+            f"?t={self._archive_time_filter}&limit={self._archive_limit}"
+        )
+        if after:
+            url += f"&count={self._archive_limit}&after={after}"
+        return url
 
     def comments_url(self, external_id: str) -> str:
         """Comment feed for a submission, built from its fullname.
@@ -287,6 +325,42 @@ class RedditSource:
             candidates.extend(found)
 
         return candidates
+
+    async def fetch_archive(
+        self, subreddit: str, after: str | None = None
+    ) -> tuple[list[Candidate], str | None]:
+        """One page of the all-time top, plus the cursor for the page after it.
+
+        Returns ``(candidates, next_after)``. ``next_after`` is ``None`` when the
+        listing ran out, which the caller reads as "wrap back to the top" — the
+        sweep is a loop over a finite archive, not an infinite feed.
+
+        The cursor is the id of the last *entry* in the feed, not the last
+        candidate: entries without a usable body are dropped by ``parse_feed``,
+        and paging from the last surviving candidate would silently re-request
+        everything after the dropped tail on the next sweep.
+        """
+        xml_text = await self._get(
+            self.archive_url(subreddit, after), subreddit=subreddit, archive=True
+        )
+        if xml_text is None:
+            return [], after
+
+        try:
+            found = parse_feed(xml_text, subreddit)
+            last_entry_id = _last_entry_id(xml_text)
+        except ET.ParseError as exc:
+            log.warning("reddit_archive_unparseable", subreddit=subreddit, error=str(exc))
+            return [], after
+
+        log.info(
+            "reddit_archive_fetched",
+            subreddit=subreddit,
+            candidates=len(found),
+            after=after,
+            next_after=last_entry_id,
+        )
+        return found, last_entry_id
 
     async def fetch_comments(self, candidate: Candidate) -> CommentThread | None:
         """Reactions to one candidate, or ``None`` when they could not be read.

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +16,7 @@ from src.content_scout.clients.llm import (
     Verdict,
 )
 from src.content_scout.clients.orchestrator import OrchestratorClient
-from src.content_scout.db.models import SeenItem, SeenStatus
+from src.content_scout.db.models import ArchiveCursor, SeenItem, SeenStatus
 from src.content_scout.scout import interleave_by_origin, run_cycle
 from src.content_scout.sources.base import Candidate, Comment, CommentThread
 from src.core import settings
@@ -31,14 +32,41 @@ class FakeSource:
         return list(self._candidates)
 
 
+class FakeArchiveSource(FakeSource):
+    """A source whose back catalogue can be paged, for the sweep tests.
+
+    ``pages`` maps the incoming cursor to ``(candidates, next_cursor)``, so a test
+    spells out the exact listing the sweep walks — including the empty page that
+    means the archive ran out.
+    """
+
+    def __init__(self, candidates, subreddits, pages=None):
+        super().__init__(candidates)
+        self.subreddits = subreddits
+        self._pages = pages or {}
+        self.archive_calls: list[tuple[str, str | None]] = []
+
+    async def fetch_archive(self, subreddit, after=None):
+        self.archive_calls.append((subreddit, after))
+        return self._pages.get(after, ([], None))
+
+
 def _candidate(external_id: str, chars: int = 1000, title: str = "Título",
-               origin: str = "r/desabafos") -> Candidate:
+               origin: str = "r/desabafos", text: str | None = None) -> Candidate:
+    """A candidate with a body unique to its id, at exactly ``chars`` characters.
+
+    The id has to leak into the text: bodies are fingerprinted for repost
+    detection, so a helper that gave every candidate the same ``"aaa…"`` would
+    make every candidate after the first a duplicate of it. Slicing back to
+    ``chars`` keeps the length assertions (``too_short:100``) exact.
+    """
+    body = text if text is not None else (external_id + "a" * chars)[:chars]
     return Candidate(
         source="reddit",
         external_id=external_id,
         origin=origin,
         title=title,
-        text="a" * chars,
+        text=body,
         url=f"https://reddit.com/{external_id}",
     )
 
@@ -136,6 +164,25 @@ def story_quality(monkeypatch):
 
     monkeypatch.setattr(StoryQualityClient, "score", fake_score)
     return SimpleNamespace(calls=calls, set=scores.update)
+
+
+@pytest.fixture(autouse=True)
+def archive_off(monkeypatch):
+    """The sweep is off unless a test asks for it.
+
+    Every pre-existing test uses a source with no archive capability, so this
+    changes nothing for them — but it keeps a config edit from silently turning
+    the sweep on across the whole suite.
+    """
+    monkeypatch.setattr(settings.CONFIG.reddit, "archive_interval_hours", 0)
+
+
+@pytest.fixture
+def archive_on(monkeypatch):
+    def _set(interval_hours=6):
+        monkeypatch.setattr(settings.CONFIG.reddit, "archive_interval_hours", interval_hours)
+    _set()
+    return _set
 
 
 @pytest.fixture
@@ -899,3 +946,251 @@ async def test_seen_endpoint_filters_by_story_tag(
     assert [row["external_id"] for row in weak] == ["t3_ruim"]
     assert weak[0]["story_score"] == 1
     assert weak[0]["has_hook"] is False
+
+
+# ============================================================== archive sweep
+
+
+async def _cursors(session):
+    result = await session.execute(select(ArchiveCursor).order_by(ArchiveCursor.origin))
+    return result.scalars().all()
+
+
+async def _age_cursor(session, origin: str, hours: float):
+    """Backdate a cursor so the sweep comes due again."""
+    cursor = (await session.execute(
+        select(ArchiveCursor).where(ArchiveCursor.origin == origin)
+    )).scalar_one()
+    cursor.last_swept_at = datetime.now(timezone.utc) - timedelta(hours=hours)
+    await session.commit()
+
+
+async def test_sweep_pulls_archive_candidates_into_the_cycle(
+    archive_on, submissions, set_active_runs, budget, session
+):
+    source = FakeArchiveSource(
+        [_candidate("t3_live", origin="r/story")],
+        subreddits=["story"],
+        pages={None: ([_candidate("t3_old", origin="r/story")], "t3_old")},
+    )
+
+    report = await run_cycle([source])
+
+    assert report.archive_swept == "r/story"
+    assert report.archive_fetched == 1
+    # From here on the live feed and the archive page are one candidate pool.
+    assert {c["metadata"]["url"] for c in submissions} == {
+        "https://reddit.com/t3_live",
+        "https://reddit.com/t3_old",
+    }
+
+
+async def test_sweep_records_and_advances_the_cursor(
+    archive_on, submissions, set_active_runs, budget, session
+):
+    source = FakeArchiveSource(
+        [], subreddits=["story"],
+        pages={None: ([_candidate("t3_p1", origin="r/story")], "t3_p1")},
+    )
+
+    await run_cycle([source])
+
+    rows = await _cursors(session)
+    assert len(rows) == 1
+    assert rows[0].origin == "r/story"
+    assert rows[0].after_id == "t3_p1"
+    assert rows[0].pages_read == 1
+
+
+async def test_sweep_does_not_run_again_before_the_interval(
+    archive_on, submissions, set_active_runs, budget, session
+):
+    """A sweep costs a rate-limit window; running one per cycle is what the
+    cadence exists to prevent."""
+    source = FakeArchiveSource(
+        [], subreddits=["story"],
+        pages={None: ([_candidate("t3_p1", origin="r/story")], "t3_p1")},
+    )
+
+    first = await run_cycle([source])
+    second = await run_cycle([source])
+
+    assert first.archive_swept == "r/story"
+    assert second.archive_swept is None
+    assert len(source.archive_calls) == 1
+
+
+async def test_sweep_resumes_from_the_cursor_once_due(
+    archive_on, submissions, set_active_runs, budget, session
+):
+    source = FakeArchiveSource(
+        [], subreddits=["story"],
+        pages={
+            None: ([_candidate("t3_p1", origin="r/story")], "t3_p1"),
+            "t3_p1": ([_candidate("t3_p2", origin="r/story")], "t3_p2"),
+        },
+    )
+
+    await run_cycle([source])
+    await _age_cursor(session, "r/story", hours=7)
+    report = await run_cycle([source])
+
+    assert source.archive_calls == [("story", None), ("story", "t3_p1")]
+    assert report.archive_fetched == 1
+    rows = await _cursors(session)
+    assert rows[0].after_id == "t3_p2"
+    assert rows[0].pages_read == 2
+
+
+async def test_exhausted_archive_wraps_back_to_the_top(
+    archive_on, submissions, set_active_runs, budget, session
+):
+    """The archive is finite. Running off the end resets to the top, and what the
+    next lap re-reads is already in seen_items, so it cannot republish."""
+    source = FakeArchiveSource(
+        [], subreddits=["story"],
+        pages={
+            None: ([_candidate("t3_p1", origin="r/story")], "t3_p1"),
+            "t3_p1": ([], None),
+        },
+    )
+
+    await run_cycle([source])
+    await _age_cursor(session, "r/story", hours=7)
+    report = await run_cycle([source])
+
+    assert report.archive_wrapped is True
+    rows = await _cursors(session)
+    assert rows[0].after_id is None
+    assert rows[0].pages_read == 0
+
+
+async def test_never_swept_subreddit_goes_first(
+    archive_on, submissions, set_active_runs, budget, session
+):
+    """A newly configured sub must not wait out the rotation behind the others."""
+    source = FakeArchiveSource(
+        [], subreddits=["story", "stories"], pages={None: ([], "t3_x")},
+    )
+
+    await run_cycle([source])   # picks "story" — nothing has been swept yet
+    await run_cycle([source])   # "stories" still has no cursor, so it is next
+
+    assert [call[0] for call in source.archive_calls] == ["story", "stories"]
+
+
+async def test_only_one_sweep_per_cycle(
+    archive_on, submissions, set_active_runs, budget, session
+):
+    """What is being protected is the shared rate-limit window."""
+    source = FakeArchiveSource(
+        [], subreddits=["story", "stories"], pages={None: ([], "t3_x")},
+    )
+
+    await run_cycle([source])
+
+    assert len(source.archive_calls) == 1
+
+
+async def test_sweep_failure_does_not_take_down_the_cycle(
+    archive_on, submissions, set_active_runs, budget, session
+):
+    """The archive is extra supply on top of the live feeds, never a blocker."""
+    class ExplodingArchive(FakeArchiveSource):
+        async def fetch_archive(self, subreddit, after=None):
+            raise RuntimeError("reddit em chamas")
+
+    source = ExplodingArchive([_candidate("t3_live")], subreddits=["story"])
+
+    report = await run_cycle([source])
+
+    assert report.archive_swept is None
+    assert report.submitted == 1
+
+
+async def test_sweep_is_disabled_by_zero_interval(
+    submissions, set_active_runs, budget, monkeypatch, session
+):
+    monkeypatch.setattr(settings.CONFIG.reddit, "archive_interval_hours", 0)
+    source = FakeArchiveSource(
+        [], subreddits=["story"], pages={None: ([_candidate("t3_p1")], "t3_p1")},
+    )
+
+    report = await run_cycle([source])
+
+    assert source.archive_calls == []
+    assert report.archive_swept is None
+    assert await _cursors(session) == []
+
+
+# ======================================================== repost deduplication
+
+
+async def test_same_story_under_a_new_id_is_skipped(
+    submissions, set_active_runs, budget, session
+):
+    """``external_id`` only catches the identical post. The sweep reaches into
+    subs that repost each other, so the same story genuinely arrives twice."""
+    story = "Minha sogra jogou meu bolo no chão. " * 30
+    await run_cycle([FakeSource([_candidate("t3_original", text=story)])])
+
+    report = await run_cycle([
+        FakeSource([_candidate("t3_repost", text=story, origin="r/stories")])
+    ])
+
+    assert report.duplicate_story == 1
+    assert report.submitted == 0
+    rows = await _seen_rows(session)
+    repost = next(r for r in rows if r.external_id == "t3_repost")
+    assert repost.status == SeenStatus.filtered
+    assert repost.skip_reason == "duplicate_story"
+
+
+async def test_repost_is_caught_even_when_reformatted(
+    submissions, set_active_runs, budget, session
+):
+    story = "Minha sogra jogou meu bolo no chão. " * 30
+    retyped = story.lower().replace(".", "!").replace("ã", "a")
+
+    await run_cycle([FakeSource([_candidate("t3_original", text=story)])])
+    report = await run_cycle([FakeSource([_candidate("t3_repost", text=retyped)])])
+
+    assert report.duplicate_story == 1
+
+
+async def test_two_copies_in_the_same_cycle_are_caught(
+    submissions, set_active_runs, budget, session
+):
+    """Neither is in the database yet, so a lookup alone would let both through."""
+    story = "Meu chefe chorou na reunião inteira. " * 30
+
+    report = await run_cycle([FakeSource([
+        _candidate("t3_first", text=story),
+        _candidate("t3_second", text=story, origin="r/stories"),
+    ])])
+
+    assert report.duplicate_story == 1
+    assert report.submitted == 1
+
+
+async def test_distinct_stories_are_not_confused(
+    submissions, set_active_runs, budget, session
+):
+    report = await run_cycle([FakeSource([
+        _candidate("t3_a", text="Minha sogra jogou meu bolo no chão. " * 30),
+        _candidate("t3_b", text="Meu vizinho devolveu minha bicicleta. " * 30),
+    ])])
+
+    assert report.duplicate_story == 0
+    assert report.submitted == 2
+
+
+async def test_fingerprint_is_stored_for_rejected_rows_too(
+    submissions, set_active_runs, budget, session
+):
+    """A repost of a story that was filtered for length is still a repost."""
+    await run_cycle([FakeSource([_candidate("t3_curto", chars=50)])])
+
+    rows = await _seen_rows(session)
+    assert rows[0].status == SeenStatus.filtered
+    assert rows[0].content_fingerprint is not None

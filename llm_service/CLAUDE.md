@@ -54,6 +54,14 @@ O prompt anterior cortava em 600 palavras (~1 min), o que fatiava uma história 
 
 `tests/test_split_policy.py` (8) fixa o teto, sua derivação a partir de minutos e as cláusulas do prompt.
 
+### Idioma de saída do refino
+
+O prompt manda **sempre** devolver o roteiro em português do Brasil, traduzindo quando o roteiro bruto vier em outro idioma — recontando em português, não ao pé da letra (gírias, medidas e moeda viram o equivalente brasileiro; nomes próprios ficam).
+
+**Por que existe.** O `content_scout` passou a buscar em `r/story` e `r/stories`, que são em inglês e é onde mora o gênero "história escrita para entreter". Sem essa regra o prompt só dizia "preserve o conteúdo e a essência", e o roteiro sairia em inglês — indo direto para um TTS configurado em pt-BR. A regra é inócua para as fontes em português, que já chegam no idioma certo.
+
+O `POST /story-quality` também foi avisado de que as aberturas podem vir em inglês: julga a história, nunca o idioma. `reason` continua saindo em português; `hook_line` sai copiada do original, no idioma dele — a tradução acontece depois, no refino.
+
 ### Frase gancho (`hook`)
 
 O gancho era só uma regra de escrita no prompt; virou campo porque o orchestrador narra essa frase num arquivo próprio (`audio/{run_id}/hook.mp3`) e, para isso, precisa saber onde ela termina.
@@ -102,7 +110,9 @@ Erros: `502` se o LLM falhar ou devolver JSON sem veredito. O chamador precisa d
 
 ⚠️ **Degrada por item, não por lote.** Veredito malformado é descartado e os outros voltam — o chamador trata veredito ausente como "não avaliado" e cai de volta no ranking da fonte. Nota fora de 0–10 é **clampada**, não rejeitada: um número ruim não pode custar o veredito de todos os outros. Já uma resposta que não rende **nenhum** veredito utilizável é `502` — isso é falha, não resultado vazio. Lista vazia na entrada devolve 200 sem chamar o LLM.
 
-`prompts/story.py` traz a anatomia do gancho em quatro partes (relação concreta, conflito em curso, promessa de desfecho, curiosidade não resolvida), com exemplo forte e exemplos fracos, e a régua de 0–10 que põe post comum de fórum em 4–6. O prompt é explícito em separar qualidade narrativa de aceitabilidade do assunto — essa decisão é da moderação.
+`prompts/story.py` traz a anatomia do gancho em quatro partes (relação concreta, conflito em curso, promessa de desfecho, curiosidade não resolvida), com exemplos fortes e fracos, e a régua de 0–10 que põe post comum de fórum em 4–6. O prompt é explícito em separar qualidade narrativa de aceitabilidade do assunto — essa decisão é da moderação.
+
+⚠️ **A pergunta ao fórum só desconta quando SUBSTITUI a história.** A versão anterior descontava por "pergunta direta ao fórum" sem qualificar, e isso passou a ser um autogol quando o corpus virou `r/EuSouOBabaca`: *todo* post de lá é literalmente "Sou babaca por…?". A pergunta que vem **depois** do conflito e pede um veredito sobre ele é estrutura de história e das boas — o que desconta é a pergunta que aparece no lugar da cena. Sem essa distinção o melhor corpus disponível tiraria nota baixa pelo motivo errado.
 
 **Modelo próprio.** `LLM_STORY_MODEL`, com fallback para `LLM_MODEL`. Não compartilha o modelo da moderação: julgar craft narrativo sobre um lote é mais difícil que um sim/não.
 

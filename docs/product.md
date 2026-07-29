@@ -16,7 +16,13 @@ O sistema funciona completamente sozinho depois que você submete o roteiro. Voc
 
 Antes de tudo isso, existe a pergunta de onde vem o roteiro. O sistema consegue encontrá-los sozinho, sem ninguém escrever nada.
 
-Periodicamente, ele varre comunidades do Reddit em português — desabafos, relatos de relacionamento, pedidos de conselho — e pega as histórias mais votadas da semana. Cada história vira um roteiro candidato e entra no pipeline normal, exatamente como se você tivesse colado o texto à mão.
+Periodicamente, ele varre comunidades do Reddit dedicadas a **contar histórias** e pega as mais votadas da semana. Cada história vira um roteiro candidato e entra no pipeline normal, exatamente como se você tivesse colado o texto à mão.
+
+**As comunidades mudaram, e o motivo importa.** Antes o sistema lia desabafos, relatos de relacionamento e pedidos de conselho. Esses lugares são ótimos para quem precisa desabafar, mas ninguém escreve neles com intenção de entreter — não tem virada, não tem final. Agora ele lê comunidades onde as pessoas escrevem *para serem lidas*: uma em português onde cada post é um dilema pedindo julgamento ("sou babaca por…?"), e duas em inglês que são as maiores comunidades de história do Reddit. As histórias em inglês são traduzidas para português na etapa de refinamento, recontadas em vez de traduzidas ao pé da letra.
+
+**Ele também vasculha o passado, não só a semana.** De tempos em tempos o sistema volta ao acervo de uma das comunidades e lê um pedaço das melhores histórias de todos os tempos — e a cada vez avança um pouco mais fundo, em vez de reler as mesmas quinze para sempre. Isso significa que a fila não depende de a semana ter sido boa: existem anos de história boa parada lá atrás.
+
+**E ele não conta a mesma história duas vezes, mesmo repostada.** O sistema já sabia não repetir um post que já usou. O problema é que a mesma história aparece de novo, meses depois, postada por outra pessoa, com outro título — coisa comum nessas comunidades. Agora ele guarda uma "impressão digital" do texto e reconhece a história mesmo redigitada, com outra pontuação ou sem acentos. Se reconhecer, descarta e anota o motivo.
 
 **Por que Reddit e não vídeos do YouTube:** a ideia de baixar vídeos populares e transcrevê-los foi considerada e descartada por três motivos. A transcrição de um vídeo é literalmente o roteiro de outra pessoa, o que é copiar e não se inspirar. Visualizações medem o canal e a thumbnail, não a qualidade do texto — seria otimizar pelo sinal errado. E o custo é muito maior: baixar e transcrever leva minutos por vídeo, enquanto um post do Reddit já chega pronto em texto. O YouTube ainda pode entrar depois, mas como **descobridor de temas** que estão performando, para o sistema escrever um roteiro original sobre o assunto.
 

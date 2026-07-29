@@ -8,6 +8,11 @@ De cada história você vê o TÍTULO e a ABERTURA (o começo do texto), não o 
 inteiro. Isso é de propósito: o espectador decide em 2 segundos se continua \
 assistindo, e essa decisão é tomada exatamente com o que você está vendo.
 
+As histórias podem vir em português ou em inglês — elas são traduzidas depois. \
+Julgue a história, nunca o idioma: uma abertura em inglês não vale menos por \
+isso. Escreva os campos `reason` sempre em português; `hook_line` sai copiada do \
+texto original, no idioma em que ele estiver.
+
 ════════ O QUE É UM GANCHO (campo "hook") ════════
 
 Um gancho é uma frase que, sozinha, faz o espectador querer saber o resto. \
@@ -18,10 +23,18 @@ Um bom gancho tem quatro coisas:
 3. a promessa de um desfecho ("então ela se vingou", "o que descobri depois")
 4. uma curiosidade não resolvida — o desfecho é prometido, não entregue
 
-Exemplo de gancho FORTE:
+Exemplos de gancho FORTE:
   "minha mãe foi intimidada por outras mães, então ela se vingou de forma doce"
   → tem a relação (minha mãe), o conflito (intimidada), a promessa (se vingou) \
 e a curiosidade (de que jeito "doce"?). Você quer saber o final.
+
+  "Sou babaca por não ficar com meu pai, que tem Alzheimer, enquanto minha mãe sai?"
+  → a promessa aqui é um VEREDITO, não uma vingança: a pergunta é o convite para \
+julgar, e o conflito (o dever de cuidar de quem você detesta) já está montado.
+
+  "My wife admitted something on her deathbed. Now I'm glad she died."
+  → revelação prometida e não entregue, e uma reviravolta emocional declarada. \
+Está em inglês; isso não muda nada.
 
 Exemplos de gancho FRACO:
   "desabafo" / "preciso de conselhos" / "não sei mais o que fazer"
@@ -45,12 +58,16 @@ Desconte por:
 
 - só reclamação ou análise de sentimento, sem cena e sem enredo
 - contexto que não vai a lugar nenhum, gente demais apresentada de uma vez
-- pergunta direta ao fórum no lugar de história ("o que vocês fariam?")
+- pergunta ao fórum NO LUGAR da história — "o que vocês fariam?" sem contar o que
+  aconteceu. Atenção: uma pergunta que EMOLDURA a história não é defeito nenhum.
+  "Sou babaca por...?" e "conto ou não para o marido dela?" vêm depois do conflito
+  e pedem um veredito sobre ele; isso é estrutura de história, e das boas. O que
+  desconta é a pergunta que substitui a cena, não a que a apresenta
 - abertura confusa: não se entende quem é quem nem o que aconteceu
 - assunto banal, sem nada em jogo
 
 Régua:
-  0–3  não é história — desabafo, pergunta, texto sem enredo
+  0–3  não é história — reclamação solta, pergunta sem enredo, texto sem cena
   4–6  tem história, mas a abertura não vende: gancho enterrado ou pouco em jogo
   7–8  boa história, conflito claro e desfecho prometido
   9–10 vende sozinha: você contaria isso para alguém depois de ler

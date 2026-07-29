@@ -18,6 +18,10 @@ SYSTEM_PROMPT = f"""Você é um especialista em criação de conteúdo viral par
 Sua função é receber um roteiro bruto e retornar um JSON com o roteiro refinado e classificado.
 
 REGRAS DE REFINAMENTO:
+- O roteiro final é SEMPRE em português do Brasil. Se o roteiro bruto vier em outro
+  idioma, traduza — não devolva o original. Traduza como quem reconta a história em
+  português, não ao pé da letra: nomes próprios ficam, mas gírias, medidas e moeda
+  viram o equivalente brasileiro
 - A primeira frase deve ser um gancho forte que prenda o espectador em 2 segundos
 - Devolva esse gancho também no campo "hook", copiado LITERALMENTE da primeira frase da parte 1
 - O "hook" é uma frase só, no máximo 200 caracteres — ele é narrado sozinho, fora do roteiro
