@@ -33,7 +33,7 @@ Usuário → dashboard / API ─┴─ POST /pipeline  { script: "...", metadata
   ├─ cria pipeline_run no DB (status: pending)
   │
   ├─ 1. REFINAR → llm_service
-  │     └─ melhora ganchos, CTAs, fluxo narrativo
+  │     └─ melhora ganchos e fluxo narrativo (CTA fica fora do texto narrado)
   │     └─ classifica: público-alvo, tom, tipo de conteúdo
   │     └─ decide se divide em partes (e onde cortar com cliffhanger)
   │     └─ gera resumo das partes anteriores (para parte 2+)
@@ -136,6 +136,10 @@ O `llm_service` retorna um objeto de classificação junto com o roteiro refinad
 ```
 
 O schema é armazenado como JSONB no DB do orchestrador. Novos campos são adicionados sem migração.
+
+**`cta_per_part` é legenda, não roteiro.** O prompt de refino pedia que *cada parte terminasse com um CTA*, e as partes são narradas literalmente (`text=part.script`) — o CTA era falado no vídeo, depois do desfecho da história. São dois artefatos diferentes com o mesmo nome: o campo, que o `tiktok_poster` usa em `compose_caption()`, e uma frase escrita dentro do texto narrado. O primeiro fica; o segundo saiu do prompt, junto com qualquer outra forma de finalização (despedida, moral, "e é isso"). O texto narrado termina na última coisa que acontece na história.
+
+O corte com cliffhanger continua valendo: um corte no meio da tensão é parte da história, não uma finalização colada nela.
 
 ---
 
@@ -359,6 +363,25 @@ Isso *era* documentado como problema de asset, e era, enquanto todo render compa
 
 `MAX_BACKGROUND_REPEATS` (60) limita o caso degenerado: um arquivo quase vazio pediria milhares de strips. Passando disso o final volta a ficar preto, que é o comportamento antigo.
 
+**Coerção de tipo na fronteira do RNA.** `background_repeats()` recebe `strip.frame_start` e `strip.frame_duration`, que o Blender devolve como **float**, e `sequences.new_movie()` aceita só `int` — a repetição morria com `TypeError` no meio da montagem. Nunca apareceu em produção porque um clipe mais longo que a narração não pede repetição nenhuma, e o float então nunca chega à API; apareceu no primeiro render de validação com clipe curto. Os números são convertidos dentro da função pura, não no chamador, para que a regra e a coerção sejam testadas juntas.
+
+### O vídeo não tem finalização
+
+O último frame do vídeo é a última palavra da narração. Não existe cartela de encerramento, bloco de outro nem batida final — e as chaves `timing.outro_start` / `timing.outro_end` do `template.json`, herdadas do rascunho, nunca foram lidas por código algum. Saíram do template versionado, porque uma configuração que descreve uma etapa inexistente é pior que nenhuma: a próxima sessão a implementa.
+
+A única marca de encerramento é a **trilha sumindo por baixo da última frase**: `music_fade_start()` conta o fade de trás para frente, `last_frame - fade_frames`, com `music.fade_out_seconds` (1,5s por padrão) no template.
+
+**Por que contar do fim e não de um frame fixo.** `timing.music_fade_out` era o frame 840 contra um `frame_end` de 900 — 2 segundos de fade no rascunho de 30s para o qual foi escrito. Com `frame_end` passando a ser decidido pela narração, esse número virou outra coisa: quando o vídeo é **mais curto** que 840 frames, os keyframes entram fora de ordem (1, 840, 701) e o Blender os reordena por frame, deixando `0.2 → 0.0 → 0.2`. O resultado é o vídeo inteiro em declínio.
+
+Medido no mesmo timeline de validação — 23,37s / 701 frames, trilha isolada (voz mutada no mixdown, senão as últimas palavras dominam a janela justamente onde o fade acontece):
+
+- **Antigo** (keyframes 1/840/701, janelas de 2s): -26,1 dBFS em 0s → -33,6 em 12s → -55,7 em 20s → **-73,4 no fim**. Queda contínua do primeiro ao último segundo.
+- **Agora** (keyframes 1/656/701, janelas de 0,5s): -26,0 dBFS em 0s, ainda -26,0 em 21,0s, -26,0 em 21,5s, então -27,6 em 22,0s, -33,9 em 22,5s e -49,0 na última janela. O volume só se move nos 1,5s finais.
+
+Era este o defeito por trás da impressão de "trilha que não está lá": ela estava no arquivo, no canal certo, no volume certo — e em queda desde o primeiro segundo.
+
+**Segundos, não frames, na configuração.** Um fade é uma duração musical: o mesmo número tem que significar o mesmo encerramento a 30 ou a 60fps. `music_fade_frames()` faz a conversão; `0` desliga o fade (é como um template diz "sem fade"), e um timeline sem espaço para o fade não recebe keyframe nenhum em vez de recebê-los antes do próprio início da trilha.
+
 ### Rotação de fundo (`orchestrator/backgrounds.py`)
 
 `pick_background(keys, run_id, part_number)` escolhe o clipe de cada parte entre os objetos publicados sob `[template] background_prefix`.
@@ -434,9 +457,9 @@ Trocado por uma faixa real (`assets/music/lofi-goularte.mp3`). Medido no render 
 
 O prefixo `assets/music/` já é o formato de biblioteca dos fundos, então acrescentar faixas é subir arquivo; o rodízio entre elas ainda não está ligado (com uma faixa só seria no-op).
 
-**Duas coisas que a trilha real expôs e ainda não foram resolvidas:**
+**A trilha real expôs dois problemas. O primeiro está resolvido:**
 
-- **O fade começa cedo demais.** `timing.music_fade_out` é o frame 840 (28s), número escrito quando `frame_end` era 900 (30s) — a trilha sumia "ao final". Com vídeos de 50-60s ela agora começa a sumir na metade e chega a zero no fim, ou seja, mais da metade do vídeo com a música em declínio. O conserto é o fade passar a ser contado a partir do fim (*N* segundos antes de `frame_end`) em vez de um frame fixo.
+- ~~**O fade começa cedo demais.**~~ **Resolvido.** O fade passou a ser contado a partir do fim (`music.fade_out_seconds`, 1,5s), e `timing.music_fade_out` não é mais lido. Ver "O vídeo não tem finalização" — inclusive a medição de quanto a trilha estava sendo perdida.
 - **Só o primeiro minuto da faixa é ouvido.** O strip começa sempre no 0:00 do arquivo, então uma mix de 34 minutos rende sempre o mesmo trecho, e os 32 MB são baixados a cada render. Alternativas: cortar um trecho curto, ou dar um deslocamento determinístico de entrada por vídeo (`frame_offset_start`), no mesmo espírito do rodízio de fundos.
 
 ---

@@ -9,7 +9,12 @@ REGRAS DE REFINAMENTO:
 - Cada parte deve ter no máximo 600 palavras (~60 segundos de fala)
 - Se o roteiro ultrapassar 600 palavras, divida em partes com cliffhanger no corte
 - Para partes 2+: inicie com um resumo curto ("Na parte anterior, [resumo de 1-2 frases]...")
-- Cada parte termina com um CTA claro e específico (ex: "Comenta o que você faria no lugar dela 👇")
+- O texto narrado TERMINA quando a história termina: a última frase é a última \
+coisa que acontece na história, e nada vem depois dela
+- Não escreva finalização de nenhum tipo no texto narrado — sem CTA, sem \
+despedida, sem moral, sem pedir like/follow/comentário, sem "e é isso"
+- O CTA vive só no campo "cta_per_part", que vira legenda do post — nunca no \
+texto que é narrado
 - Preserve o conteúdo e a essência do roteiro original — apenas melhore a apresentação
 
 REGRAS DE CLASSIFICAÇÃO:
@@ -41,7 +46,7 @@ Retorne um JSON com esta estrutura exata:
       "gender": "female",
       "interests": ["relationships", "drama"]
     }},
-    "cta_per_part": ["CTA da parte 1", "CTA da parte 2"],
+    "cta_per_part": ["CTA da parte 1 — só para a legenda, fora do texto narrado", "CTA da parte 2"],
     "hashtag_hints": ["#hashtag1", "#hashtag2"],
     "split_rationale": "razão do corte ou null se não dividido"
   }}

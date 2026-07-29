@@ -33,7 +33,7 @@ Serviço de refinamento e classificação de roteiros via LLM. Expõe `POST /ref
 - `classification.content_type` — drama / comédia / motivacional / educativo / entretenimento / suspense
 - `classification.tone` — suspenseful / funny / emotional / educational / inspirational / shocking
 - `classification.target_audience` — `{age_range, gender, interests}`
-- `classification.cta_per_part` — CTA para cada parte
+- `classification.cta_per_part` — CTA para cada parte, **só para a legenda do post** (ver abaixo)
 - `classification.hashtag_hints` — 5–8 hashtags sugeridas
 - `classification.split_rationale` — razão do corte ou `null`
 
@@ -50,6 +50,16 @@ O gancho era só uma regra de escrita no prompt; virou campo porque o orchestrad
 **O campo nunca volta vazio quando há roteiro.** O prompt pede o `hook` copiado literal da primeira frase da parte 1, mas o contrato não pode depender de o modelo obedecer — daí o fallback. Fim de frase = pontuação terminal (`. ! ? …` + aspas/parênteses de fechamento) **seguida de espaço**; exigir o espaço é o que impede `R$ 3.5 mil` de virar fim de frase.
 
 O gancho **não** é removido de `parts[0]` — o campo é uma cópia identificada, não um recorte. Quem monta o vídeo usa o áudio da parte; o áudio do gancho é artefato à parte.
+
+### O texto narrado não tem finalização (`prompts/refine.py`)
+
+O prompt pedia que **cada parte terminasse com um CTA** ("Comenta o que você faria 👇"). As partes vão literais para o TTS (`text=part.script` no orchestrador), então esse CTA era **falado no vídeo**, depois do desfecho da história. Regra removida, junto com qualquer outra forma de finalização — despedida, moral, "e é isso", pedido de like/follow. A última frase narrada é a última coisa que acontece na história.
+
+`cta_per_part` **continua existindo como campo**: quem o consome é o `tiktok_poster` em `compose_caption()`, na legenda do post. São dois artefatos com o mesmo nome, e só um deles estava no lugar errado. O prompt agora diz isso explicitamente, e o exemplo de JSON no user prompt marca o campo como "só para a legenda".
+
+O corte com cliffhanger não foi afetado — um corte no meio da tensão é parte da história.
+
+- Testes: `tests/test_refine.py` — dois testes de prompt, um garantindo que a regra do CTA no texto narrado não voltou, outro que o campo continua sendo pedido.
 
 ### Endpoint de moderação (`src/llm_service/api/routes/moderate.py`)
 
@@ -97,7 +107,7 @@ Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`). `ge
 
 ## Testes
 
-53 testes: `tests/test_refine.py` (9), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
+55 testes: `tests/test_refine.py` (11), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
 
 ```bash
 poetry run pytest

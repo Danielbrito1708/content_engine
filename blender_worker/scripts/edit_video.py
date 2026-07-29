@@ -77,6 +77,15 @@ DEFAULT_HOOK_TAIL_SECONDS = 0.3
 DEFAULT_CARD_Y = 0.5
 DEFAULT_CARD_FADE_FRAMES = 4
 
+# Music bed. The video has no outro: it ends when the narration ends, so the
+# only thing that marks the ending is the bed going quiet under the last words.
+# 1.5s is a beat and a half — long enough to read as an ending, short enough
+# that the music is still there while the story is being told.
+DEFAULT_MUSIC_FADE_SECONDS = 1.5
+# 13 LU below the narration in the measured mixdown: audible as a bed without
+# competing with the voice.
+DEFAULT_MUSIC_VOLUME = 0.2
+
 DEFAULT_TEXT_COLOR = (1.0, 1.0, 1.0, 1.0)
 DEFAULT_OUTLINE_COLOR = (0.0, 0.0, 0.0, 1.0)
 # Blender's own default (0.05) is a hairline that disappears over a bright
@@ -512,8 +521,15 @@ def background_repeats(clip_frames, first_start, needed_end, max_repeats=MAX_BAC
     if clip_frames < 1:
         return []
 
+    # Coerced because the caller reads these off a strip, and Blender's RNA hands
+    # back `frame_start`/`frame_duration` as floats while `new_movie` accepts only
+    # ints — the repeats then died with a TypeError mid-assembly. It never fired in
+    # production because a clip longer than the narration asks for no repeats at
+    # all, so the float never reached the API.
+    clip_frames = int(clip_frames)
+    next_start = int(round(first_start)) + clip_frames
+
     starts = []
-    next_start = first_start + clip_frames
     while next_start <= needed_end and len(starts) < max_repeats:
         starts.append(next_start)
         next_start += clip_frames
@@ -526,6 +542,41 @@ def extend_background(vse, path, channel, strip, needed_end):
     for start in starts:
         add_movie_strip(vse, path, channel, start)
     return len(starts)
+
+
+def music_fade_frames(config, frame_rate, default_seconds=DEFAULT_MUSIC_FADE_SECONDS):
+    """`music.fade_out_seconds` converted to frames.
+
+    Configured in seconds because a fade is a musical length, not a frame count:
+    the same number has to mean the same ending at any `frame_rate`.
+    """
+    seconds = float((config or {}).get("fade_out_seconds", default_seconds))
+    return round(seconds * frame_rate)
+
+
+def music_fade_start(last_frame, fade_frames, first_frame=1):
+    """Frame where the music starts fading out, counted back from the end.
+
+    Where the video ends is decided by the narration (`content_end_frame`), so a
+    fade anchored to a *frame number* in the template only lines up with the
+    length that template happened to be written for. `timing.music_fade_out` was
+    frame 840 against a `frame_end` of 900: a 2-second fade for a 30s draft, but
+    on a real 60s render the bed started dying halfway through the story and
+    spent the whole second half in decline. Under 28s it is worse: the keyframes
+    go in out of order (1, 840, `frame_end`), Blender sorts them by frame, and the
+    curve reads 0.2 → 0.0 → 0.2 — measured, the bed fell from -26 dBFS at 0s to
+    -73 dBFS at the end of a 23s video. That key is no longer read.
+
+    Returns None when there is nothing to fade — a non-positive `fade_frames`
+    (how a template turns the fade off) or a timeline with no room for one.
+    Clamped to `first_frame`: a video shorter than the fade ramps throughout
+    instead of getting keyframes before its own start.
+
+    Pure — frame arithmetic, tested without Blender.
+    """
+    if fade_frames <= 0 or last_frame <= first_frame:
+        return None
+    return max(first_frame, last_frame - fade_frames)
 
 
 def apply_volume_fade(strip, start_frame, fade_start_frame, end_frame, start_volume):
@@ -667,7 +718,7 @@ def main():
     background = add_movie_strip(vse, assets["video"], channels["video"], t["intro_start"] + 1)
 
     music_strip = add_sound_strip(vse, assets["music"], channels["music"], t["intro_start"] + 1)
-    music_strip.volume = 0.2
+    music_strip.volume = DEFAULT_MUSIC_VOLUME
 
     # Intro: the hook is read aloud over the comment card, and only then does the
     # narration start. Both assets are optional — a run whose hook TTS failed, or
@@ -747,13 +798,20 @@ def main():
     # would make the covering depend on a number that has not been decided yet.
     extend_background(vse, assets["video"], channels["video"], background, last_frame)
 
-    if "music_fade_out" in t:
+    # The only ending the video has: no outro card, no closing beat — the last
+    # narrated word is the last frame, with the bed fading under it.
+    fade_start = music_fade_start(
+        last_frame,
+        music_fade_frames(timing.get("music"), frame_rate),
+        first_frame=intro_start,
+    )
+    if fade_start is not None:
         apply_volume_fade(
             music_strip,
-            start_frame=t["intro_start"] + 1,
-            fade_start_frame=t["music_fade_out"],
+            start_frame=intro_start,
+            fade_start_frame=fade_start,
             end_frame=last_frame,
-            start_volume=0.2,
+            start_volume=DEFAULT_MUSIC_VOLUME,
         )
 
     # Render output format: MP4/H264/AAC
