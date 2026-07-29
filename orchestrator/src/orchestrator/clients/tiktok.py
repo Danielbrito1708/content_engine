@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import httpx
 
 from src.core import settings
@@ -22,19 +24,37 @@ class TikTokClient:
     def __init__(self):
         self._base = settings.CONFIG.services.tiktok_url
 
-    async def schedule(self, video_key: str, classification: dict, part_number: int, series_id: str) -> dict:
-        """Returns {"scheduled_at": "...", "buffer_update_id": "..."}"""
+    async def schedule(
+        self,
+        video_key: str,
+        classification: dict,
+        part_number: int,
+        series_id: str,
+        total_parts: int = 1,
+        follows_at: datetime | None = None,
+    ) -> dict:
+        """Returns {"scheduled_at": "...", "buffer_update_id": "..."}
+
+        ``follows_at`` é o horário já agendado da parte anterior. Mandado só em
+        partes 2+: é o que faz a continuação sair um intervalo depois dela, em
+        vez de cair no próximo horário livre do calendário do poster.
+        """
+        payload: dict = {
+            "video_key": video_key,
+            "classification": classification,
+            "part_number": part_number,
+            "series_id": series_id,
+            "total_parts": total_parts,
+        }
+        if follows_at is not None:
+            payload["follows_at"] = follows_at.isoformat()
+
         try:
             resp = await request(
                 "POST",
                 f"{self._base}/schedule",
                 timeout=30,
-                json={
-                    "video_key": video_key,
-                    "classification": classification,
-                    "part_number": part_number,
-                    "series_id": series_id,
-                },
+                json=payload,
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:

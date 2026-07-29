@@ -39,6 +39,21 @@ Serviço de refinamento e classificação de roteiros via LLM. Expõe `POST /ref
 
 Erros: `502` se o LLM retornar JSON inválido ou se a chamada à API falhar.
 
+### Política de divisão do roteiro (`src/llm_service/prompts/refine.py`)
+
+O padrão é **uma parte só**: a história completa num vídeo. Dividir é exceção e só acima de 30 minutos de fala.
+
+**API pública** (constantes exportadas):
+- `MAX_PART_MINUTES = 30` — teto de duração de um vídeo
+- `NARRATION_WPM = 170` — voz neural pt-BR (~150 wpm) acelerada pelo `narration.rate` do template (`+15%`)
+- `MAX_PART_WORDS = MAX_PART_MINUTES * NARRATION_WPM` (5100) — o número que vai no prompt, porque palavra é o que o modelo conta
+
+O prompt anterior cortava em 600 palavras (~1 min), o que fatiava uma história de 6000 caracteres em seis vídeos. O prompt também proíbe **resumir para caber** — sem isso o modelo troca a divisão por perda de conteúdo, que é pior e invisível.
+
+**Não há guarda determinística.** Reunir partes devolvidas contra a regra exigiria remover os "Na parte anterior..." e os CTAs de meio de história — reescrita, não validação. A obediência é auditável em `parts` e `split_rationale`.
+
+`tests/test_split_policy.py` (8) fixa o teto, sua derivação a partir de minutos e as cláusulas do prompt.
+
 ### Frase gancho (`hook`)
 
 O gancho era só uma regra de escrita no prompt; virou campo porque o orchestrador narra essa frase num arquivo próprio (`audio/{run_id}/hook.mp3`) e, para isso, precisa saber onde ela termina.
@@ -97,7 +112,7 @@ Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`). `ge
 
 ## Testes
 
-53 testes: `tests/test_refine.py` (9), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
+61 testes: `tests/test_refine.py` (9), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_split_policy.py` (8 — teto de 30 min e as cláusulas do prompt), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
 
 ```bash
 poetry run pytest

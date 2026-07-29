@@ -35,7 +35,7 @@ Usuário → dashboard / API ─┴─ POST /pipeline  { script: "...", metadata
   ├─ 1. REFINAR → llm_service
   │     └─ melhora ganchos, CTAs, fluxo narrativo
   │     └─ classifica: público-alvo, tom, tipo de conteúdo
-  │     └─ decide se divide em partes (e onde cortar com cliffhanger)
+  │     └─ devolve a história inteira; só divide acima de 30 min de fala
   │     └─ gera resumo das partes anteriores (para parte 2+)
   │     └─ devolve a frase gancho isolada (campo `hook`)
   │
@@ -55,7 +55,7 @@ Usuário → dashboard / API ─┴─ POST /pipeline  { script: "...", metadata
   │         └─ renderiza para output.mp4, salva no MinIO
   │
   └─ 4. AGENDAR → tiktok_poster
-        └─ agenda 2 posts por dia
+        └─ agenda 3 posts por dia; partes de uma série, 30 min uma da outra
         └─ otimiza hashtags com base na classificação + histórico
         └─ publica e coleta métricas
 ```
@@ -141,10 +141,44 @@ O schema é armazenado como JSONB no DB do orchestrador. Novos campos são adici
 
 ## Divisão em Partes
 
-- O LLM recebe o roteiro e decide se ele cabe em um único vídeo (≤ ~60s de fala) ou precisa ser dividido.
+**O padrão é não dividir.** A história completa vai num vídeo só; o LLM devolve `parts` com um elemento e `split_rationale` nulo. Dividir é a exceção, e só quando a narração passaria de **30 minutos** — `MAX_PART_MINUTES` em `llm_service/prompts/refine.py`.
+
+O formato anterior cortava em 600 palavras (~1 min de fala, segundo o prompt). Era o inverso da regra: uma história de 6000 caracteres — o teto de ingestão do scout — virava seis vídeos, cada um abrindo com "Na parte anterior..." e fechando com um CTA pedindo a próxima parte. O espectador que engatava na parte 1 precisava caçar mais cinco publicações, espalhadas por seis dias (ver "Agendamento de séries"), para chegar ao fim de uma história de seis minutos. Vídeo longo com história inteira retém melhor que seis fragmentos porque não pede nenhuma ação para continuar.
+
 - Se dividido, o LLM escolhe o ponto de corte que maximize a curiosidade (cliffhanger natural).
 - Para partes 2+, o LLM gera um resumo curto ("Na parte anterior...") que é inserido no início do roteiro daquela parte antes de ir para o TTS.
-- O orchestrador cria um `pipeline_part` por parte e processa cada uma em sequência.
+- O orchestrador cria um `pipeline_part` por parte e processa cada uma em sequência. Nada nessa mecânica mudou — o que mudou é quantas partes existem, que no caso normal passou a ser uma.
+
+**O teto é declarado em minutos e traduzido para palavras.** `MAX_PART_WORDS = MAX_PART_MINUTES × NARRATION_WPM` (30 × 170 = 5100). O prompt fala em palavras porque é o que o modelo consegue contar; minutos é o que a regra significa. `NARRATION_WPM = 170` sai de voz neural pt-BR em ~150 wpm acelerada pelo `narration.rate` do template (`+15%`) — é estimativa, e a única decisão que depende dela é o corte em 30 minutos, muito acima do que um roteiro real ocupa.
+
+**O prompt proíbe encurtar para caber.** Sem isso, um modelo que recebe "não divida" e um roteiro longo resolve resumindo — trocaria a divisão indesejada por uma perda de conteúdo pior e invisível, porque o resultado é um `parts` de tamanho 1 com a história mutilada.
+
+**Por que não há guarda determinística.** Reunir partes que o modelo devolveu contra a regra exigiria remover os "Na parte anterior..." e os CTAs de meio de história que ele escreveu para o corte — reescrita de texto, não validação. A obediência é observável em `parts_count` e `split_rationale`, que já ficam no DB de todo run.
+
+---
+
+## Agendamento de séries
+
+Quando há mais de uma parte, elas saem **encadeadas**: a parte N é agendada `series_gap_minutes` (30) depois do horário já agendado da parte N-1. Só a parte 1 disputa `preferred_times` / `posts_per_day`.
+
+```
+_schedule (orchestrator)          POST /schedule (tiktok_poster)
+  parte 1 → follows_at ausente  → next_available_slot()   → 20:00
+  parte 2 → follows_at = 20:00  → continuation_slot()     → 20:30
+  parte 3 → follows_at = 20:30  → continuation_slot()     → 21:00
+```
+
+**Por que a continuação ignora os horários preferidos.** `preferred_times` e `posts_per_day` existem para espaçar histórias independentes ao longo do dia. Uma história dividida não são N posts: é uma história continuada, e submetê-la a esse ritmo jogava a parte 2 para o dia seguinte — que era exatamente o comportamento anterior ("cada parte em um dia consecutivo"). Com o corte agora só acontecendo acima de 30 minutos, a divisão é rara e sempre significa "a história não acabou": 30 minutos é curto o bastante para o espectador ainda estar por perto.
+
+**O `queue_limit` continua valendo.** É o teto da fila do Buffer, não uma escolha de ritmo — furá-lo falharia na API em vez de ali. Uma continuação que esbarra nele devolve `429` e cai no mesmo caminho de backpressure de sempre: o run fica em `scheduling` e o `retry_pending_schedules()` reoferece.
+
+**O intervalo é espaçamento mínimo, não deslocamento fixo.** `continuation_slot` devolve `max(follows_at + gap, now + gap)`. Um run retomado muito depois de um restart tem a parte anterior no passado; ancorar nela pediria ao Buffer um horário já vencido. A história volta a andar um intervalo a partir de agora.
+
+**A âncora sobrevive ao restart.** `_schedule` é idempotente — parte com `scheduled_at` é pulada —, mas a parte pulada **atualiza a âncora** antes do `continue`. Sem isso, um run retomado com a parte 1 já agendada mandaria a parte 2 sem `follows_at` e ela cairia no calendário, quebrando a série justamente no caso em que o encadeamento importa. Parte sem `video_key` não vira âncora: ela não foi agendada, então não há horário a herdar.
+
+**`total_parts` passou a vir do orchestrador.** O poster lia `classification["parts"]`, chave que o `llm_service` nunca preencheu — o `Classification` não tem esse campo. Consequência: `compose_caption` recebia `total_parts=1` sempre e o rótulo "(Parte 1/2)" **nunca apareceu em post nenhum**, nem nas séries. Quem sabe quantas partes existem é quem as criou, então o número agora é `len(parts)` do run, mandado explicitamente no `ScheduleRequest`. A chave antiga é ignorada.
+
+**Compatibilidade.** `total_parts` (default 1) e `follows_at` (default `None`) são opcionais no `ScheduleRequest`: um poster novo aceita requests de um orchestrador velho, que simplesmente não encadeia. Deploy dos dois serviços não é atômico.
 
 ---
 
@@ -202,7 +236,7 @@ Decisão: o orchestrador **não lê o MinIO nem parseia `template.json`**. O `bl
 
 **Ordem no pipeline.** O `rate` age na síntese, antes de tudo. Logo a remoção de silêncio e a transcrição já operam sobre o áudio acelerado, e o SRT sai com o timing certo sem nenhum ajuste — mesma razão pela qual a transcrição roda depois do corte de silêncio (ver "Legendas"). Nada no `blender_worker` muda: ele consome o par MP3+SRT como sempre.
 
-**Efeito na divisão em partes.** O limite de ~60s é de fala, não de texto, e narração mais rápida encurta o áudio para o mesmo roteiro. Mudar `TTS_RATE` muda de fato quantos roteiros cabem em um vídeo só. O LLM decide o corte a partir do texto, sem conhecer o `rate` — a estimativa dele fica conservadora quando o rate é positivo (divide roteiros que caberiam inteiros), o que é o lado seguro do erro. Deriva relevante só com valores agressivos (`> +30%`).
+**Efeito na divisão em partes.** O limite é de fala, não de texto, e narração mais rápida encurta o áudio para o mesmo roteiro. O LLM decide o corte a partir do texto, sem conhecer o `rate`: `NARRATION_WPM` já embute o `+15%` do template publicado, então mudar `narration.rate` sem mexer nessa constante desloca o teto real de 30 minutos. A deriva é irrelevante no uso normal — com o scout ingerindo até 6000 caracteres (~1000 palavras), nenhum roteiro chega perto das 5100 palavras do teto, e o `parts` de tamanho 1 é o resultado independentemente do rate.
 
 ---
 

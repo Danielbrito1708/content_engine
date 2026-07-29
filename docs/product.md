@@ -110,7 +110,9 @@ Cada parte termina com uma chamada para ação clara: um pedido para comentar, s
 
 **Divisão em partes:**
 
-Se o roteiro é longo demais para um único vídeo (mais de 60 segundos de fala), o sistema decide onde cortar. O corte é sempre em um momento de cliffhanger — um ponto de tensão narrativa que deixa o espectador querendo assistir a próxima parte. A parte 2 começa com um breve resumo do que aconteceu antes, para quem não viu o início.
+O padrão é **não dividir**: a história vai inteira num vídeo só, do começo ao fim, por mais longa que seja. Dividir passou a ser exceção, e só acontece se a narração passar de **30 minutos**. Aí sim o sistema decide onde cortar, sempre num momento de cliffhanger, e a parte 2 começa com um breve resumo do que aconteceu antes.
+
+O modelo também é instruído a não encurtar a história para caber em menos tempo. Antes, "caber" era a regra principal e o texto era espremido; agora o que manda é contar a história completa.
 
 **Classificação do conteúdo:**
 
@@ -226,7 +228,11 @@ O sistema publica dois vídeos por dia, nos horários preferidos configurados (p
 
 **Séries:**
 
-Quando o roteiro foi dividido em partes, cada parte é agendada em um dia consecutivo, sempre no mesmo horário. Isso mantém a consistência para os seguidores que acompanham a série.
+Quando a história foi dividida — o que agora só acontece acima de 30 minutos —, as partes saem **coladas**: a parte 2 é publicada 30 minutos depois da parte 1, a parte 3 trinta minutos depois da parte 2, e assim por diante. Só a parte 1 entra na fila normal de horários preferidos; as seguintes penduram no horário dela.
+
+Antes cada parte ia para um dia diferente, e quem via o começo tinha de esperar até o dia seguinte para o resto. Uma história partida é uma história continuada, não posts independentes — o intervalo curto é o que preserva isso.
+
+Se o sistema reiniciar entre uma parte e outra, e a hora da continuação já tiver passado, ela é republicada 30 minutos a partir daquele momento em vez de ficar presa num horário vencido.
 
 **Fila cheia:**
 
@@ -235,6 +241,8 @@ O Buffer free suporta até 10 posts agendados por vez. Se a fila estiver cheia, 
 **Caption e hashtags:**
 
 A legenda do post é composta automaticamente com base na classificação do conteúdo. Ela inclui o CTA da respectiva parte e as hashtags selecionadas. A seleção de hashtags segue uma ordem de prioridade: primeiro as hashtags obrigatórias (sempre presentes, como `#tiktokbrasil` e `#fyp`), depois as sugeridas pelo LLM com base no conteúdo, e por último um pool de hashtags de fallback para completar até o máximo configurado. Para séries, a legenda inclui o indicador de parte ("Parte 1/2").
+
+O indicador de parte **nunca chegou a aparecer**: ele era lido de um campo que o refinamento não preenchia, então toda legenda saía sem ele, inclusive nas séries. Agora a contagem vem de quem de fato criou as partes, e o indicador aparece quando — e só quando — há mais de uma.
 
 ---
 
@@ -401,13 +409,13 @@ Você escreve um roteiro em texto
          ↓
 O LLM melhora o texto e define as partes
          ↓
-Cada parte vira um áudio narrado
+A história inteira vira um áudio narrado (só divide acima de 30 min)
          ↓
 Os silêncios do áudio são removidos
          ↓
-Cada áudio é montado num vídeo com legenda e trilha sonora
+O áudio é montado num vídeo com legenda e trilha sonora
          ↓
-Cada vídeo é agendado no TikTok em dias consecutivos
+O vídeo é agendado no TikTok (partes de uma série, 30 min uma da outra)
          ↓
 O TikTok publica automaticamente no horário certo
 ```
