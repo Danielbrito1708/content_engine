@@ -16,7 +16,13 @@ O sistema funciona completamente sozinho depois que você submete o roteiro. Voc
 
 Antes de tudo isso, existe a pergunta de onde vem o roteiro. O sistema consegue encontrá-los sozinho, sem ninguém escrever nada.
 
-Periodicamente, ele varre comunidades do Reddit em português — desabafos, relatos de relacionamento, pedidos de conselho — e pega as histórias mais votadas da semana. Cada história vira um roteiro candidato e entra no pipeline normal, exatamente como se você tivesse colado o texto à mão.
+Periodicamente, ele varre comunidades do Reddit dedicadas a **contar histórias** e pega as mais votadas da semana. Cada história vira um roteiro candidato e entra no pipeline normal, exatamente como se você tivesse colado o texto à mão.
+
+**As comunidades mudaram, e o motivo importa.** Antes o sistema lia desabafos, relatos de relacionamento e pedidos de conselho. Esses lugares são ótimos para quem precisa desabafar, mas ninguém escreve neles com intenção de entreter — não tem virada, não tem final. Agora ele lê comunidades onde as pessoas escrevem *para serem lidas*: uma em português onde cada post é um dilema pedindo julgamento ("sou babaca por…?"), e duas em inglês que são as maiores comunidades de história do Reddit. As histórias em inglês são traduzidas para português na etapa de refinamento, recontadas em vez de traduzidas ao pé da letra.
+
+**Ele também vasculha o passado, não só a semana.** De tempos em tempos o sistema volta ao acervo de uma das comunidades e lê um pedaço das melhores histórias de todos os tempos — e a cada vez avança um pouco mais fundo, em vez de reler as mesmas quinze para sempre. Isso significa que a fila não depende de a semana ter sido boa: existem anos de história boa parada lá atrás.
+
+**E ele não conta a mesma história duas vezes, mesmo repostada.** O sistema já sabia não repetir um post que já usou. O problema é que a mesma história aparece de novo, meses depois, postada por outra pessoa, com outro título — coisa comum nessas comunidades. Agora ele guarda uma "impressão digital" do texto e reconhece a história mesmo redigitada, com outra pontuação ou sem acentos. Se reconhecer, descarta e anota o motivo.
 
 **Por que Reddit e não vídeos do YouTube:** a ideia de baixar vídeos populares e transcrevê-los foi considerada e descartada por três motivos. A transcrição de um vídeo é literalmente o roteiro de outra pessoa, o que é copiar e não se inspirar. Visualizações medem o canal e a thumbnail, não a qualidade do texto — seria otimizar pelo sinal errado. E o custo é muito maior: baixar e transcrever leva minutos por vídeo, enquanto um post do Reddit já chega pronto em texto. O YouTube ainda pode entrar depois, mas como **descobridor de temas** que estão performando, para o sistema escrever um roteiro original sobre o assunto.
 
@@ -106,11 +112,15 @@ A primeira frase é transformada para prender o espectador nos primeiros dois se
 
 Além de abrir o roteiro, esse gancho volta separado, como uma frase à parte. Antes ele era só a primeira linha de um texto corrido, e ninguém sabia dizer onde ele terminava; agora o sistema devolve a frase inteira, identificada, para poder ser usada sozinha. Se o modelo esquecer de mandá-la, o sistema a recupera pegando a primeira frase da parte 1 — o gancho nunca fica faltando.
 
-Cada parte termina com uma chamada para ação clara: um pedido para comentar, seguir, ver a parte 2, ou qualquer comportamento específico que maximize o engajamento.
+**O texto narrado acaba junto com a história.** Antes, o modelo era instruído a fechar cada parte com uma chamada para ação — "comenta o que você faria", "segue para a parte 2" — e isso era narrado no vídeo. Virava um recado colado no fim de uma história que já tinha terminado: o espectador ouvia o desfecho e, em seguida, um pedido. Agora a última frase narrada é a última coisa que acontece na história, sem despedida, sem moral e sem pedido de like.
+
+A chamada para ação não deixou de existir — ela continua sendo escrita para cada parte, mas só como **legenda do post**, que é onde o TikTok mostra esse tipo de texto e onde ele não interrompe a narração.
 
 **Divisão em partes:**
 
-Se o roteiro é longo demais para um único vídeo (mais de 60 segundos de fala), o sistema decide onde cortar. O corte é sempre em um momento de cliffhanger — um ponto de tensão narrativa que deixa o espectador querendo assistir a próxima parte. A parte 2 começa com um breve resumo do que aconteceu antes, para quem não viu o início.
+O padrão é **não dividir**: a história vai inteira num vídeo só, do começo ao fim, por mais longa que seja. Dividir passou a ser exceção, e só acontece se a narração passar de **30 minutos**. Aí sim o sistema decide onde cortar, sempre num momento de cliffhanger, e a parte 2 começa com um breve resumo do que aconteceu antes.
+
+O modelo também é instruído a não encurtar a história para caber em menos tempo. Antes, "caber" era a regra principal e o texto era espremido; agora o que manda é contar a história completa.
 
 **Classificação do conteúdo:**
 
@@ -226,7 +236,11 @@ O sistema publica dois vídeos por dia, nos horários preferidos configurados (p
 
 **Séries:**
 
-Quando o roteiro foi dividido em partes, cada parte é agendada em um dia consecutivo, sempre no mesmo horário. Isso mantém a consistência para os seguidores que acompanham a série.
+Quando a história foi dividida — o que agora só acontece acima de 30 minutos —, as partes saem **coladas**: a parte 2 é publicada 30 minutos depois da parte 1, a parte 3 trinta minutos depois da parte 2, e assim por diante. Só a parte 1 entra na fila normal de horários preferidos; as seguintes penduram no horário dela.
+
+Antes cada parte ia para um dia diferente, e quem via o começo tinha de esperar até o dia seguinte para o resto. Uma história partida é uma história continuada, não posts independentes — o intervalo curto é o que preserva isso.
+
+Se o sistema reiniciar entre uma parte e outra, e a hora da continuação já tiver passado, ela é republicada 30 minutos a partir daquele momento em vez de ficar presa num horário vencido.
 
 **Fila cheia:**
 
@@ -235,6 +249,8 @@ O Buffer free suporta até 10 posts agendados por vez. Se a fila estiver cheia, 
 **Caption e hashtags:**
 
 A legenda do post é composta automaticamente com base na classificação do conteúdo. Ela inclui o CTA da respectiva parte e as hashtags selecionadas. A seleção de hashtags segue uma ordem de prioridade: primeiro as hashtags obrigatórias (sempre presentes, como `#tiktokbrasil` e `#fyp`), depois as sugeridas pelo LLM com base no conteúdo, e por último um pool de hashtags de fallback para completar até o máximo configurado. Para séries, a legenda inclui o indicador de parte ("Parte 1/2").
+
+O indicador de parte **nunca chegou a aparecer**: ele era lido de um campo que o refinamento não preenchia, então toda legenda saía sem ele, inclusive nas séries. Agora a contagem vem de quem de fato criou as partes, e o indicador aparece quando — e só quando — há mais de uma.
 
 ---
 
@@ -346,6 +362,14 @@ Antes, a duração era ditada pelo mais longo entre todos os arquivos — inclus
 
 Se o fundo for **mais curto** que a narração, o sistema repete o próprio fundo até cobrir a história inteira. Antes, o trecho que sobrava saía **preto**, com a legenda aparecendo sobre o nada e sem nenhum aviso — um clipe de 45 segundos sob uma narração de 71 gerava 26 segundos de tela preta. Isso deixou de ser um erro do arquivo e passou a ser normal, porque o fundo agora vem de uma biblioteca de clipes curtos (ver abaixo).
 
+## O fim do vídeo é a última palavra da história
+
+O vídeo não tem finalização. Nada é acrescentado depois que a narração termina: a última palavra da história é o último frame, e a única coisa que marca o encerramento é a **música de fundo sumindo por baixo dessa última frase** — um fade de 1,5 segundo.
+
+Antes o fade era escrito como um instante fixo na linha do tempo: "comece a sumir no segundo 28", número anotado quando os vídeos eram rascunhos de 30 segundos. Como a duração passou a ser a da narração, esse instante deixou de significar "no finalzinho". Medido num vídeo de 23 segundos: a trilha começava a cair **desde o primeiro segundo** e chegava ao fim praticamente inaudível — de -26 dBFS no começo para -73 dBFS no fim, ou seja, mais da metade do vídeo com a música morrendo. Era esse o motivo de a trilha "não estar lá" mesmo estando no arquivo.
+
+Agora o fade é contado de trás para frente, a partir do fim. Medido no mesmo vídeo: a trilha fica no mesmo volume do começo até 21,9s, e só então cai até o silêncio no último frame, em 23,4s. A duração do fade é configuração do template (`fade_out_seconds`), e zero desliga.
+
 ## Legenda no centro e maior
 
 A legenda agora aparece **no meio da tela**, não mais no rodapé, e com a fonte bem maior.
@@ -401,13 +425,13 @@ Você escreve um roteiro em texto
          ↓
 O LLM melhora o texto e define as partes
          ↓
-Cada parte vira um áudio narrado
+A história inteira vira um áudio narrado (só divide acima de 30 min)
          ↓
 Os silêncios do áudio são removidos
          ↓
-Cada áudio é montado num vídeo com legenda e trilha sonora
+O áudio é montado num vídeo com legenda e trilha sonora
          ↓
-Cada vídeo é agendado no TikTok em dias consecutivos
+O vídeo é agendado no TikTok (partes de uma série, 30 min uma da outra)
          ↓
 O TikTok publica automaticamente no horário certo
 ```

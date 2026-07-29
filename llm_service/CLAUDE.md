@@ -33,11 +33,34 @@ Serviço de refinamento e classificação de roteiros via LLM. Expõe `POST /ref
 - `classification.content_type` — drama / comédia / motivacional / educativo / entretenimento / suspense
 - `classification.tone` — suspenseful / funny / emotional / educational / inspirational / shocking
 - `classification.target_audience` — `{age_range, gender, interests}`
-- `classification.cta_per_part` — CTA para cada parte
+- `classification.cta_per_part` — CTA para cada parte, **só para a legenda do post** (ver abaixo)
 - `classification.hashtag_hints` — 5–8 hashtags sugeridas
 - `classification.split_rationale` — razão do corte ou `null`
 
 Erros: `502` se o LLM retornar JSON inválido ou se a chamada à API falhar.
+
+### Política de divisão do roteiro (`src/llm_service/prompts/refine.py`)
+
+O padrão é **uma parte só**: a história completa num vídeo. Dividir é exceção e só acima de 30 minutos de fala.
+
+**API pública** (constantes exportadas):
+- `MAX_PART_MINUTES = 30` — teto de duração de um vídeo
+- `NARRATION_WPM = 170` — voz neural pt-BR (~150 wpm) acelerada pelo `narration.rate` do template (`+15%`)
+- `MAX_PART_WORDS = MAX_PART_MINUTES * NARRATION_WPM` (5100) — o número que vai no prompt, porque palavra é o que o modelo conta
+
+O prompt anterior cortava em 600 palavras (~1 min), o que fatiava uma história de 6000 caracteres em seis vídeos. O prompt também proíbe **resumir para caber** — sem isso o modelo troca a divisão por perda de conteúdo, que é pior e invisível.
+
+**Não há guarda determinística.** Reunir partes devolvidas contra a regra exigiria remover os "Na parte anterior..." e os CTAs de meio de história — reescrita, não validação. A obediência é auditável em `parts` e `split_rationale`.
+
+`tests/test_split_policy.py` (8) fixa o teto, sua derivação a partir de minutos e as cláusulas do prompt.
+
+### Idioma de saída do refino
+
+O prompt manda **sempre** devolver o roteiro em português do Brasil, traduzindo quando o roteiro bruto vier em outro idioma — recontando em português, não ao pé da letra (gírias, medidas e moeda viram o equivalente brasileiro; nomes próprios ficam).
+
+**Por que existe.** O `content_scout` passou a buscar em `r/story` e `r/stories`, que são em inglês e é onde mora o gênero "história escrita para entreter". Sem essa regra o prompt só dizia "preserve o conteúdo e a essência", e o roteiro sairia em inglês — indo direto para um TTS configurado em pt-BR. A regra é inócua para as fontes em português, que já chegam no idioma certo.
+
+O `POST /story-quality` também foi avisado de que as aberturas podem vir em inglês: julga a história, nunca o idioma. `reason` continua saindo em português; `hook_line` sai copiada do original, no idioma dele — a tradução acontece depois, no refino.
 
 ### Frase gancho (`hook`)
 
@@ -50,6 +73,16 @@ O gancho era só uma regra de escrita no prompt; virou campo porque o orchestrad
 **O campo nunca volta vazio quando há roteiro.** O prompt pede o `hook` copiado literal da primeira frase da parte 1, mas o contrato não pode depender de o modelo obedecer — daí o fallback. Fim de frase = pontuação terminal (`. ! ? …` + aspas/parênteses de fechamento) **seguida de espaço**; exigir o espaço é o que impede `R$ 3.5 mil` de virar fim de frase.
 
 O gancho **não** é removido de `parts[0]` — o campo é uma cópia identificada, não um recorte. Quem monta o vídeo usa o áudio da parte; o áudio do gancho é artefato à parte.
+
+### O texto narrado não tem finalização (`prompts/refine.py`)
+
+O prompt pedia que **cada parte terminasse com um CTA** ("Comenta o que você faria 👇"). As partes vão literais para o TTS (`text=part.script` no orchestrador), então esse CTA era **falado no vídeo**, depois do desfecho da história. Regra removida, junto com qualquer outra forma de finalização — despedida, moral, "e é isso", pedido de like/follow. A última frase narrada é a última coisa que acontece na história.
+
+`cta_per_part` **continua existindo como campo**: quem o consome é o `tiktok_poster` em `compose_caption()`, na legenda do post. São dois artefatos com o mesmo nome, e só um deles estava no lugar errado. O prompt agora diz isso explicitamente, e o exemplo de JSON no user prompt marca o campo como "só para a legenda".
+
+O corte com cliffhanger não foi afetado — um corte no meio da tensão é parte da história.
+
+- Testes: `tests/test_refine.py` — dois testes de prompt, um garantindo que a regra do CTA no texto narrado não voltou, outro que o campo continua sendo pedido.
 
 ### Endpoint de moderação (`src/llm_service/api/routes/moderate.py`)
 
@@ -77,7 +110,9 @@ Erros: `502` se o LLM falhar ou devolver JSON sem veredito. O chamador precisa d
 
 ⚠️ **Degrada por item, não por lote.** Veredito malformado é descartado e os outros voltam — o chamador trata veredito ausente como "não avaliado" e cai de volta no ranking da fonte. Nota fora de 0–10 é **clampada**, não rejeitada: um número ruim não pode custar o veredito de todos os outros. Já uma resposta que não rende **nenhum** veredito utilizável é `502` — isso é falha, não resultado vazio. Lista vazia na entrada devolve 200 sem chamar o LLM.
 
-`prompts/story.py` traz a anatomia do gancho em quatro partes (relação concreta, conflito em curso, promessa de desfecho, curiosidade não resolvida), com exemplo forte e exemplos fracos, e a régua de 0–10 que põe post comum de fórum em 4–6. O prompt é explícito em separar qualidade narrativa de aceitabilidade do assunto — essa decisão é da moderação.
+`prompts/story.py` traz a anatomia do gancho em quatro partes (relação concreta, conflito em curso, promessa de desfecho, curiosidade não resolvida), com exemplos fortes e fracos, e a régua de 0–10 que põe post comum de fórum em 4–6. O prompt é explícito em separar qualidade narrativa de aceitabilidade do assunto — essa decisão é da moderação.
+
+⚠️ **A pergunta ao fórum só desconta quando SUBSTITUI a história.** A versão anterior descontava por "pergunta direta ao fórum" sem qualificar, e isso passou a ser um autogol quando o corpus virou `r/EuSouOBabaca`: *todo* post de lá é literalmente "Sou babaca por…?". A pergunta que vem **depois** do conflito e pede um veredito sobre ele é estrutura de história e das boas — o que desconta é a pergunta que aparece no lugar da cena. Sem essa distinção o melhor corpus disponível tiraria nota baixa pelo motivo errado.
 
 **Modelo próprio.** `LLM_STORY_MODEL`, com fallback para `LLM_MODEL`. Não compartilha o modelo da moderação: julgar craft narrativo sobre um lote é mais difícil que um sim/não.
 
@@ -97,7 +132,7 @@ Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`). `ge
 
 ## Testes
 
-53 testes: `tests/test_refine.py` (9), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
+63 testes: `tests/test_refine.py` (11), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_split_policy.py` (8 — teto de 30 min e as cláusulas do prompt), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
 
 ```bash
 poetry run pytest

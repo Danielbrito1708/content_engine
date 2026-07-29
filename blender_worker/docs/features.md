@@ -158,14 +158,14 @@ Templates são reutilizados em múltiplos jobs. Criar um template bem calibrado 
     "fade_frames": 3,
     "max_hold_seconds": 0.4
   },
+  "music": {
+    "fade_out_seconds": 1.5
+  },
   "timing": {
     "intro_start": 0,
     "intro_end": 90,
     "speech_start": 90,
-    "speech_end": 750,
-    "outro_start": 750,
-    "outro_end": 900,
-    "music_fade_out": 840
+    "speech_end": 750
   }
 }
 ```
@@ -173,10 +173,13 @@ Templates são reutilizados em múltiplos jobs. Criar um template bem calibrado 
 | Campo | Descrição |
 |---|---|
 | `frame_rate` | FPS da cena Blender |
-| `frame_end` | Frame final da timeline |
+| `frame_end` | Fallback do frame final; na prática quem decide é a narração |
 | `channels.*` | Canal VSE de cada trilha |
 | `subtitles` | Opcional. `fade_frames` (padrão 3, `0` desliga) e `max_hold_seconds` (padrão 0.4) — ver seção 7 |
+| `music` | Opcional. `fade_out_seconds` (padrão 1.5, `0` desliga) — fade contado a partir do último frame |
 | `timing.*` | Frames de início/fim de cada seção |
+
+Não há seção de outro: o vídeo termina na última palavra da narração. `outro_start`, `outro_end` e `music_fade_out` foram removidos — nenhum era lido pelo código, e o fade em frame fixo fazia a trilha decair pelo vídeo inteiro.
 
 **Casos de erro:**
 - `422` — campos obrigatórios ausentes
@@ -352,7 +355,7 @@ Script Python executado dentro do interpretador do Blender. Recebe o caminho do 
 
 O FPS efetivo do Blender é `render.fps / render.fps_base`, e o `fps_base` vem do `.blend`. O `template.blend` atual está gravado como `fps=6, fps_base=0.1` (ou seja, 60 fps). Definir só `render.fps = frame_rate` deixa o `fps_base` intacto e a cena roda a `frame_rate / 0.1` — **10× o pretendido**.
 
-O `main()` define `render.fps_base = 1.0` junto com `render.fps`. Sem isso: strips de áudio ficam 10× mais longas (o `frame_end` calculado a partir delas estoura), o MP4 sai com o fps errado, e todo timing em frames (legendas, `speech_start`, `music_fade_out`) fica fora de sincronia com o áudio.
+O `main()` define `render.fps_base = 1.0` junto com `render.fps`. Sem isso: strips de áudio ficam 10× mais longas (o `frame_end` calculado a partir delas estoura), o MP4 sai com o fps errado, e todo timing em frames (legendas, `speech_start`, o fade da trilha) fica fora de sincronia com o áudio.
 
 ### Estrutura
 

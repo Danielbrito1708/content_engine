@@ -33,9 +33,9 @@ Usuário → dashboard / API ─┴─ POST /pipeline  { script: "...", metadata
   ├─ cria pipeline_run no DB (status: pending)
   │
   ├─ 1. REFINAR → llm_service
-  │     └─ melhora ganchos, CTAs, fluxo narrativo
+  │     └─ melhora ganchos e fluxo narrativo (CTA fica fora do texto narrado)
   │     └─ classifica: público-alvo, tom, tipo de conteúdo
-  │     └─ decide se divide em partes (e onde cortar com cliffhanger)
+  │     └─ devolve a história inteira; só divide acima de 30 min de fala
   │     └─ gera resumo das partes anteriores (para parte 2+)
   │     └─ devolve a frase gancho isolada (campo `hook`)
   │
@@ -55,7 +55,7 @@ Usuário → dashboard / API ─┴─ POST /pipeline  { script: "...", metadata
   │         └─ renderiza para output.mp4, salva no MinIO
   │
   └─ 4. AGENDAR → tiktok_poster
-        └─ agenda 2 posts por dia
+        └─ agenda 3 posts por dia; partes de uma série, 30 min uma da outra
         └─ otimiza hashtags com base na classificação + histórico
         └─ publica e coleta métricas
 ```
@@ -137,14 +137,52 @@ O `llm_service` retorna um objeto de classificação junto com o roteiro refinad
 
 O schema é armazenado como JSONB no DB do orchestrador. Novos campos são adicionados sem migração.
 
+**`cta_per_part` é legenda, não roteiro.** O prompt de refino pedia que *cada parte terminasse com um CTA*, e as partes são narradas literalmente (`text=part.script`) — o CTA era falado no vídeo, depois do desfecho da história. São dois artefatos diferentes com o mesmo nome: o campo, que o `tiktok_poster` usa em `compose_caption()`, e uma frase escrita dentro do texto narrado. O primeiro fica; o segundo saiu do prompt, junto com qualquer outra forma de finalização (despedida, moral, "e é isso"). O texto narrado termina na última coisa que acontece na história.
+
+O corte com cliffhanger continua valendo: um corte no meio da tensão é parte da história, não uma finalização colada nela.
+
 ---
 
 ## Divisão em Partes
 
-- O LLM recebe o roteiro e decide se ele cabe em um único vídeo (≤ ~60s de fala) ou precisa ser dividido.
+**O padrão é não dividir.** A história completa vai num vídeo só; o LLM devolve `parts` com um elemento e `split_rationale` nulo. Dividir é a exceção, e só quando a narração passaria de **30 minutos** — `MAX_PART_MINUTES` em `llm_service/prompts/refine.py`.
+
+O formato anterior cortava em 600 palavras (~1 min de fala, segundo o prompt). Era o inverso da regra: uma história de 6000 caracteres — o teto de ingestão do scout — virava seis vídeos, cada um abrindo com "Na parte anterior..." e fechando com um CTA pedindo a próxima parte. O espectador que engatava na parte 1 precisava caçar mais cinco publicações, espalhadas por seis dias (ver "Agendamento de séries"), para chegar ao fim de uma história de seis minutos. Vídeo longo com história inteira retém melhor que seis fragmentos porque não pede nenhuma ação para continuar.
+
 - Se dividido, o LLM escolhe o ponto de corte que maximize a curiosidade (cliffhanger natural).
 - Para partes 2+, o LLM gera um resumo curto ("Na parte anterior...") que é inserido no início do roteiro daquela parte antes de ir para o TTS.
-- O orchestrador cria um `pipeline_part` por parte e processa cada uma em sequência.
+- O orchestrador cria um `pipeline_part` por parte e processa cada uma em sequência. Nada nessa mecânica mudou — o que mudou é quantas partes existem, que no caso normal passou a ser uma.
+
+**O teto é declarado em minutos e traduzido para palavras.** `MAX_PART_WORDS = MAX_PART_MINUTES × NARRATION_WPM` (30 × 170 = 5100). O prompt fala em palavras porque é o que o modelo consegue contar; minutos é o que a regra significa. `NARRATION_WPM = 170` sai de voz neural pt-BR em ~150 wpm acelerada pelo `narration.rate` do template (`+15%`) — é estimativa, e a única decisão que depende dela é o corte em 30 minutos, muito acima do que um roteiro real ocupa.
+
+**O prompt proíbe encurtar para caber.** Sem isso, um modelo que recebe "não divida" e um roteiro longo resolve resumindo — trocaria a divisão indesejada por uma perda de conteúdo pior e invisível, porque o resultado é um `parts` de tamanho 1 com a história mutilada.
+
+**Por que não há guarda determinística.** Reunir partes que o modelo devolveu contra a regra exigiria remover os "Na parte anterior..." e os CTAs de meio de história que ele escreveu para o corte — reescrita de texto, não validação. A obediência é observável em `parts_count` e `split_rationale`, que já ficam no DB de todo run.
+
+---
+
+## Agendamento de séries
+
+Quando há mais de uma parte, elas saem **encadeadas**: a parte N é agendada `series_gap_minutes` (30) depois do horário já agendado da parte N-1. Só a parte 1 disputa `preferred_times` / `posts_per_day`.
+
+```
+_schedule (orchestrator)          POST /schedule (tiktok_poster)
+  parte 1 → follows_at ausente  → next_available_slot()   → 20:00
+  parte 2 → follows_at = 20:00  → continuation_slot()     → 20:30
+  parte 3 → follows_at = 20:30  → continuation_slot()     → 21:00
+```
+
+**Por que a continuação ignora os horários preferidos.** `preferred_times` e `posts_per_day` existem para espaçar histórias independentes ao longo do dia. Uma história dividida não são N posts: é uma história continuada, e submetê-la a esse ritmo jogava a parte 2 para o dia seguinte — que era exatamente o comportamento anterior ("cada parte em um dia consecutivo"). Com o corte agora só acontecendo acima de 30 minutos, a divisão é rara e sempre significa "a história não acabou": 30 minutos é curto o bastante para o espectador ainda estar por perto.
+
+**O `queue_limit` continua valendo.** É o teto da fila do Buffer, não uma escolha de ritmo — furá-lo falharia na API em vez de ali. Uma continuação que esbarra nele devolve `429` e cai no mesmo caminho de backpressure de sempre: o run fica em `scheduling` e o `retry_pending_schedules()` reoferece.
+
+**O intervalo é espaçamento mínimo, não deslocamento fixo.** `continuation_slot` devolve `max(follows_at + gap, now + gap)`. Um run retomado muito depois de um restart tem a parte anterior no passado; ancorar nela pediria ao Buffer um horário já vencido. A história volta a andar um intervalo a partir de agora.
+
+**A âncora sobrevive ao restart.** `_schedule` é idempotente — parte com `scheduled_at` é pulada —, mas a parte pulada **atualiza a âncora** antes do `continue`. Sem isso, um run retomado com a parte 1 já agendada mandaria a parte 2 sem `follows_at` e ela cairia no calendário, quebrando a série justamente no caso em que o encadeamento importa. Parte sem `video_key` não vira âncora: ela não foi agendada, então não há horário a herdar.
+
+**`total_parts` passou a vir do orchestrador.** O poster lia `classification["parts"]`, chave que o `llm_service` nunca preencheu — o `Classification` não tem esse campo. Consequência: `compose_caption` recebia `total_parts=1` sempre e o rótulo "(Parte 1/2)" **nunca apareceu em post nenhum**, nem nas séries. Quem sabe quantas partes existem é quem as criou, então o número agora é `len(parts)` do run, mandado explicitamente no `ScheduleRequest`. A chave antiga é ignorada.
+
+**Compatibilidade.** `total_parts` (default 1) e `follows_at` (default `None`) são opcionais no `ScheduleRequest`: um poster novo aceita requests de um orchestrador velho, que simplesmente não encadeia. Deploy dos dois serviços não é atômico.
 
 ---
 
@@ -202,7 +240,7 @@ Decisão: o orchestrador **não lê o MinIO nem parseia `template.json`**. O `bl
 
 **Ordem no pipeline.** O `rate` age na síntese, antes de tudo. Logo a remoção de silêncio e a transcrição já operam sobre o áudio acelerado, e o SRT sai com o timing certo sem nenhum ajuste — mesma razão pela qual a transcrição roda depois do corte de silêncio (ver "Legendas"). Nada no `blender_worker` muda: ele consome o par MP3+SRT como sempre.
 
-**Efeito na divisão em partes.** O limite de ~60s é de fala, não de texto, e narração mais rápida encurta o áudio para o mesmo roteiro. Mudar `TTS_RATE` muda de fato quantos roteiros cabem em um vídeo só. O LLM decide o corte a partir do texto, sem conhecer o `rate` — a estimativa dele fica conservadora quando o rate é positivo (divide roteiros que caberiam inteiros), o que é o lado seguro do erro. Deriva relevante só com valores agressivos (`> +30%`).
+**Efeito na divisão em partes.** O limite é de fala, não de texto, e narração mais rápida encurta o áudio para o mesmo roteiro. O LLM decide o corte a partir do texto, sem conhecer o `rate`: `NARRATION_WPM` já embute o `+15%` do template publicado, então mudar `narration.rate` sem mexer nessa constante desloca o teto real de 30 minutos. A deriva é irrelevante no uso normal — com o scout ingerindo até 6000 caracteres (~1000 palavras), nenhum roteiro chega perto das 5100 palavras do teto, e o `parts` de tamanho 1 é o resultado independentemente do rate.
 
 ---
 
@@ -359,6 +397,25 @@ Isso *era* documentado como problema de asset, e era, enquanto todo render compa
 
 `MAX_BACKGROUND_REPEATS` (60) limita o caso degenerado: um arquivo quase vazio pediria milhares de strips. Passando disso o final volta a ficar preto, que é o comportamento antigo.
 
+**Coerção de tipo na fronteira do RNA.** `background_repeats()` recebe `strip.frame_start` e `strip.frame_duration`, que o Blender devolve como **float**, e `sequences.new_movie()` aceita só `int` — a repetição morria com `TypeError` no meio da montagem. Nunca apareceu em produção porque um clipe mais longo que a narração não pede repetição nenhuma, e o float então nunca chega à API; apareceu no primeiro render de validação com clipe curto. Os números são convertidos dentro da função pura, não no chamador, para que a regra e a coerção sejam testadas juntas.
+
+### O vídeo não tem finalização
+
+O último frame do vídeo é a última palavra da narração. Não existe cartela de encerramento, bloco de outro nem batida final — e as chaves `timing.outro_start` / `timing.outro_end` do `template.json`, herdadas do rascunho, nunca foram lidas por código algum. Saíram do template versionado, porque uma configuração que descreve uma etapa inexistente é pior que nenhuma: a próxima sessão a implementa.
+
+A única marca de encerramento é a **trilha sumindo por baixo da última frase**: `music_fade_start()` conta o fade de trás para frente, `last_frame - fade_frames`, com `music.fade_out_seconds` (1,5s por padrão) no template.
+
+**Por que contar do fim e não de um frame fixo.** `timing.music_fade_out` era o frame 840 contra um `frame_end` de 900 — 2 segundos de fade no rascunho de 30s para o qual foi escrito. Com `frame_end` passando a ser decidido pela narração, esse número virou outra coisa: quando o vídeo é **mais curto** que 840 frames, os keyframes entram fora de ordem (1, 840, 701) e o Blender os reordena por frame, deixando `0.2 → 0.0 → 0.2`. O resultado é o vídeo inteiro em declínio.
+
+Medido no mesmo timeline de validação — 23,37s / 701 frames, trilha isolada (voz mutada no mixdown, senão as últimas palavras dominam a janela justamente onde o fade acontece):
+
+- **Antigo** (keyframes 1/840/701, janelas de 2s): -26,1 dBFS em 0s → -33,6 em 12s → -55,7 em 20s → **-73,4 no fim**. Queda contínua do primeiro ao último segundo.
+- **Agora** (keyframes 1/656/701, janelas de 0,5s): -26,0 dBFS em 0s, ainda -26,0 em 21,0s, -26,0 em 21,5s, então -27,6 em 22,0s, -33,9 em 22,5s e -49,0 na última janela. O volume só se move nos 1,5s finais.
+
+Era este o defeito por trás da impressão de "trilha que não está lá": ela estava no arquivo, no canal certo, no volume certo — e em queda desde o primeiro segundo.
+
+**Segundos, não frames, na configuração.** Um fade é uma duração musical: o mesmo número tem que significar o mesmo encerramento a 30 ou a 60fps. `music_fade_frames()` faz a conversão; `0` desliga o fade (é como um template diz "sem fade"), e um timeline sem espaço para o fade não recebe keyframe nenhum em vez de recebê-los antes do próprio início da trilha.
+
 ### Rotação de fundo (`orchestrator/backgrounds.py`)
 
 `pick_background(keys, run_id, part_number)` escolhe o clipe de cada parte entre os objetos publicados sob `[template] background_prefix`.
@@ -434,9 +491,9 @@ Trocado por uma faixa real (`assets/music/lofi-goularte.mp3`). Medido no render 
 
 O prefixo `assets/music/` já é o formato de biblioteca dos fundos, então acrescentar faixas é subir arquivo; o rodízio entre elas ainda não está ligado (com uma faixa só seria no-op).
 
-**Duas coisas que a trilha real expôs e ainda não foram resolvidas:**
+**A trilha real expôs dois problemas. O primeiro está resolvido:**
 
-- **O fade começa cedo demais.** `timing.music_fade_out` é o frame 840 (28s), número escrito quando `frame_end` era 900 (30s) — a trilha sumia "ao final". Com vídeos de 50-60s ela agora começa a sumir na metade e chega a zero no fim, ou seja, mais da metade do vídeo com a música em declínio. O conserto é o fade passar a ser contado a partir do fim (*N* segundos antes de `frame_end`) em vez de um frame fixo.
+- ~~**O fade começa cedo demais.**~~ **Resolvido.** O fade passou a ser contado a partir do fim (`music.fade_out_seconds`, 1,5s), e `timing.music_fade_out` não é mais lido. Ver "O vídeo não tem finalização" — inclusive a medição de quanto a trilha estava sendo perdida.
 - **Só o primeiro minuto da faixa é ouvido.** O strip começa sempre no 0:00 do arquivo, então uma mix de 34 minutos rende sempre o mesmo trecho, e os 32 MB são baixados a cada render. Alternativas: cortar um trecho curto, ou dar um deslocamento determinístico de entrada por vídeo (`frame_offset_start`), no mesmo espírito do rodízio de fundos.
 
 ---
@@ -548,6 +605,49 @@ O `.json` sem autenticação do Reddit foi desativado em maio/2026 e responde 40
 
 **Por que o YouTube não vira roteiro.** A transcrição de um vídeo *é* o roteiro de outra pessoa — republicá-lo com outra voz é cópia, não inspiração. Além disso, visualizações medem o canal, a thumbnail e o algoritmo, não o texto: otimizar por elas é perseguir o proxy errado. E o custo é ordens de grandeza maior (download + Whisper por vídeo, contra texto já pronto). Se o YouTube entrar, entra como **minerador de tema** — `search.list` para descobrir assuntos em alta, e o `llm_service` escreve roteiro original a partir do tema. Sem download, sem transcrição, sem risco de cópia.
 
+### Escolha das comunidades
+
+As fontes originais (`desabafos`, `relacionamentos`, `conselhos`) eram **relato real**: gente desabafando ou pedindo conselho. É um gênero sem terceiro ato — não há virada nem desfecho —, e o pipeline foi construído para história de entretenimento. A régua de storytelling chegava a pedir uma estrutura que aquele corpus não produz.
+
+A troca foi decidida com medição ao vivo (28/07/2026), não por intuição: feed real, mesmo parser do pipeline, mesmos filtros de 600–6000 caracteres.
+
+| Sub | passam os filtros | mediana | por quê |
+|---|---|---|---|
+| `EuSouOBabaca` | 15/15 | 1831 | o AITA brasileiro; o título já é o gancho |
+| `story` | 13/15 | 1704 | história de entretenimento, em inglês |
+| `stories` | 12/15 | 1587 | idem, e reposta muito de `r/story` |
+
+Descartados por medição: `HistoriasDeReddit` e `HistoriasdeTerror` são em **espanhol**; `opiniaoimpopular` é opinião e não história (só 7/15 passam, mediana 551); e oito candidatos plausíveis (`Quem_Foi_O_Babaca`, `contosdevidareal`, `HistoriasBrasil`, `Creepypastas_Brasil` entre outros) devolveram **zero** posts na semana — são subs mortos. Não há sub de vingança em pt-BR.
+
+**Consequência de interface:** duas das três fontes são em inglês, então o `/refine` passou a ter regra explícita de idioma — o roteiro final é sempre pt-BR, traduzido como quem reconta. Antes o prompt só pedia "preserve a essência", e o roteiro sairia em inglês para um TTS pt-BR. O `/story-quality` foi avisado do mesmo: julga a história, não o idioma.
+
+**A régua também teve que mudar.** O prompt descontava por "pergunta direta ao fórum no lugar de história" — e todo post do `EuSouOBabaca` é literalmente "Sou babaca por…?". Sem qualificar a regra, o melhor corpus disponível tiraria nota baixa pelo motivo errado. Agora a distinção é explícita: a pergunta que vem *depois* do conflito e pede um veredito é estrutura de história; o que desconta é a pergunta que aparece *no lugar* da cena.
+
+### Varredura do arquivo histórico
+
+O feed `t=week` se renova sozinho; o `t=all` não. Pedir `top?t=all` a cada ciclo devolve **os mesmos quinze posts para sempre** — todos já em `seen_items` depois da primeira passada, ou seja, uma janela de rate limit gasta para não achar nada.
+
+Os feeds Atom aceitam `?count=&after=`, verificado ao vivo: a segunda página voltou com **overlap zero** com a primeira. Então a varredura pagina para trás e um cursor por origem (`archive_cursors`) lembra onde parou. Isso destrava anos de acervo em vez de um top-15 fixo.
+
+Regras de projeto:
+
+- **Cadência no banco, não em contador de processo.** A varredura fica devida quando `last_swept_at` é mais velho que `archive_interval_hours`. Um contador em memória zeraria a cada deploy e dispararia varredura imediata.
+- **No máximo uma varredura por ciclo, entre todas as fontes.** O recurso protegido é a janela de rate limit compartilhada, que não distingue quem a gastou. Subreddit nunca varrido tem prioridade, senão um sub recém-configurado esperaria o rodízio inteiro.
+- **O cursor é o id da última `<entry>`, não do último candidato aproveitável.** Link e image posts são descartados na análise; paginar a partir do último sobrevivente faria a varredura re-pedir a cauda descartada toda vez.
+- **Esgotar é normal.** Feed vazio devolve o cursor a `None` e a varredura recomeça do topo. O que a nova volta relê já está em `seen_items`, então uma volta custa requisição mas nunca republica.
+- **Falha não derruba o ciclo, e o cursor não avança.** O arquivo é oferta extra sobre os feeds ao vivo — mesma assimetria da nota de storytelling. Tratar um 429 como esgotamento reiniciaria o sub do zero.
+
+### Dedup por conteúdo: o mesmo texto sob outro id
+
+`external_id` só reconhece o **mesmo post**. A varredura histórica alcança anos atrás e entra em comunidades que repostam umas às outras (`r/story` ↔ `r/stories`), então a mesma história chega de verdade duas vezes, com dois ids e títulos diferentes — e viraria dois vídeos iguais.
+
+`seen_items.content_fingerprint` é o sha256 dos **1000 primeiros caracteres alfanuméricos** do corpo, minúsculo e sem acento. Cada decisão aí responde a uma forma de repost: descartar pontuação e caixa faz um texto redigitado casar; cortar no começo impede que um bloco `EDIT:` no fim derrube a comparação; tirar acento cobre o texto redigitado sem diacrítico.
+
+- **Corpo que normaliza para vazio devolve `None`, não o hash de `""`.** Com o hash, todo candidato desses colidiria com todos os outros e o segundo seria descartado como repost do primeiro.
+- **A coluna é indexada mas não é única.** Um repost precisa ser gravado com a própria linha de auditoria dizendo que foi pulado; uma constraint única rejeitaria exatamente essa linha e não sobraria registro da rejeição.
+- **Cobertura começa na migration 004.** `seen_items` nunca guardou o corpo, só título, url e contagem de caracteres — o histórico anterior não pode ser reprocessado e fica `NULL`.
+- A checagem roda **depois** do filtro barato de tamanho e **antes** de moderação e nota: repost é a rejeição mais barata que existe e não pode custar chamada de modelo.
+
 ### Sinal de qualidade
 
 O feed RSS **não carrega score**. Por isso pedimos `/r/{sub}/top/.rss?t=week`: a ordenação é feita pelo próprio Reddit e chega implícita na posição das entradas. É um sinal mais fraco que o upvote numérico, mas suficiente — o gargalo real é a fila de publicação, não a escassez de candidatos.
@@ -565,7 +665,7 @@ As fontes são buscadas e concatenadas na ordem do config. Pegar o começo dessa
 A seleção é por **rodízio entre origens** (`interleave_by_origin`), preservando o ranking interno de cada uma:
 
 ```
-desabafos[0], relacionamentos[0], conselhos[0], desabafos[1], ...
+EuSouOBabaca[0], story[0], stories[0], EuSouOBabaca[1], ...
 ```
 
 Isso mantém o ranking do Reddit como critério — continuamos pegando o melhor *disponível* de cada — e garante variedade de origem e tom entre vídeos consecutivos. Combinado com o dedup, o rodízio entre ciclos emerge sozinho, sem estado de rotação persistido.
@@ -714,6 +814,8 @@ O alvo é uma máquina ligada o tempo todo, sem ninguém olhando. O que o `docke
 - Espaço em disco: as imagens somam ~36 GB e o build cache cresce sem limite (`docker builder prune`).
 - Backup do Postgres e retenção dos `outputs/` no R2 — nada é apagado hoje.
 - Alerta de falha: um run `failed` não notifica ninguém.
+
+**O plano de deploy está em [`deploy.md`](deploy.md)** — máquina alvo, orçamento de RAM, os ajustes a aplicar antes de subir (o principal: `max_pending_runs = 5` permite 5 renders Blender simultâneos, o que não cabe em 8 GB) e o desenho do monitoramento em quatro camadas com notificação por WhatsApp. Nada daquele documento foi aplicado ainda.
 
 ---
 

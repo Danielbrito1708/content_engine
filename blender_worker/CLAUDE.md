@@ -100,22 +100,38 @@ Pure (takes anything with a `frame_duration`), so it is tested without Blender.
 
 A bed shorter than the narration used to render a **black tail** — no error, no warning: measured, a 45s clip under a 71s narration gave 26s of black with subtitles still popping over it. That was filed as an asset problem while every render shared one long hand-picked file; with backgrounds now drawn from a clip library (`orchestrator` rotates over `assets/backgrounds/`), a short clip is the normal case. Copies are laid exactly end to end — an overlap makes Blender relocate the strip to another channel, a gap is a black frame. `MAX_BACKGROUND_REPEATS` (60) bounds the degenerate case; past it the tail goes black as before. Pure, tested without Blender.
 
+`background_repeats` **coerces its frame numbers to int**: the caller reads them off a strip, where Blender's RNA returns `frame_start`/`frame_duration` as floats, and `sequences.new_movie()` only takes ints — the repeats died with a `TypeError` mid-assembly. It never fired in production because a clip longer than the narration asks for no repeats at all, so the float never reached the API; it fired on the first validation render with a short clip.
+
 **Render length** — `content_end_frame(strips, bed_channels, fallback)` sets `scene.frame_end`. The music **and the background video** are *beds*: each is however long its asset happens to be, so neither may define where the video ends — only the narration and its subtitles do. Measured: a 90s background under a 68s narration rendered 22s of dead air after the last word left the screen. Previously only music was excluded, which went unnoticed because the placeholder background was a single frame. A bed *shorter* than the narration is covered by repeating it (see **Background coverage** above) rather than by shrinking the timeline, which would cut narration mid-sentence. Pure, so the rule is tested without Blender.
 
 **`scripts/edit_video.py` VSE layout:**
 - Scene — `fps = frame_rate` **and `fps_base = 1.0`**. Blender's effective fps is `fps / fps_base`, and `fps_base` comes from the `.blend` (the current `template.blend` is `6/0.1` = 60fps). Leaving it alone makes the scene run at `frame_rate / 0.1` — 10x off, which desyncs every frame-based timing and stretches sound strips 10x.
 - Ch1 — movie strip (video file), starts at `intro_start + 1`
-- Ch2 — music strip, volume 0.2; if `music_fade_out` in timing: keyframed fade from 0.2 → 0.0 between `music_fade_out` and `frame_end`
+- Ch2 — music strip, volume 0.2, with a keyframed fade to 0.0 over the last `music.fade_out_seconds` (see **No outro** below)
 - Ch3 — voice strip, volume 1.0, starts at `intro_frames(...)` — `speech_start + 1` without a hook, after the hook when it is played, with the video when it is muted (see **Video intro** below)
 - Ch4 — word-level text subtitles from `.srt` — see **Word-level subtitles** and **Subtitle typography** below
 - Ch5 — hook narration (optional), volume 1.0, starts at `intro_start + 1`
 - Ch6 — comment card image (optional), covering the intro; muted or not, its length comes from the hook file
 
-**`template.json` format:** see `docs/vision.md` — `frame_rate`, `frame_end`, `channels` (ch numbers), `timing` (frame offsets including optional `music_fade_out`), optional `subtitles` block.
+**`template.json` format:** see `docs/vision.md` — `frame_rate`, `frame_end` (fallback only), `channels` (ch numbers), `timing` (frame offsets), optional `subtitles`, `card` and `music` blocks.
 
 **Blender binary:** configured in `config.ini [blender] bin` → `/usr/local/bin/blender` (symlink to Blender 4.2 LTS in Docker).
 
 - Tests: `tests/test_worker.py` (3 tests; Blender not required — subprocess and I/O are fully mocked).
+
+### No outro — the video ends on the last narrated word (`scripts/edit_video.py`)
+
+There is no closing segment: `scene.frame_end` is the end of the narration (see **Render length**) and the only thing marking the ending is the music bed fading under the last sentence. `timing.outro_start` / `timing.outro_end` were never read by any code and are gone from the shipped template.
+
+**Public API (pure, no `bpy`):**
+- `music_fade_frames(config, frame_rate, default_seconds=DEFAULT_MUSIC_FADE_SECONDS) -> int` — the `music` block's `fade_out_seconds` in frames. Seconds, not frames, because a fade is a musical length: the same number must mean the same ending at any `frame_rate`. `0` disables the fade.
+- `music_fade_start(last_frame, fade_frames, first_frame=1) -> int | None` — `last_frame - fade_frames`, clamped to `first_frame`; `None` when there is nothing to fade.
+
+**Counted back from the end, not from a frame in the template.** `timing.music_fade_out` was frame 840 against a `frame_end` of 900 — a 2s fade for the 30s draft it was written for. Now that `frame_end` comes from the narration, that number means something else: on a video *shorter* than 840 frames the keyframes go in out of order (1, 840, 701), Blender sorts them by frame, and the curve becomes `0.2 → 0.0 → 0.2` — the whole video in decline. Measured on a 701-frame timeline with the voice muted: the bed went from -26.1 dBFS at 0s to -73.4 dBFS at the end, versus a flat -26.0 until 21.5s and -49.0 in the last window with the fade counted from the end. `music_fade_out` is no longer read.
+
+**Template config** (optional `music` block): `"music": { "fade_out_seconds": 1.5 }`. Defaults in code (`DEFAULT_MUSIC_FADE_SECONDS`) for the same reason the intro channels do — `template.json` lives in the bucket, and a template published before this feature has no `music` block.
+
+- Tests: `tests/test_music.py` (12 tests, marked `no_db` — the pure arithmetic, the keyframes via a fake strip, and two guards on the shipped `template.json`).
 
 ### Video intro — comment card + hook narration (`scripts/edit_video.py`)
 
@@ -218,7 +234,7 @@ Without it, raising the body size clips long words, and the clipping is **silent
 
 **Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 160, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. At 160 the auto-fit touches only 2 of 178 words on a real narration. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
 
-- Tests: `tests/test_subtitles.py` (35 tests total, marked `no_db` — no docker compose, no Blender needed).
+- Tests: `tests/test_subtitles.py` (62 tests total, marked `no_db` — no docker compose, no Blender needed).
 
 ### Template config endpoint (`src/blender_worker/api/routes/templates.py`)
 

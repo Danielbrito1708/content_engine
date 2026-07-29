@@ -284,18 +284,29 @@ async def _schedule(session, run: PipelineRun) -> bool:
     Idempotent on purpose: parts that already carry a ``scheduled_at`` are
     skipped, so this can run again — after a restart, or once the queue drains —
     without double-posting what is already booked.
+
+    As partes de uma história dividida saem **encadeadas**: cada uma leva o
+    horário da anterior em ``follows_at``, e o poster a agenda um intervalo
+    depois dele. Só a parte 1 disputa os horários preferidos do calendário —
+    uma história partida é uma história continuada, não N posts soltos.
     """
     log.info("scheduling posts", run_id=str(run.id))
     run.status = PipelineStatus.scheduling
     await session.commit()
 
     tiktok = TikTokClient()
+    parts = await _parts_of(session, run)
+    #: Horário da última parte agendada. Atualizado também nas partes puladas
+    #: por já terem `scheduled_at` — numa retomada, a parte 1 vem do banco e é
+    #: dela que a parte 2 precisa pendurar.
+    previous_slot: datetime | None = None
 
-    for part in await _parts_of(session, run):
+    for part in parts:
         if part.video_key is None:
             log.warning("part has no video_key, skipping schedule", part=part.part_number)
             continue
         if part.scheduled_at is not None:
+            previous_slot = part.scheduled_at
             continue
 
         try:
@@ -304,6 +315,8 @@ async def _schedule(session, run: PipelineRun) -> bool:
                 classification=run.classification or {},
                 part_number=part.part_number,
                 series_id=str(run.id),
+                total_parts=len(parts),
+                follows_at=previous_slot,
             )
         except BufferQueueFull as exc:
             # Not a failure: the run keeps its rendered videos and stays in
@@ -323,6 +336,9 @@ async def _schedule(session, run: PipelineRun) -> bool:
         part.scheduled_at = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")) if raw_ts else None
         part.tiktok_video_id = data.get("buffer_update_id")
         await session.commit()
+
+        if part.scheduled_at is not None:
+            previous_slot = part.scheduled_at
 
     run.status = PipelineStatus.scheduled
     await session.commit()

@@ -22,20 +22,20 @@
       "max_hold_seconds": 0.4,
       "rise_frames": 4,
       "rise_offset": 0.025,
-      "font_size": 160,
+      "font_size": 100,
       "y_position": 0.474,
       "color": [1.0, 1.0, 1.0, 1.0],
       "use_outline": true,
       "outline_color": [0.0, 0.0, 0.0, 1.0],
       "outline_width": 0.24
     },
+    "music": {
+      "fade_out_seconds": 1.5
+    },
     "timing": {
       "intro_start": 0,
       "intro_end": 90,
       "speech_start": 90,
-      "speech_end": 750,
-      "outro_start": 750,
-      "outro_end": 900,
-      "music_fade_out": 840
+      "speech_end": 750
     }
 }

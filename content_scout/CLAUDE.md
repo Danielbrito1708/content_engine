@@ -10,7 +10,7 @@ Descobre roteiros candidatos na internet e submete ao orchestrador. É o serviç
 - `api/routes/scout.py` — `POST /scout/run` (ciclo manual, síncrono), `GET /scout/seen` (auditoria)
 - `api/routes/health.py` — `GET /health`: ping no DB + flag do loop
 - `api/app.py` — inclui o `lifespan` que sobe o `scout_loop` quando `SCOUT_ENABLED=true`
-- `db/models.py` — `SeenItem` + enum `SeenStatus` + `ItemComment`
+- `db/models.py` — `SeenItem` + enum `SeenStatus` + `ItemComment` + `ArchiveCursor`
 - `clients/llm.py` — `ModerationClient` (segurança) + `StoryQualityClient` (gancho/storytelling)
 - `db/engine.py` — engine async + `AsyncSessionLocal` + `get_session()`
 - `schemas/scout.py` — `ScoutRunResponse`, `SeenItemResponse`
@@ -42,6 +42,8 @@ Nenhuma chave de API é necessária aqui — o caminho RSS não autentica, e a m
 Config em `config.ini`: `[services] orchestrator_url` + `llm_url`, `[reddit]`, `[filters]`, `[scout]`.
 
 Chaves novas: `[reddit] comments_limit` (0 = default do Reddit), `[scout] fetch_comments` (liga/desliga o enriquecimento) e `[scout] max_comments_stored` (quantos corpos guardar por post).
+
+Varredura histórica: `[reddit] archive_interval_hours` (0 = desligada), `archive_time_filter` (janela paginada, padrão `all`) e `archive_limit` (posts por página).
 
 Qualidade narrativa: `[scout] story_quality` (liga/desliga), `min_story_score` (corte da tag `weak_storytelling`, padrão 6), `story_excerpt_chars` (quanto de cada corpo vai no lote, padrão 700) e `story_timeout`.
 
@@ -81,6 +83,44 @@ Lê o feed Atom `/r/{sub}/top/.rss?t={janela}&limit={n}` de cada subreddit confi
 ⚠️ **`comment_count IS NULL` ≠ `0`.** Nulo = nunca consultado (todo filtrado, e toda falha de feed). Zero seria a afirmação de que o post não teve reação. Falha de enriquecimento nunca impede a publicação.
 
 `total` é **piso, não censo** — apagados e colapsados não aparecem. Sinal de repercussão, não métrica exata. `?limit=500` devolveu os mesmos 121 que sem limite, então `comments_limit = 0` (default do Reddit) é o certo.
+
+### Varredura histórica do arquivo (`sources/reddit.py` + `scout.py`)
+
+Pagina o `top?t=all` de um subreddit por vez, para a fila não ficar limitada ao que aconteceu nesta semana.
+
+**API pública:**
+- `RedditSource.archive_url(subreddit, after=None) -> str`
+- `RedditSource.fetch_archive(subreddit, after) -> tuple[list[Candidate], str | None]` — a página e o cursor da próxima. `None` no cursor = listagem esgotada.
+- `ArchiveCapableSource` (Protocol em `sources/base.py`) — capacidade opcional, no mesmo molde de `CommentCapableSource`.
+- Tabela `archive_cursors` — `origin` único, `after_id`, `pages_read`, `last_swept_at`.
+
+**Por que paginar e não só pedir `t=all`.** `top?t=all` devolve *sempre os mesmos 15 posts*. Depois da primeira passada todos estão em `seen_items`, então repetir a requisição gasta uma janela de rate limit para não achar nada. Medido ao vivo (28/07/2026): `?count=15&after=t3_…` devolveu 15 posts com **overlap zero** com a página 1 — então dá para andar para trás no arquivo indefinidamente.
+
+⚠️ **O cursor é o id da última `<entry>`, não do último `Candidate`.** `parse_feed` descarta link e image posts; paginar a partir do último candidato sobrevivente faria a varredura re-pedir a cauda descartada em toda passagem, e o cursor andaria a passo de tartaruga.
+
+⚠️ **A cadência mora no banco (`last_swept_at`), não num contador de processo.** Um contador zeraria em todo deploy e dispararia varredura imediata. A varredura fica "devida" quando `last_swept_at` é mais velho que `archive_interval_hours`.
+
+⚠️ **Uma varredura por ciclo, no máximo — entre todas as fontes.** O que está sendo protegido é a janela de rate limit compartilhada, que não liga para qual fonte a gastou. Subreddit nunca varrido tem prioridade sobre os já varridos, senão um sub recém-configurado esperaria o rodízio inteiro.
+
+⚠️ **Esgotar é normal, não é erro.** Feed vazio → cursor volta a `None` e a varredura recomeça do topo (`archive_wrapped=True`). O que a nova volta relê já está em `seen_items`, então uma volta custa requisição mas **não pode republicar**.
+
+⚠️ **Falha aqui não derruba o ciclo.** O arquivo é oferta extra em cima dos feeds ao vivo — mesma assimetria da nota de storytelling. O cursor também **não** avança quando a requisição falha: tratar 429 como esgotamento reiniciaria o sub do zero.
+
+### Dedup por conteúdo — reposts (`filters.py` + `seen_items.content_fingerprint`)
+
+`normalize_for_fingerprint(text)` / `content_fingerprint(text) -> str | None`, puros.
+
+**Por que `external_id` não basta.** Ele pega o *mesmo post*. A varredura histórica alcança anos atrás e entra em subs que repostam uns aos outros (`r/story` ↔ `r/stories`), então a mesma história chega de verdade duas vezes, com dois ids. Sem isso vira vídeo duplicado.
+
+Fingerprint = sha256 dos **1000 primeiros caracteres alfanuméricos** do corpo, minúsculo e sem acento. Descartar pontuação e caixa é o que faz um repost redigitado casar; cortar no começo é o que impede um bloco `EDIT:` no fim de derrubar a comparação. Acento sai porque a mesma história pode aparecer sem diacrítico.
+
+⚠️ **Corpo que normaliza para vazio devolve `None`, não o hash de `""`.** Com o hash, todo candidato assim colidiria com todos os outros e o segundo seria descartado como repost do primeiro.
+
+⚠️ **A coluna é indexada mas NÃO é única.** Um repost precisa ser gravado com a própria linha de auditoria dizendo que foi pulado (`skip_reason=duplicate_story`); uma constraint única rejeitaria exatamente essa linha.
+
+⚠️ **`content_fingerprint IS NULL` em toda linha anterior à migration 004.** `seen_items` nunca guardou o corpo, só título/url/`char_count`, então o histórico não pode ser reprocessado. Detecção de repost cobre só o que foi visto daqui para frente.
+
+O fingerprint é gravado **também nas linhas rejeitadas** — repost de história que foi filtrada por tamanho continua sendo repost. A checagem roda depois do filtro barato de tamanho e **antes** de moderação e nota: repost é a rejeição mais barata que existe e não pode custar chamada de modelo.
 
 ### Filtros determinísticos (`src/content_scout/filters.py`)
 
@@ -136,7 +176,7 @@ O ciclo para na primeira falha de moderação em vez de tentar os demais: se o s
 
 Desligável em `[scout] story_quality`.
 
-🚧 **A régua ainda não foi validada.** A medição feita até agora pontuou relatos reais (`r/desabafos`, `r/relacionamentos`), não histórias escritas para entreter — gêneros diferentes, então a taxa de 40% `weak_storytelling` pode estar medindo a fonte e não o corte. Decisões abertas (corpus, corte em 5 vs 6, tamanho do recorte, teto 9–10 nunca usado) e os dados brutos estão em **`content_scout/docs/story_quality_calibration.md`**. Não mexer em `min_story_score` nem no prompt de `story.py` antes de ler esse arquivo.
+🚧 **A régua ainda não foi re-medida contra o corpus novo.** A decisão de corpus foi tomada (rota (a): trocar as fontes por subs de história-entretenimento), e o prompt de `story.py` foi ajustado junto — ele não desconta mais por "pergunta ao fórum" quando a pergunta *emoldura* a história, que é a forma de todo post do `EuSouOBabaca`. **A medição dos 30 posts em `docs/story_quality_baseline.json` agora é de um corpus que não está mais configurado**, então a taxa de 40% `weak_storytelling` não descreve mais o que roda. Refazer com `scripts/score_real_posts.py --subreddits EuSouOBabaca,story,stories` antes de mexer em `min_story_score`. As outras três decisões (corte 5 vs 6, tamanho do recorte, teto 9–10 nunca usado) continuam abertas em **`content_scout/docs/story_quality_calibration.md`**.
 
 ### Ciclo do scout (`src/content_scout/scout.py`)
 
@@ -173,7 +213,9 @@ Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando
 - `POST /scout/run` — roda um ciclo agora, síncrono, e devolve os contadores. Feito para calibrar filtros vendo o resultado na hora.
 - `GET /scout/seen?status=&story_tag=&limit=&offset=` — trilha de auditoria; filtre por `filtered` para ver o que foi rejeitado e por quê, e por `story_tag=weak_storytelling` para calibrar `min_story_score`.
 
-**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `story_scored`, `weak_storytelling`, `story_quality_unavailable`, `already_running`.
+**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `story_scored`, `weak_storytelling`, `story_quality_unavailable`, `archive_swept`, `archive_fetched`, `archive_wrapped`, `duplicate_story`, `already_running`.
+
+`archive_swept` é a origem varrida no ciclo (`None` quando nenhuma estava devida); `archive_wrapped` diz que a listagem acabou e voltou ao topo; `duplicate_story` conta candidatos pulados por já existir a mesma história sob outro id.
 
 `already_running=true` (com todos os contadores em zero) significa que já havia um ciclo em andamento e esta chamada não fez nada — não é erro.
 
@@ -192,8 +234,11 @@ Nada mais muda: dedup, filtros, backpressure e orçamento tratam toda fonte igua
 
 ## Testing rules
 
-- `tests/test_reddit_source.py` (25), `tests/test_filters.py` (5) e `tests/test_story_quality.py` (23) — marcados `no_db`, rodam sem docker. O último usa `respx` para o cliente HTTP.
-- `tests/test_scout.py` (52) — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
+- `tests/test_reddit_source.py` (34), `tests/test_filters.py` (11) e `tests/test_story_quality.py` (23) — marcados `no_db`, rodam sem docker. O último usa `respx` para o cliente HTTP.
+- `tests/test_scout.py` (67) — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
+- ⚠️ **Nunca rodar a suíte com DB contra o banco vivo**: o fixture autouse `clean_db` apaga `seen_items` e `archive_cursors`, ou seja, o histórico de dedup inteiro — o scout voltaria a republicar tudo. Criar um banco descartável: `docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE content_scout_wt;"`, `alembic upgrade head` nele e rodar com `DATABASE_URL=…/content_scout_wt`.
+- O helper `_candidate` em `test_scout.py` costura o `external_id` dentro do corpo. Corpos iguais fazem o dedup por fingerprint tratar todo candidato depois do primeiro como repost — um helper com `"aaa…"` para todos quebraria a suíte inteira.
+- A fixture autouse `archive_off` desliga a varredura histórica por padrão; use `archive_on` para exercitá-la.
 - A fixture autouse `story_quality` não pontua ninguém por padrão, então toda a suíte antiga exercita o caminho de `llm_service` inacessível — que é justamente o caso que não pode mudar de comportamento.
 - Rodar com `poetry run python -m pytest` (não `poetry run pytest`): os imports são `src.*` e dependem do cwd no `sys.path`, que só o `-m` insere.
 - `conftest.py` força `SCOUT_ENABLED=false` — o loop periódico jamais pode subir sob teste, senão dispara HTTP real.

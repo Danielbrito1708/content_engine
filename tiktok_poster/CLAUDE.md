@@ -21,9 +21,11 @@ Serviço de agendamento e publicação de vídeos no TikTok via Buffer. Recebe `
 
 **Request** (`ScheduleRequest`):
 - `video_key` (str) — MinIO/R2 key do vídeo renderizado
-- `classification` (dict) — objeto de classificação do orchestrador (com `hashtag_hints`, `cta_per_part`, `parts`)
+- `classification` (dict) — objeto de classificação do orchestrador (com `hashtag_hints`, `cta_per_part`)
 - `part_number` (int) — número da parte (1, 2, ...)
 - `series_id` (str) — UUID do pipeline run (usado para log e rastreamento)
+- `total_parts` (int, default 1) — quantas partes a história tem ao todo
+- `follows_at` (datetime, opcional) — horário já agendado da parte anterior; presente só em partes 2+
 
 **Response** (`ScheduleResponse`):
 - `scheduled_at` (datetime) — horário UTC agendado no Buffer
@@ -38,6 +40,19 @@ Erros: `429` com `{ error: "buffer_queue_full", pending_count }` se a fila do Bu
 - Escaneia dias à frente até encontrar um com menos de `posts_per_day` posts
 - Horários preferidos configurados em `config.ini [posting] preferred_times` (padrão: `08:00,20:00` UTC)
 - Retorna `None` se a fila já tem `queue_limit` posts (Buffer free: 10)
+
+### Continuação de série (`continuation_slot`)
+
+`continuation_slot(follows_at, gap_minutes, pending_posts, queue_limit, now=None) -> datetime | None`
+
+Usado quando o request traz `follows_at` — ou seja, em partes 2+. Devolve `max(follows_at + gap, now + gap)`, com `gap` vindo de `config.ini [posting] series_gap_minutes` (padrão: 30).
+
+- **Ignora `preferred_times` e `posts_per_day` de propósito.** Eles pacejam histórias independentes; uma história dividida é uma história continuada, e submetê-la a esse ritmo jogava a parte 2 para o dia seguinte (comportamento anterior).
+- **`queue_limit` continua valendo** — é o teto do Buffer, não escolha de ritmo. Estourar devolve o mesmo `429 buffer_queue_full`, e o orchestrador cai no caminho de backpressure de sempre.
+- **O intervalo é espaçamento mínimo, não deslocamento fixo.** Parte anterior no passado (run retomado tarde) pediria ao Buffer um horário vencido; a história volta a andar um intervalo a partir de agora.
+- `follows_at` naive é lido como UTC.
+
+⚠️ **`classification["parts"]` não manda mais na caption.** A chave nunca foi preenchida pelo `llm_service` (`Classification` não tem esse campo), então `compose_caption` recebia `total_parts=1` sempre e o rótulo "(Parte 1/2)" **nunca apareceu**, nem em série dividida. O número agora vem de `total_parts` no request, que o orchestrador preenche com a contagem real de parts.
 
 ### Hashtags (`src/tiktok_poster/hashtags/selector.py`)
 
@@ -76,7 +91,7 @@ O bucket deve ser o mesmo configurado nos demais serviços (`blender-jobs`).
 
 ## Testes
 
-21 testes em 3 arquivos: `test_hashtags.py`, `test_scheduler.py`, `test_schedule.py`. Buffer e MinIO são sempre mockados.
+31 testes em 3 arquivos: `test_hashtags.py`, `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim e o rótulo de parte). Buffer e MinIO são sempre mockados.
 
 ```bash
 poetry run pytest

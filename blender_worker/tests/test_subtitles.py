@@ -490,3 +490,12 @@ def test_degenerate_clip_is_bounded_instead_of_looping_forever():
 
 def test_a_clip_with_no_frames_asks_for_nothing():
     assert background_repeats(clip_frames=0, first_start=1, needed_end=900) == []
+
+
+def test_start_frames_are_ints_even_when_the_strip_reports_floats():
+    """`strip.frame_start`/`frame_duration` come back as floats from Blender's RNA
+    and `new_movie()` takes only ints — the repeats died with a TypeError. It never
+    fired in production because a long clip asks for no repeats at all."""
+    starts = background_repeats(clip_frames=100.0, first_start=1.0, needed_end=450)
+    assert starts == [101, 201, 301, 401]
+    assert all(isinstance(s, int) for s in starts)

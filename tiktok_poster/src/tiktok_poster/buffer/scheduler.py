@@ -44,6 +44,40 @@ def next_available_slot(
     return None
 
 
+def continuation_slot(
+    follows_at: datetime,
+    gap_minutes: int,
+    pending_posts: list[dict],
+    queue_limit: int,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Slot for a part that continues a story already booked at ``follows_at``.
+
+    A story split in two is not two posts — it is one story continued, so the
+    second half hangs off the first instead of taking the next slot on the
+    calendar. ``preferred_times`` and ``posts_per_day`` are deliberately not
+    consulted: they pace independent stories, and letting them pace a
+    continuation would drop the rest of the story hours (or a day) later.
+
+    ``queue_limit`` still applies — it is Buffer's own ceiling, not a rhythm
+    choice, and going past it would fail at the API instead of here.
+    """
+    if len(pending_posts) >= queue_limit:
+        return None
+
+    now = now or datetime.now(tz=timezone.utc)
+    gap = timedelta(minutes=gap_minutes)
+
+    if follows_at.tzinfo is None:
+        follows_at = follows_at.replace(tzinfo=timezone.utc)
+
+    # The gap is a *minimum* spacing, not a fixed offset. When the previous part
+    # is already in the past — a run resumed long after a restart — anchoring on
+    # it would ask Buffer to schedule backwards; the story just resumes a gap
+    # from now instead.
+    return max(follows_at + gap, now + gap)
+
+
 def _parse_time(s: str) -> time:
     h, m = s.split(":")
     return time(int(h), int(m), tzinfo=timezone.utc)

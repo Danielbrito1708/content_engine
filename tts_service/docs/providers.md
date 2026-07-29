@@ -89,7 +89,7 @@ TTS_VOICE=pt-BR-ThalitaNeural  # opcional — esse é o padrão
 - **Qualidade travada em 24 kHz / 48 kbps**: o formato de saída é **hardcoded** em `audio-24khz-48kbitrate-mono-mp3` (`edge_tts/communicate.py`) — é constante na lib, não parâmetro, porque o endpoint gratuito do Edge só serve esse formato. É a razão de existir o provider `azure`.
 - **Dependência de conectividade**: a geração requer acesso à internet (chamadas ao endpoint da Microsoft). Sem rede, a geração falha.
 - **Rate limiting implícito**: o endpoint é da Microsoft e não documenta limites públicos. Para volumes altos, considerar ElevenLabs.
-- **Qualidade para texto longo**: frases acima de ~200 palavras por chamada podem soar monótonas. O orchestrador já divide o roteiro em partes de até ~600 palavras, mitigando parcialmente esse problema.
+- **Qualidade para texto longo**: frases acima de ~200 palavras por chamada podem soar monótonas. Desde que a história completa passou a ir num vídeo só (teto de divisão em ~30 min de fala), as partes chegam bem mais longas aqui — a mitigação por tamanho de parte não vale mais.
 
 ---
 
