@@ -15,7 +15,7 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `clients/llm.py` — `LLMClient.refine(script, metadata) → RefineResult`
 - `clients/tts.py` — `TTSClient.generate(text, run_id, part_number=1, rate=None, label=None) → (audio_key, srt_key)`
 - `clients/blender.py` — `BlenderClient`: `create_video(...)` (inclui `card_key`/`hook_voice_key`), `create_job(...)`, `render_card(text, template, output_key)`, `get_template_config(...)`, `get_job_status(...)`, `poll_job(...)`
-- `clients/tiktok.py` — `TikTokClient.schedule(...)` + exceção `BufferQueueFull`
+- `clients/tiktok.py` — `TikTokClient.schedule(video_key, classification, part_number, series_id, total_parts=1, follows_at=None)` + exceção `BufferQueueFull`
 - `clients/http.py` — `request(method, url, *, timeout, attempts)`: política única de retry
 - `backgrounds.py` — `pick_background(keys, run_id, part_number)`, puro
 - `hook_text.py` — `opens_with_hook(script, hook) -> bool`, puro: se a parte já abre pela frase gancho
@@ -155,6 +155,8 @@ O orchestrador não participa da geração de legenda: o `tts_service` transcrev
 ### Resiliência (`src/orchestrator/worker.py`)
 
 - **`BufferQueueFull` não é falha.** `_schedule` devolve `False`, o run fica em `scheduling` com os vídeos intactos, e o scout lê isso como capacidade ocupada (backpressure). `_schedule` é idempotente: parte com `scheduled_at` é pulada.
+- **Séries saem encadeadas.** Cada parte manda `follows_at` = horário agendado da anterior, e o poster a coloca `series_gap_minutes` (30) depois. Só a parte 1 vai sem âncora e disputa os horários preferidos. Uma parte **pulada por já ter `scheduled_at` atualiza a âncora** antes do `continue` — senão um run retomado mandaria a parte 2 sem âncora e ela cairia no calendário, quebrando a série exatamente no caso em que o encadeamento importa. Parte sem `video_key` não vira âncora.
+- **`total_parts` vem do run, não da classificação.** `_schedule` manda `len(parts)`. O poster lia `classification["parts"]`, chave que o `llm_service` nunca preencheu — o rótulo "(Parte 1/2)" nunca apareceu em post nenhum. Ver `tiktok_poster/CLAUDE.md`.
 - **`recover_interrupted_runs()`** — roda no `lifespan` antes da primeira request. Estado ativo no boot é órfão por definição (as `BackgroundTasks` morrem com o processo): run com todas as partes renderizadas é retomado no agendamento, o resto vira `failed` com `"interrompido por restart"`.
 - **`retry_pending_schedules()` / `maintenance_loop()`** — reoferece os runs parados a cada `[pipeline] retry_interval_seconds` (900s).
 - **`clients/http.py`** — 3 tentativas com backoff exponencial em erro de transporte e 5xx. **4xx nunca é repetido**, incluindo o `429` do poster.
@@ -177,4 +179,4 @@ docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE orchestrato
 alembic upgrade head && python -m pytest -q
 ```
 
-82 testes em 9 arquivos: `test_pipeline.py` (6, API layer), `test_worker.py` (10, stages individuais + end-to-end), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (10), `test_backgrounds.py` (6) e `test_http.py` (5).
+88 testes em 10 arquivos: `test_pipeline.py` (6, API layer), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (10), `test_backgrounds.py` (6) e `test_http.py` (5).
