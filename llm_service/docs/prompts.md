@@ -17,13 +17,15 @@ Sua função é receber um roteiro bruto e retornar um JSON com o roteiro refina
 
 | Regra | Detalhe |
 |---|---|
+| Idioma | Sempre português do Brasil — roteiro bruto em outro idioma é traduzido, recontado e não ao pé da letra |
 | Gancho obrigatório | A primeira frase deve prender o espectador em até 2 segundos |
 | Linguagem | Coloquial, direta e envolvente |
-| Tamanho por parte | Máximo 600 palavras (~60 segundos de fala a 150 WPM) |
-| Divisão em partes | Se o roteiro ultrapassar 600 palavras, dividir com cliffhanger no corte |
+| Tamanho por parte | Máximo `MAX_PART_WORDS` (5100 palavras ≈ 30 minutos de fala) |
+| Divisão em partes | Exceção, não padrão: a história completa vai numa parte só. Só divide acima do teto acima, com cliffhanger no corte |
 | Continuidade | Partes 2+ iniciam com resumo curto: "Na parte anterior, [1-2 frases]..." |
-| CTA | Cada parte termina com chamada para ação clara e específica |
-| Fidelidade | O conteúdo e a essência do roteiro original devem ser preservados |
+| CTA | **Nunca** no texto narrado — vive só no campo `cta_per_part`, que vira legenda do post |
+| Final | O texto narrado acaba quando a história acaba: sem despedida, moral ou "e é isso" |
+| Fidelidade | O conteúdo e a essência do roteiro original devem ser preservados — sem resumir para caber |
 
 ### Regras de classificação
 
@@ -106,7 +108,7 @@ Definidos em `OpenAICompatClient.complete()` e `AnthropicClient.complete()`:
 
 **Roteiros curtos (< 200 palavras):** sempre retornam uma parte. O gancho e o CTA são os campos mais impactados pela qualidade do modelo.
 
-**Roteiros longos (> 600 palavras):** o `split_rationale` indica onde o LLM escolheu cortar. Revisar se o cliffhanger está em uma posição narrativa adequada.
+**Roteiros longos:** o normal é continuarem numa parte só — o teto de divisão é de 30 minutos de narração, bem acima do que um roteiro típico ocupa. Quando a divisão acontecer, o `split_rationale` indica onde o LLM escolheu cortar; revisar se o cliffhanger está em uma posição narrativa adequada.
 
 **Metadados úteis:** passar `{"source": "reddit", "subreddit": "relacionamentos"}` melhora a segmentação de `target_audience` e a relevância das `hashtag_hints`.
 
