@@ -20,7 +20,7 @@ Sua função é receber um roteiro bruto e retornar um JSON com o roteiro refina
 | Idioma | Sempre português do Brasil — roteiro bruto em outro idioma é traduzido, recontado e não ao pé da letra |
 | Gancho obrigatório | A primeira frase deve prender o espectador em até 2 segundos |
 | Linguagem | Coloquial, direta e envolvente |
-| Tamanho por parte | Máximo `MAX_PART_WORDS` (5100 palavras ≈ 30 minutos de fala) |
+| Tamanho por parte | Máximo `MAX_PART_WORDS` (5850 palavras ≈ 30 minutos de fala) |
 | Divisão em partes | Exceção, não padrão: a história completa vai numa parte só. Só divide acima do teto acima, com cliffhanger no corte |
 | Continuidade | Partes 2+ iniciam com resumo curto: "Na parte anterior, [1-2 frases]..." |
 | CTA | **Nunca** no texto narrado — vive só no campo `cta_per_part`, que vira legenda do post |

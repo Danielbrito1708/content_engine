@@ -9,6 +9,7 @@ from src.tts_service.audio.transcribe import transcribe_to_srt
 from src.tts_service.schemas.generate import GenerateRequest, GenerateResponse
 from src.tts_service.storage.client import upload_audio, upload_bytes
 from src.tts_service.tts.factory import get_tts_client
+from src.tts_service.tts.voices import resolve_voice
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -18,6 +19,14 @@ log = get_logger(__name__)
 async def generate(body: GenerateRequest) -> GenerateResponse:
     slug = body.label or f"part_{body.part_number}"
     rate = body.rate or settings.env.tts_rate
+    # The narrator's gender decides the voice; without one the request keeps
+    # TTS_VOICE, which is what every render used before this existed.
+    voice = resolve_voice(
+        body.narrator_gender,
+        default=settings.env.tts_voice,
+        male=settings.env.tts_voice_male,
+        female=settings.env.tts_voice_female,
+    )
     log.info(
         "tts request",
         run_id=body.run_id,
@@ -25,9 +34,11 @@ async def generate(body: GenerateRequest) -> GenerateResponse:
         chars=len(body.text),
         rate=rate,
         rate_source="request" if body.rate else "env",
+        narrator_gender=body.narrator_gender or "unknown",
+        voice=voice,
     )
 
-    client = get_tts_client(rate=rate)
+    client = get_tts_client(rate=rate, voice=voice)
 
     try:
         audio_bytes = await client.generate(body.text)

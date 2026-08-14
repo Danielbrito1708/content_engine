@@ -13,6 +13,22 @@ MAX_HOOK_CHARS = 200
 #: de espaço. Exigir o espaço é o que impede `R$ 3.5 milhões` de virar frase.
 _SENTENCE_END = re.compile(r'[.!?…]+["\'”’)\]]*(?=\s)')
 
+#: Gênero de quem narra a história. `unknown` não é falha: história sem narrador
+#: identificável — ou narrada em terceira pessoa — é resultado normal, e é o que
+#: manda o `tts_service` manter a voz padrão.
+NARRATOR_GENDERS = ("male", "female", "unknown")
+
+
+def normalize_narrator_gender(value: str | None) -> str:
+    """Qualquer entrada para um valor de ``NARRATOR_GENDERS``.
+
+    Normaliza em vez de rejeitar: o campo sai de um LLM, e um `"masculino"` ou um
+    `"m"` não podem derrubar o refino de um roteiro que está inteiro e correto.
+    O custo de errar é a voz de sempre, que é o que todo vídeo já usava.
+    """
+    key = (value or "").strip().lower()
+    return key if key in NARRATOR_GENDERS else "unknown"
+
 
 def derive_hook(parts: list[str]) -> str:
     """Primeira frase da parte 1, limitada a ``MAX_HOOK_CHARS``.
@@ -64,8 +80,17 @@ class RefineResponse(BaseModel):
     #: A frase que abre o vídeo. É a mesma primeira frase da parte 1 — vem
     #: separada porque o pipeline a narra num arquivo próprio.
     hook: str = ""
+    #: Gênero de quem conta a história em primeira pessoa. Decide a voz da
+    #: narração no `tts_service` — não é o público-alvo, que é
+    #: `classification.target_audience.gender` e responde outra pergunta.
+    narrator_gender: str = "unknown"
 
     @model_validator(mode="after")
     def _fill_hook(self) -> "RefineResponse":
         self.hook = self.hook.strip() or derive_hook(self.parts)
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_narrator(self) -> "RefineResponse":
+        self.narrator_gender = normalize_narrator_gender(self.narrator_gender)
         return self

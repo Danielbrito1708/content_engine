@@ -97,6 +97,51 @@ Internamente (dentro do Docker network), os serviços se comunicam pelo nome do 
 
 Externamente (localhost), cada um usa a porta mapeada acima.
 
+## Passos pendentes de deploy
+
+> Da branch `worktree-voz-narrador-fim-video`. Apagar esta seção quando os dois passos estiverem aplicados em todos os ambientes.
+
+### 1. Republicar o `template.json` no bucket
+
+⚠️ **O `template.json` do repo não é o que roda.** O `blender_worker` baixa `templates/template.json` do MinIO/R2 no momento do render, e o orchestrador lê `narration.rate` do mesmo objeto via `GET /templates/{id}/config`. Editar a cópia do repo não muda nada até o upload.
+
+Duas mudanças desta branch dependem disso:
+
+| Chave | Valor | O que muda sem o upload |
+|---|---|---|
+| `narration.rate` | `+30%` | A narração continua no rate do template publicado |
+| `narration.tail_seconds` | `0.5` | Nada — o default de 0,5s está no código e já vale |
+
+O rate é o único que **exige** o upload. Conferir o que está publicado, antes e depois — é o mesmo endpoint que o orchestrador usa, então responde exatamente o que o pipeline vai ler:
+
+```bash
+curl -s localhost:8001/templates/$BLENDER_TEMPLATE_ID/config | python -m json.tool
+```
+
+### 2. Migration `005` do orchestrator
+
+**`005_add_narrator_gender_to_pipeline_runs`.** Adiciona `narrator_gender` em `pipeline_runs`, coluna que o `_refine` passou a escrever. Sem ela, todo run morre no refino com `UndefinedColumn`.
+
+**No Docker não há passo manual**: o `CMD` do `orchestrator/Dockerfile` é `alembic upgrade head && uvicorn ...`, então a migration roda sozinha ao subir o container — **desde que a imagem seja reconstruída**:
+
+```bash
+docker compose up -d --build orchestrator
+```
+
+⚠️ `docker compose up -d` **sem `--build`** sobe a imagem antiga em silêncio: o código novo não entra, a migration não roda, e o sintoma é o run falhando no refino como se fosse bug de código. Conferir depois de subir:
+
+```bash
+docker compose exec db psql -U postgres -d orchestrator -c "\d pipeline_runs" | grep narrator_gender
+```
+
+Rodando o orchestrador **fora** do Docker, aí sim é manual, com `DATABASE_URL` apontando para o banco `orchestrator`:
+
+```bash
+cd orchestrator && poetry run alembic upgrade head
+```
+
+Nenhum outro serviço desta branch tem migration — `tts_service`, `llm_service` e `blender_worker` mudaram só em código e config.
+
 ## Estado do projeto
 
 - `blender_worker` — implementado (MVP completo: API, DB, Blender pipeline, image compositor)

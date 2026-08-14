@@ -30,6 +30,7 @@ resolve_subtitle_style = edit_video.resolve_subtitle_style
 apply_text_style = edit_video.apply_text_style
 check_movie_strip = edit_video.check_movie_strip
 content_end_frame = edit_video.content_end_frame
+end_padding_frames = edit_video.end_padding_frames
 background_repeats = edit_video.background_repeats
 fit_font_size = edit_video.fit_font_size
 
@@ -384,6 +385,45 @@ def test_content_end_frame_falls_back_on_an_empty_timeline():
 def test_content_end_frame_uses_the_longest_content_strip():
     strips = [_FakeChanStrip(3, 900), _FakeChanStrip(4, 1500), _FakeChanStrip(4, 1200)]
     assert content_end_frame(strips, bed_channels={1, 2}, fallback=0) == 1500
+
+
+# --- end padding -------------------------------------------------------------
+
+
+def test_end_padding_defaults_to_half_a_second():
+    """Flush against the voice strip the last consonant is clipped — the video
+    reads as if it ended mid-word."""
+    assert end_padding_frames({}, 30) == 15
+    assert end_padding_frames({"rate": "+30%"}, 30) == 15
+
+
+def test_end_padding_is_a_duration_not_a_frame_count():
+    assert end_padding_frames({"tail_seconds": 0.5}, 60) == 30
+    assert end_padding_frames({"tail_seconds": 1.0}, 30) == 30
+
+
+def test_end_padding_missing_block_falls_back_to_the_code_default():
+    """`template.json` lives in the bucket: the deployed template has no
+    `tail_seconds`, and it must still get the breath."""
+    assert end_padding_frames(None, 30) == 15
+
+
+def test_end_padding_can_be_switched_off():
+    assert end_padding_frames({"tail_seconds": 0}, 30) == 0
+
+
+def test_end_padding_never_shortens_the_video():
+    # A negative tail would end the render *before* the narration does — a whole
+    # word gone instead of a syllable.
+    assert end_padding_frames({"tail_seconds": -2}, 30) == 0
+
+
+def test_shipped_template_gives_the_last_word_room_to_finish():
+    import json
+
+    path = Path(__file__).resolve().parents[1] / "template.json"
+    template = json.loads(path.read_text(encoding="utf-8"))
+    assert end_padding_frames(template.get("narration"), template["frame_rate"]) == 15
 
 
 # --- vertical position -----------------------------------------------------
