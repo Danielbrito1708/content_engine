@@ -6,6 +6,7 @@ from sqlalchemy import select
 from structlog import get_logger
 
 from src.core import settings
+from src.core.notify import notify, ping, short_id
 from src.orchestrator.backgrounds import pick_background
 from src.orchestrator.clients.blender import BlenderClient
 from src.orchestrator.clients.llm import LLMClient
@@ -55,14 +56,26 @@ async def run_pipeline(run_id: uuid.UUID) -> None:
             await _process_all_parts(session, run, rate)
             await _schedule(session, run)
         except Exception as exc:
+            # Lido antes da atribuição: depois dela todo run falha "em failed", e
+            # o estágio é a única coisa na mensagem que diz onde procurar.
+            stage = run.status.value
             run.status = PipelineStatus.failed
             run.error = str(exc)
             log.error("pipeline failed", run_id=str(run_id), error=str(exc))
+            notify(
+                "Run falhou",
+                level="error",
+                icon="❌",
+                run=short_id(run_id),
+                etapa=stage,
+                erro=str(exc)[:200],
+            )
             await session.commit()
 
 
 async def _refine(session, run: PipelineRun) -> None:
     log.info("refining script", run_id=str(run.id))
+    notify("Refinando roteiro", level="debug", icon="🧠", run=short_id(run.id))
     run.status = PipelineStatus.refining
     await session.commit()
 
@@ -86,6 +99,14 @@ async def _refine(session, run: PipelineRun) -> None:
         parts=run.parts_count,
         hook=bool(run.hook),
         narrator=run.narrator_gender,
+    )
+    notify(
+        "Roteiro refinado",
+        icon="✂️",
+        run=short_id(run.id),
+        partes=run.parts_count,
+        narrador=run.narrator_gender,
+        gancho=(run.hook or "")[:120] or None,
     )
 
 
@@ -125,12 +146,23 @@ async def _run_hook_tts(session, run: PipelineRun, rate: str | None = None) -> N
         )
     except Exception as exc:
         log.warning("hook audio failed, continuing without it", run_id=str(run.id), error=str(exc))
+        # Nível `warning`, e não `debug` como o sucesso: o vídeo continua e o run
+        # termina como qualquer outro, então esta é uma das degradações que nenhum
+        # status de run denuncia. Se não avisar aqui, não avisa em lugar nenhum.
+        notify(
+            "Gancho não pôde ser narrado — vídeo sai sem a intro falada",
+            level="warning",
+            icon="⚠️",
+            run=short_id(run.id),
+            erro=str(exc)[:200],
+        )
         return
 
     run.hook_audio_key = audio_key
     run.hook_srt_key = srt_key
     await session.commit()
     log.info("hook audio ready", run_id=str(run.id), audio=audio_key, srt=srt_key)
+    notify("Gancho narrado", level="debug", icon="🎙️", run=short_id(run.id))
 
 
 async def _render_card(session, run: PipelineRun) -> None:
@@ -155,11 +187,20 @@ async def _render_card(session, run: PipelineRun) -> None:
         )
     except Exception as exc:
         log.warning("card render failed, continuing without it", run_id=str(run.id), error=str(exc))
+        # Mesma razão do gancho: degrada o vídeo sem marcar o run.
+        notify(
+            "Card da intro falhou — vídeo sai sem a abertura visual",
+            level="warning",
+            icon="⚠️",
+            run=short_id(run.id),
+            erro=str(exc)[:200],
+        )
         return
 
     run.card_key = card_key
     await session.commit()
     log.info("card ready", run_id=str(run.id), card=card_key)
+    notify("Card da intro pronto", level="debug", icon="🖼️", run=short_id(run.id))
 
 
 async def _narration_rate() -> str | None:
@@ -173,6 +214,14 @@ async def _narration_rate() -> str | None:
         config = await BlenderClient().get_template_config(template_id)
     except Exception as exc:
         log.warning("could not read template config, using tts_service default rate", error=str(exc))
+        # Outra que não marca o run: a narração sai na velocidade errada e o
+        # vídeo publica normalmente. Só se descobre ouvindo.
+        notify(
+            "Template ilegível — narração sai na velocidade default do tts_service",
+            level="warning",
+            icon="⚠️",
+            erro=str(exc)[:200],
+        )
         return None
 
     rate = (config.get("narration") or {}).get("rate")
@@ -217,6 +266,13 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | No
     part.status = PartStatus.tts_done
     await session.commit()
     log.info("audio ready", run_id=str(run.id), part=part.part_number, audio=audio_key, srt=srt_key)
+    notify(
+        "Narração pronta",
+        level="debug",
+        icon="🔊",
+        run=short_id(run.id),
+        parte=f"{part.part_number}/{run.parts_count}",
+    )
 
 
 def _hook_is_muted(part: PipelinePart, run: PipelineRun) -> bool:
@@ -253,12 +309,28 @@ async def background_key_for(run_id: uuid.UUID, part_number: int) -> str:
         if keys:
             return pick_background(keys, str(run_id), part_number)
         log.warning("no background clips under prefix", prefix=prefix)
+        # Degradação silenciosa de novo: o render funciona, mas todos os vídeos
+        # passam a dividir o mesmo fundo fixo — que é o que a rotação existe
+        # para evitar. Nenhum status registra isso.
+        notify(
+            "Nenhum clipe de fundo no bucket — usando o fundo fixo",
+            level="warning",
+            icon="⚠️",
+            prefixo=prefix,
+        )
 
     return template.background_video_key
 
 
 async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
     log.info("starting render", run_id=str(run.id), part=part.part_number)
+    notify(
+        "Render iniciado",
+        level="debug",
+        icon="🎞️",
+        run=short_id(run.id),
+        parte=f"{part.part_number}/{run.parts_count}",
+    )
     part.status = PartStatus.render_pending
     await session.commit()
 
@@ -298,6 +370,13 @@ async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
         key=part.video_key,
         background=background_key,
     )
+    notify(
+        "Vídeo renderizado",
+        icon="🎬",
+        run=short_id(run.id),
+        parte=f"{part.part_number}/{run.parts_count}",
+        fundo=background_key.rsplit("/", 1)[-1],
+    )
 
 
 async def _schedule(session, run: PipelineRun) -> bool:
@@ -313,6 +392,7 @@ async def _schedule(session, run: PipelineRun) -> bool:
     uma história partida é uma história continuada, não N posts soltos.
     """
     log.info("scheduling posts", run_id=str(run.id))
+    notify("Agendando publicação", level="debug", icon="📋", run=short_id(run.id))
     run.status = PipelineStatus.scheduling
     await session.commit()
 
@@ -326,6 +406,13 @@ async def _schedule(session, run: PipelineRun) -> bool:
     for part in parts:
         if part.video_key is None:
             log.warning("part has no video_key, skipping schedule", part=part.part_number)
+            notify(
+                "Parte sem vídeo — não será publicada",
+                level="warning",
+                icon="⚠️",
+                run=short_id(run.id),
+                parte=part.part_number,
+            )
             continue
         if part.scheduled_at is not None:
             previous_slot = part.scheduled_at
@@ -352,6 +439,13 @@ async def _schedule(session, run: PipelineRun) -> bool:
                 part=part.part_number,
                 pending=exc.pending_count,
             )
+            notify(
+                "Fila do Buffer cheia — run esperando vaga",
+                icon="⏸️",
+                run=short_id(run.id),
+                parte=part.part_number,
+                na_fila=exc.pending_count,
+            )
             return False
 
         raw_ts = data.get("scheduled_at")
@@ -359,13 +453,46 @@ async def _schedule(session, run: PipelineRun) -> bool:
         part.tiktok_video_id = data.get("buffer_update_id")
         await session.commit()
 
+        notify(
+            "Publicação agendada",
+            icon="📅",
+            run=short_id(run.id),
+            parte=f"{part.part_number}/{len(parts)}",
+            para=_when(part.scheduled_at),
+        )
+
         if part.scheduled_at is not None:
             previous_slot = part.scheduled_at
 
     run.status = PipelineStatus.scheduled
     await session.commit()
     log.info("pipeline scheduled", run_id=str(run.id))
+    notify(
+        "Run concluído",
+        icon="🚀",
+        run=short_id(run.id),
+        partes=len(parts),
+        primeira=_when(parts[0].scheduled_at) if parts else None,
+    )
+    # O dead-man's switch de produto. É pingado **só aqui**, no único ponto do
+    # sistema que significa "saiu vídeo de verdade" — é o silêncio deste ping,
+    # do lado de fora, que denuncia um pipeline que parou de produzir enquanto
+    # todos os `/health` continuam respondendo 200.
+    await ping("produced")
     return True
+
+
+def _when(moment: datetime | None) -> str | None:
+    """Um horário legível num celular, no fuso da máquina.
+
+    ``astimezone()`` sem argumento converte para o fuso local do processo — daí o
+    ``TZ`` no compose. Sem ele o container roda em UTC e todo horário aparece 3h
+    adiantado, o que é pior que não mostrar horário nenhum: parece informação
+    correta.
+    """
+    if moment is None:
+        return None
+    return moment.astimezone().strftime("%d/%m %H:%M")
 
 
 async def _parts_of(session, run: PipelineRun) -> list[PipelinePart]:
@@ -413,6 +540,13 @@ async def recover_interrupted_runs() -> dict[str, int]:
 
     if runs:
         log.info("startup recovery done", resumed=resumed, failed=failed)
+        notify(
+            "Runs órfãos reconciliados no boot",
+            level="warning",
+            icon="🔧",
+            retomados=resumed,
+            perdidos=failed,
+        )
     return {"resumed": resumed, "failed": failed}
 
 
@@ -435,6 +569,13 @@ async def retry_pending_schedules() -> int:
                     drained += 1
             except Exception as exc:  # noqa: BLE001 — one stuck run must not end the sweep
                 log.error("retry schedule failed", run_id=str(run.id), error=str(exc))
+                notify(
+                    "Retomada de agendamento falhou",
+                    level="error",
+                    icon="❌",
+                    run=short_id(run.id),
+                    erro=str(exc)[:200],
+                )
                 await session.rollback()
 
     return drained
@@ -451,6 +592,13 @@ async def _schedule_in_background(run_id: uuid.UUID) -> None:
             run.status = PipelineStatus.failed
             run.error = str(exc)
             log.error("resumed run failed", run_id=str(run_id), error=str(exc))
+            notify(
+                "Run retomado falhou",
+                level="error",
+                icon="❌",
+                run=short_id(run_id),
+                erro=str(exc)[:200],
+            )
             await session.commit()
 
 
@@ -459,6 +607,10 @@ async def maintenance_loop() -> None:
 
     Outlives any single failure for the same reason the scout's loop does: a
     night with nobody watching is exactly when it must not stop.
+
+    Carrega também o batimento do ``alive``. É o lugar certo por já ser o único
+    laço que atravessa a noite: um ping em processo separado poderia continuar
+    batendo com o orchestrador travado, que é exatamente a falha a detectar.
     """
     pipeline_cfg = getattr(settings.CONFIG, "pipeline", None)
     interval = int(getattr(pipeline_cfg, "retry_interval_seconds", 900) if pipeline_cfg else 900)
@@ -466,9 +618,19 @@ async def maintenance_loop() -> None:
 
     while True:
         await asyncio.sleep(interval)
+        # Antes do trabalho, não depois: o ping responde "este processo está de
+        # pé", e uma varredura lenta ou travada não deve ser lida como morte.
+        await ping("alive")
         try:
             drained = await retry_pending_schedules()
             if drained:
                 log.info("maintenance drained runs", runs=drained)
+                notify("Runs destravados da fila do Buffer", icon="▶️", runs=drained)
         except Exception as exc:  # noqa: BLE001 — the loop must survive the night
             log.error("maintenance_loop_failed", error=str(exc))
+            notify(
+                "Manutenção falhou",
+                level="error",
+                icon="❌",
+                erro=str(exc)[:200],
+            )

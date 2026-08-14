@@ -434,6 +434,33 @@ Três mudanças de bastidor para o sistema aguentar rodar sozinho:
 - **Log não enche mais o disco.** O registro de cada serviço passou a ser resumido em vez de detalhado, e é limitado a um tamanho máximo com descarte do que é antigo. Antes, cada chamada de rede gravava cabeçalhos inteiros, sem limite de tamanho.
 - **O modelo de transcrição não é mais baixado toda vez.** Ele agora fica guardado na máquina; antes, cada atualização de container baixava de novo os 420 MB e dependia do serviço externo estar no ar naquele momento.
 
+## Você é avisado no WhatsApp quando algo acontece
+
+Até aqui o sistema trabalhava mudo. Um vídeo podia falhar às três da manhã e a primeira pessoa a descobrir era quem fosse conferir o perfil dias depois — e o caso pior nem parecia problema: todos os serviços respondendo normalmente e, mesmo assim, nenhum vídeo saindo.
+
+Agora cada passo manda uma mensagem no WhatsApp, na hora em que acontece:
+
+| O que chega no celular | Quando |
+|---|---|
+| 🔎 Pesquisa de roteiros iniciada | O scout começa a procurar histórias (de hora em hora) |
+| 📝 História enviada ao pipeline | Achou uma história boa — vem com o título, o subreddit e a nota que ela tirou |
+| 📥 Roteiro recebido | O pipeline começou a trabalhar naquela história |
+| ✂️ Roteiro refinado | O LLM terminou — em quantas partes ficou, quem narra, qual é a frase de abertura |
+| 🎙️ 🖼️ Gancho narrado / card pronto | As duas peças da abertura do vídeo ficaram prontas |
+| 🔊 Narração pronta | O áudio de uma parte saiu |
+| 🎞️ 🎬 Render iniciado / vídeo renderizado | O vídeo de cada parte, com o clipe de fundo que ele usou |
+| 📅 Publicação agendada | Cada parte, com o dia e a hora em que vai ao ar |
+| 🚀 Run concluído | Tudo daquela história agendado |
+| ⏸️ Fila do Buffer cheia | O run está esperando vaga — não é erro, mas explica por que nada saiu |
+| ⚠️ Avisos | Algo saiu pior do que deveria, mas o vídeo continuou |
+| ❌ Falhas | Alguma coisa parou de verdade |
+
+**Os avisos ⚠️ são a parte menos óbvia e a mais útil.** Existe uma classe de problema que nunca aparecia em lugar nenhum: o vídeo publica, o sistema diz que deu tudo certo, e mesmo assim ele saiu pior. É o caso do gancho que não pôde ser narrado, do card que não foi composto, da narração que saiu na velocidade errada porque o template não pôde ser lido, ou de todos os vídeos dividindo o mesmo fundo porque a biblioteca de clipes estava vazia. Nenhuma dessas coisas derruba o vídeo — e por isso mesmo nenhuma delas aparecia. Agora todas avisam.
+
+**Você pode diminuir o volume depois.** No começo vale receber tudo: é assim que se descobre o que o sistema realmente faz quando roda sozinho. Quando o fluxo já for previsível, uma linha de configuração corta as mensagens miúdas e deixa só os marcos, ou só os problemas. Nada disso exige mexer no código.
+
+**E existe um alarme para o silêncio.** Notificação só funciona quando o sistema está vivo o bastante para mandá-la — uma queda de luz não avisa ninguém. Por isso o sistema também bate ponto num serviço externo de vigília: um sinal a cada 15 minutos dizendo "estou de pé", outro a cada busca do scout, e um terceiro **só quando um vídeo é concluído de verdade**. Se os sinais param de chegar, é o serviço de fora que avisa. O terceiro é o que resolve o pior caso de todos: tudo aparentemente funcionando e nenhum vídeo saindo.
+
 ## Fluxo completo resumido
 
 ```

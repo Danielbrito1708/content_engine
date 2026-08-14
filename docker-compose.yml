@@ -76,6 +76,10 @@ services:
     environment:
       ROOT_DIR: /app
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/orchestrator
+      # As notificações mostram o horário agendado de cada publicação. Sem TZ o
+      # container roda em UTC e o horário sai 3h adiantado — errado de um jeito
+      # que parece certo, que é o pior tipo de erro numa mensagem de alerta.
+      TZ: ${TZ:-America/Sao_Paulo}
     depends_on:
       db:
         condition: service_healthy
@@ -128,6 +132,7 @@ services:
     environment:
       ROOT_DIR: /app
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/content_scout
+      TZ: ${TZ:-America/Sao_Paulo}
     depends_on:
       db:
         condition: service_healthy

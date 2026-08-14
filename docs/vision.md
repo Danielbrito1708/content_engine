@@ -888,9 +888,67 @@ O alvo é uma máquina ligada o tempo todo, sem ninguém olhando. O que o `docke
 - O Docker Desktop no Windows exige sessão de usuário logada; um daemon Linux (VM ou WSL como serviço) é o alvo certo para 24h.
 - Espaço em disco: as imagens somam ~36 GB e o build cache cresce sem limite (`docker builder prune`).
 - Backup do Postgres e retenção dos `outputs/` no R2 — nada é apagado hoje.
-- Alerta de falha: um run `failed` não notifica ninguém.
 
-**O plano de deploy está em [`deploy.md`](deploy.md)** — máquina alvo, orçamento de RAM, os ajustes a aplicar antes de subir (o principal: `max_pending_runs = 5` permite 5 renders Blender simultâneos, o que não cabe em 8 GB) e o desenho do monitoramento em quatro camadas com notificação por WhatsApp. Nada daquele documento foi aplicado ainda.
+**O plano de deploy está em [`deploy.md`](deploy.md)** — máquina alvo, orçamento de RAM, os ajustes a aplicar antes de subir (o principal: `max_pending_runs = 5` permite 5 renders Blender simultâneos, o que não cabe em 8 GB) e o desenho do monitoramento em quatro camadas com notificação por WhatsApp. **A camada 3 daquele documento — a que depende de código — está implementada** (ver abaixo); as camadas 1, 2 e 4 são configuração da máquina e continuam pendentes.
+
+---
+
+## Notificação de operação
+
+O pipeline roda sozinho e não tinha nenhuma voz. Um run `failed` não avisava ninguém, e a falha pior nem se registrava em lugar nenhum: todos os `/health` respondendo `200` e mesmo assim nenhum vídeo saindo.
+
+O módulo é `src/core/notify.py`, **copiado byte a byte** entre `orchestrator` e `content_scout` — mesmo padrão de `bootstrap.py` e `logger.py`, que já são duplicados assim. Ele não importa o `EnvSettings` de nenhum serviço justamente para permanecer copiável para um serviço novo sem edição.
+
+### Duas garantias, e elas definem a forma do módulo
+
+**Nunca levanta exceção.** `notify()` é envolvido inteiro num `try`. Um monitoramento que derruba o run que ele monitora produz exatamente a falha que ninguém consegue diagnosticar, porque o canal de diagnóstico é ele mesmo.
+
+**Nunca bloqueia quem chama.** `notify()` é **síncrono** e só enfileira; quem fala com a rede é o `sender_loop`, no fundo. Ser síncrono é o que impede que um enganche de notificação vire ponto de suspensão no meio de uma transação. Um envio leva ~1s e um run emite ~14 eventos — síncrono, seriam minutos de pipeline gastos com mensagem de celular.
+
+### Eventos e níveis
+
+Cada evento tem um nível (`debug` / `info` / `warning` / `error`) e o corte mora em `[monitoring] level`, nos dois `config.ini`. O default é **`debug` — tudo**, deliberadamente: no começo a pergunta a responder é "o que este sistema faz quando roda sozinho", e ela não se responde vendo só os erros. Subir para `info` corta o miúdo (TTS e render de cada parte, card, gancho, resumo do ciclo do scout) e deixa os marcos.
+
+**A categoria `warning` é a que não existia em lugar nenhum.** São as degradações que não marcam o run: gancho não narrado, card não composto, `narration.rate` não lido, biblioteca de fundos vazia, parte sem `video_key`. Em todas, o vídeo publica e o run termina `scheduled` — o status não distingue um vídeo íntegro de um vídeo capado. Sem o aviso aqui, não há aviso em lugar nenhum.
+
+**O estágio da falha é lido antes de `status = failed`.** Depois da atribuição todo run falha "em `failed`", e o estágio é a única pista na mensagem sobre onde procurar.
+
+### Destinos
+
+Credenciais vêm do **ambiente**, comportamento vem do `config.ini`. Chave de API não entra em arquivo versionado; verbosidade e cadência não são segredo.
+
+| Destino | Var | Papel |
+|---|---|---|
+| CallMeBot | `CALLMEBOT_PHONE` + `CALLMEBOT_APIKEY` | WhatsApp, grátis, sem infra |
+| Webhook | `NOTIFY_WEBHOOK_URL` | `POST {"text": ...}` — WAHA, ntfy, Discord |
+
+Os dois podem estar ligados ao mesmo tempo, que é o caminho de migração para o WAHA sem apagar o CallMeBot antes de saber que o novo funciona. **Sem nenhum dos dois configurados, todo `notify()` é no-op** — não é só o envio que para, é o enfileiramento: uma fila que ninguém drena encheria em ambiente de desenvolvimento e na suíte de testes.
+
+O `sender_loop` espaça os envios (`min_interval_seconds`, 3s). Não é educação com o servidor: o CallMeBot recusa rajadas, e rajada é exatamente o que um run produz — refino, gancho e card saem em segundos um do outro. Sem o espaço, quem se perde é a metade final de cada run.
+
+### Dead-man's switches — a camada 3 do `deploy.md`
+
+O inverso de um alerta: quem avisa é o **silêncio** dos pings, do lado de fora. É a única forma de detectar uma máquina que morreu sem conseguir reportar a própria morte.
+
+| Check | Quem pinga | Janela | Que falha pega |
+|---|---|---|---|
+| `alive` | `maintenance_loop` do orchestrador, a cada ciclo (15 min) | curta | o processo morreu |
+| `scout` | fim de cada ciclo do scout (1h) | média | a fila secou em silêncio |
+| `produced` | **só** quando um run termina em `scheduled` | **larga** (24–36h) | parou de sair vídeo com tudo respondendo 200 |
+
+Destino em `HEALTHCHECK_{CHECK}_URL`; sem a var, é no-op.
+
+⚠️ **São três, e não um, de propósito.** O `deploy.md` desenhava um único check pingado no sucesso, com alerta em 12h. Isso confunde "o pipeline quebrou" com "o scout não achou material bom": num fim de semana devagar, 12h sem run concluído é plausível com tudo funcionando, e alarme falso de madrugada treina a pessoa a ignorar o alerta — que é como monitoramento morre de verdade. Com `alive` e `scout` cobrindo "os laços estão de pé", o `produced` pode ter janela larga sem virar ponto cego.
+
+⚠️ **O `produced` não é pingado quando o Buffer está cheio.** Um run parado esperando vaga não produziu nada. Pingar ali faria o switch afirmar que o sistema está entregando justamente enquanto ele parou — e um dead-man's switch que mente é pior que não ter nenhum, porque **compra silêncio**. Coberto por teste.
+
+### O que ainda não é observável
+
+**"Vídeo publicado" não existe como evento.** O pipeline termina em `scheduled` — daí em diante quem publica é o Buffer, no horário marcado, e nada no sistema marca `PipelineStatus.posted`. A notificação mais próxima é `📅 Publicação agendada`, com o horário. Fechar essa lacuna exige o `tiktok_poster` consultar o Buffer depois do horário e reportar de volta; não está implementado.
+
+### Fuso horário
+
+As mensagens mostram o horário agendado de cada publicação, formatado com `astimezone()` — o fuso do processo. Daí `TZ` no `docker-compose.yml` para `orchestrator` e `content_scout`. Sem ele o container roda em UTC e o horário sai 3h adiantado: errado de um jeito que parece certo, que é o pior tipo de erro numa mensagem de alerta.
 
 ---
 

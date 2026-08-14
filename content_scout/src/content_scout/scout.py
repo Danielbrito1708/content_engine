@@ -27,6 +27,7 @@ from src.content_scout.sources.base import (
 )
 from src.content_scout.sources.reddit import RedditSource
 from src.core import settings
+from src.core.notify import notify, ping, short_id
 
 log = structlog.get_logger(__name__)
 
@@ -333,6 +334,7 @@ async def run_cycle(sources: list[Source] | None = None) -> ScoutReport:
         log.info("scout_cycle_already_running")
         return ScoutReport(already_running=True)
     async with _cycle_lock:
+        notify("Pesquisa de roteiros iniciada", level="debug", icon="🔎")
         return await _run_cycle(sources)
 
 
@@ -421,6 +423,13 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
         if capacity <= 0:
             report.skipped_no_capacity = True
             log.info("scout_no_capacity", active_runs=report.active_runs)
+            notify(
+                "Fila cheia — nenhuma história nova enviada",
+                level="debug",
+                icon="⏸️",
+                runs_ativos=report.active_runs,
+                teto=scout_cfg.max_pending_runs,
+            )
             return report
 
         budget = min(capacity, scout_cfg.max_per_cycle)
@@ -511,6 +520,12 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 # candidate would fail the same way.
                 report.moderation_unavailable = True
                 log.error("scout_moderation_unavailable", error=str(exc))
+                notify(
+                    "Moderação fora do ar — ciclo encerrado sem publicar",
+                    level="warning",
+                    icon="⚠️",
+                    erro=str(exc)[:200],
+                )
                 break
 
             if not verdict.safe:
@@ -600,6 +615,15 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 story_score=story.score if story else None,
                 story_tag=story.tag(scout_cfg.min_story_score) if story else None,
             )
+            notify(
+                "História enviada ao pipeline",
+                icon="📝",
+                run=short_id(run_id),
+                de=candidate.origin,
+                titulo=candidate.title[:100],
+                nota=story.score if story else None,
+                chars=candidate.char_count,
+            )
 
     return report
 
@@ -686,6 +710,31 @@ async def scout_loop() -> None:
                 moderation_unavailable=report.moderation_unavailable,
                 story_quality_unavailable=report.story_quality_unavailable,
             )
+            # O resumo sai só daqui, não de `run_cycle`: um `POST /scout/run`
+            # manual devolve os mesmos números na resposta HTTP, para quem está
+            # olhando na hora. Quem precisa do aviso é o ciclo automático.
+            notify(
+                "Pesquisa concluída",
+                level="debug",
+                icon="📊",
+                buscados=report.fetched,
+                ja_vistos=report.already_seen,
+                filtrados=report.filtered,
+                enviados=report.submitted,
+                fracos=report.weak_storytelling,
+                muito_longos=report.too_long,
+            )
+            # Batimento do scout, separado do `alive` do orchestrador: os dois
+            # laços morrem por motivos diferentes, e um scout parado significa
+            # que a fila seca em silêncio enquanto o resto do sistema continua
+            # respondendo normalmente.
+            await ping("scout")
         except Exception as exc:  # noqa: BLE001 — the loop must outlive any single failure
             log.error("scout_cycle_failed", error=str(exc), exc_info=True)
+            notify(
+                "Ciclo do scout falhou",
+                level="error",
+                icon="❌",
+                erro=str(exc)[:200],
+            )
         await asyncio.sleep(interval)

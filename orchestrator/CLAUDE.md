@@ -175,6 +175,52 @@ O orchestrador não participa da geração de legenda: o `tts_service` transcrev
 - **`retry_pending_schedules()` / `maintenance_loop()`** — reoferece os runs parados a cada `[pipeline] retry_interval_seconds` (900s).
 - **`clients/http.py`** — 3 tentativas com backoff exponencial em erro de transporte e 5xx. **4xx nunca é repetido**, incluindo o `429` do poster.
 
+### Notificação de operação (`src/core/notify.py`)
+
+Avisa no WhatsApp o que o pipeline está fazendo, evento a evento. Arquivo **idêntico** ao de `content_scout/src/core/notify.py` — mesmo padrão de `bootstrap.py`/`logger.py`. Ao editar um, copiar para o outro.
+
+**API pública:**
+- `notify(text, *, level="info", icon="•", **fields) -> None` — **síncrono**, só enfileira. Nunca levanta, nunca bloqueia.
+- `ping(check, *, fail=False)` — dead-man's switch; destino em `HEALTHCHECK_{CHECK}_URL`, ausente = no-op.
+- `sender_loop()` — drena a fila; sobe no `lifespan`, **antes** da reconciliação (é ela que produz o primeiro aviso do boot).
+- `format_message(text, *, icon, **fields)` e `short_id(uuid)` — puros.
+- `reset()` — descarta a fila; só para testes.
+
+⚠️ **`notify()` é síncrono de propósito.** Sem `await` no ponto de chamada, um enganche não vira ponto de suspensão no meio de uma transação, e ninguém espera pela rede dentro do pipeline. Um envio leva ~1s e um run emite ~14 eventos.
+
+⚠️ **Sem destino configurado, é no-op** — nem enfileira. Fila que ninguém drena encheria em dev e na suíte. `_enabled()` exige `CALLMEBOT_PHONE`+`CALLMEBOT_APIKEY` **ou** `NOTIFY_WEBHOOK_URL`.
+
+**Onde estão os enganches** (`worker.py`, salvo indicado):
+
+| Evento | Nível | Local |
+|---|---|---|
+| 📥 Roteiro recebido | info | `routes/pipeline.py` `create_pipeline` |
+| 🟢 orchestrator no ar | info | `api/app.py` `lifespan` |
+| 🧠 Refinando / ✂️ Roteiro refinado | debug / info | `_refine` |
+| 🎙️ Gancho narrado | debug | `_run_hook_tts` |
+| 🖼️ Card pronto | debug | `_render_card` |
+| 🔊 Narração pronta | debug | `_run_tts` |
+| 🎞️ Render iniciado / 🎬 Vídeo renderizado | debug / info | `_run_render` |
+| 📋 Agendando / 📅 Publicação agendada / 🚀 Run concluído | debug / info / info | `_schedule` |
+| ⏸️ Fila do Buffer cheia | info | `_schedule` (`BufferQueueFull`) |
+| ▶️ Runs destravados | info | `maintenance_loop` |
+| 🔧 Runs órfãos reconciliados | warning | `recover_interrupted_runs` |
+| ⚠️ Degradações silenciosas | warning | ver abaixo |
+| ❌ Falhas | error | `run_pipeline`, `_schedule_in_background`, `retry_pending_schedules`, `maintenance_loop` |
+
+**As cinco degradações `warning` são o motivo principal disto existir**: gancho não narrado (`_run_hook_tts`), card não composto (`_render_card`), template ilegível (`_narration_rate`), biblioteca de fundos vazia (`background_key_for`) e parte sem `video_key` (`_schedule`). Em todas o vídeo publica e o run termina `scheduled` — o status não distingue vídeo íntegro de vídeo capado, então sem o aviso aqui não há aviso em lugar nenhum.
+
+⚠️ **O estágio da falha é lido antes de `run.status = failed`.** Depois da atribuição todo run falha "em `failed`", e o estágio é a única pista da mensagem sobre onde procurar.
+
+**Dead-man's switches:** `alive` (a cada ciclo do `maintenance_loop`, antes do trabalho — varredura lenta não pode ser lida como morte) e `produced` (**só** no fim de `_schedule` bem-sucedido). ⚠️ **`produced` não é pingado quando o Buffer está cheio**: um run esperando vaga não produziu nada, e um switch que mente compra silêncio. Coberto por teste.
+
+**`_when(datetime) -> str | None`** formata o horário agendado com `astimezone()`. Exige `TZ` no compose; sem ele o container roda em UTC e o horário sai 3h adiantado.
+
+**Config** em `config.ini [monitoring]`: `enabled`, `level` (`debug` por default — tudo), `min_interval_seconds` (3; o CallMeBot recusa rajadas e um run é uma rajada). **Credenciais só por env var** — ver `.env.example`.
+
+- Testes: `tests/test_notify.py` (32 — formatação, níveis, fila cheia, a garantia de nunca levantar, entrega nos dois destinos, retry, os pings, o `sender_loop`, e os enganches: estágio da falha, `produced` no sucesso e a ausência dele com o Buffer cheio).
+- ⚠️ O fixture autouse `notify_off` (`conftest.py`) apaga as vars de destino: `bootstrap` chama `load_dotenv()`, então sem ele a suíte inteira dispararia WhatsApp de verdade.
+
 ### Storage (`src/orchestrator/storage/client.py`)
 
 `upload_bytes(bucket, key, data, content_type) -> None` — upload via boto3 (MinIO/R2). Usa `run_in_executor` para não bloquear o event loop.

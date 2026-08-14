@@ -16,6 +16,31 @@ from src.content_scout.api.app import app  # triggers bootstrap
 from src.content_scout.db.engine import AsyncSessionLocal
 from src.content_scout.db.models import ArchiveCursor, SeenItem
 from src.content_scout.sources.reddit import shared_throttle
+from src.core import notify as notify_module
+
+NOTIFY_ENV_VARS = (
+    "CALLMEBOT_PHONE",
+    "CALLMEBOT_APIKEY",
+    "CALLMEBOT_BASE_URL",
+    "NOTIFY_WEBHOOK_URL",
+    "HEALTHCHECK_ALIVE_URL",
+    "HEALTHCHECK_SCOUT_URL",
+    "HEALTHCHECK_PRODUCED_URL",
+)
+
+
+@pytest.fixture(autouse=True)
+def notify_off(monkeypatch):
+    """A suíte nunca manda mensagem de verdade — ver o mesmo fixture no orchestrator.
+
+    `bootstrap` chama `load_dotenv()`, então as credenciais do `.env` valeriam
+    aqui dentro. Sem destino, `_enabled()` é falso e todo `notify()` é no-op.
+    """
+    for var in NOTIFY_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    notify_module.reset()
+    yield
+    notify_module.reset()
 
 
 @pytest.fixture(autouse=True)

@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.core.notify import notify, short_id
 from src.orchestrator.db.engine import get_session
 from src.orchestrator.db.models import PipelineRun
 from src.orchestrator.schemas.pipeline import PipelineCreate, PipelineResponse
@@ -25,6 +26,15 @@ async def create_pipeline(
     await session.refresh(run)
 
     background_tasks.add_task(run_pipeline, run.id)
+
+    notify(
+        "Roteiro recebido — pipeline começou",
+        icon="📥",
+        run=short_id(run.id),
+        origem=(run.input_metadata or {}).get("origin"),
+        titulo=((run.input_metadata or {}).get("title") or "")[:100] or None,
+        chars=len(run.raw_script),
+    )
 
     result = await session.execute(
         select(PipelineRun).where(PipelineRun.id == run.id).options(selectinload(PipelineRun.parts))

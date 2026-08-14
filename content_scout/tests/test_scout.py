@@ -19,6 +19,7 @@ from src.content_scout.clients.orchestrator import OrchestratorClient
 from src.content_scout.db.models import ArchiveCursor, SeenItem, SeenStatus
 from src.content_scout.scout import interleave_by_origin, run_cycle
 from src.content_scout.sources.base import Candidate, Comment, CommentThread
+from src.core import notify as notify_module
 from src.core import settings
 
 
@@ -1328,3 +1329,69 @@ async def test_fingerprint_is_stored_for_rejected_rows_too(
     rows = await _seen_rows(session)
     assert rows[0].status == SeenStatus.filtered
     assert rows[0].content_fingerprint is not None
+
+
+# ── notificação de operação ──────────────────────────────────────────
+#
+# O scout é o serviço cuja parada é mais silenciosa do sistema inteiro: ele não
+# tem run para ficar `failed`, não tem endpoint que passe a responder 500, e um
+# loop morto é indistinguível de uma semana sem material bom. Os avisos abaixo
+# são o único sinal de que o ciclo aconteceu.
+
+@pytest.fixture
+def webhook(monkeypatch):
+    monkeypatch.setenv("NOTIFY_WEBHOOK_URL", "http://notify.test/hook")
+    return "http://notify.test/hook"
+
+
+def _messages() -> list[str]:
+    queue = notify_module._get_queue()
+    return [queue.get_nowait() for _ in range(queue.qsize())]
+
+
+async def test_cycle_announces_that_it_started(webhook, submissions, set_active_runs, budget):
+    await run_cycle([FakeSource([])])
+
+    assert any("Pesquisa de roteiros iniciada" in m for m in _messages())
+
+
+async def test_submitted_story_is_announced_with_its_origin(
+    webhook, submissions, set_active_runs, budget
+):
+    source = FakeSource([_candidate("t3_a", title="Minha sogra jogou o bolo no chão",
+                                    origin="r/EuSouOBabaca")])
+
+    await run_cycle([source])
+
+    submitted = [m for m in _messages() if "História enviada ao pipeline" in m]
+    assert len(submitted) == 1
+    assert "r/EuSouOBabaca" in submitted[0]
+    assert "Minha sogra jogou o bolo no chão" in submitted[0]
+
+
+async def test_full_queue_is_announced(webhook, submissions, set_active_runs, budget):
+    """Fila cheia não é erro, mas é a explicação de por que nada foi publicado —
+    sem o aviso, um dia inteiro de backpressure é indistinguível de um scout morto."""
+    set_active_runs(5)
+
+    await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert any("Fila cheia" in m for m in _messages())
+
+
+async def test_moderation_outage_is_announced(
+    webhook, submissions, set_active_runs, budget, moderation
+):
+    moderation.set(lambda title, text: ModerationError("llm_service fora do ar"))
+
+    await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert any("Moderação fora do ar" in m for m in _messages())
+
+
+async def test_nothing_is_queued_without_a_destination(submissions, set_active_runs, budget):
+    """Sem credencial configurada o scout roda idêntico e não enfileira nada —
+    é o que mantém a suíte e as máquinas de desenvolvimento silenciosas."""
+    await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert notify_module._get_queue().qsize() == 0

@@ -239,6 +239,31 @@ Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando
 
 `GET /scout/seen` devolve também `author`, `comment_count` (nulo = não consultado), `has_hook`, `story_score`, `story_tag`, `hook_line`, `story_reason` (todos nulos = não avaliado) e `comments[]` com `external_id`, `author`, `text`, `position`, `published`.
 
+### Notificação de operação (`src/core/notify.py`)
+
+Arquivo **idêntico** ao de `orchestrator/src/core/notify.py` — mesmo padrão de `bootstrap.py`/`logger.py`. Ao editar um, copiar para o outro. API e regras completas no `CLAUDE.md` do orchestrator; aqui ficam só os enganches deste serviço.
+
+| Evento | Nível | Local |
+|---|---|---|
+| 🟢 content_scout no ar (com o estado do loop) | info | `api/app.py` `lifespan` |
+| 🔎 Pesquisa de roteiros iniciada | debug | `run_cycle`, dentro do lock |
+| 📝 História enviada ao pipeline (origem, título, nota, chars) | info | `_run_cycle`, após o submit |
+| ⏸️ Fila cheia | debug | `_run_cycle`, no backpressure |
+| ⚠️ Moderação fora do ar | warning | `_run_cycle`, no `ModerationError` |
+| 📊 Pesquisa concluída (contadores do ciclo) | debug | `scout_loop` |
+| ❌ Ciclo do scout falhou | error | `scout_loop` |
+
+**Por que o scout é o serviço que mais precisa disto.** Ele não tem run para ficar `failed`, não tem endpoint que passe a responder 500, e um loop morto é indistinguível de uma semana sem material bom. Os avisos são o único sinal de que o ciclo aconteceu — daí também o dead-man's switch `scout`, pingado ao fim de cada ciclo.
+
+⚠️ **O resumo do ciclo sai só de `scout_loop`, não de `run_cycle`.** Um `POST /scout/run` manual devolve os mesmos números na resposta HTTP, para quem está olhando na hora; quem precisa do aviso é o ciclo automático.
+
+⚠️ **`SCOUT_ENABLED=false` vai na mensagem de boot.** É a falha mais silenciosa que este serviço tem: sobe, responde `/health` e simplesmente nunca busca nada.
+
+Config em `config.ini [monitoring]`. Em `debug` sai uma mensagem por ciclo mesmo sem achar nada — com `interval_seconds = 3600`, 24 mensagens/dia de "nada novo". É a primeira coisa a cortar quando o volume incomodar.
+
+- Testes: 5 em `tests/test_scout.py` (seção "notificação de operação") — ciclo anunciado, história submetida com origem e título, fila cheia, moderação fora do ar, e nada enfileirado sem destino configurado.
+- ⚠️ O fixture autouse `notify_off` (`conftest.py`) apaga as vars de destino: `bootstrap` chama `load_dotenv()`, então sem ele a suíte dispararia WhatsApp de verdade.
+
 ### Adicionando uma fonte nova (ex.: YouTube)
 
 1. Implemente o Protocol `Source` (`name` + `async fetch() -> list[Candidate]`) em `sources/`.

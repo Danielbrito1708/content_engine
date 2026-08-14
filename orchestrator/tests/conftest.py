@@ -7,9 +7,22 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
 
+from src.core import notify as notify_module
 from src.orchestrator.api.app import app  # triggers bootstrap
 from src.orchestrator.db.engine import AsyncSessionLocal
 from src.orchestrator.db.models import PipelinePart, PipelineRun
+
+#: Todo destino que o notify conhece. Listado uma vez para o fixture abaixo e
+#: para os testes que precisam ligar um deles de propósito.
+NOTIFY_ENV_VARS = (
+    "CALLMEBOT_PHONE",
+    "CALLMEBOT_APIKEY",
+    "CALLMEBOT_BASE_URL",
+    "NOTIFY_WEBHOOK_URL",
+    "HEALTHCHECK_ALIVE_URL",
+    "HEALTHCHECK_SCOUT_URL",
+    "HEALTHCHECK_PRODUCED_URL",
+)
 
 
 @pytest_asyncio.fixture
@@ -36,6 +49,25 @@ def no_retry_backoff(monkeypatch):
     """Retries are exercised in test_http.py; everywhere else the exponential
     backoff is just dead time in front of a test that mocks a 500 on purpose."""
     monkeypatch.setattr("src.orchestrator.clients.http.BACKOFF", 0)
+
+
+@pytest.fixture(autouse=True)
+def notify_off(monkeypatch):
+    """A suíte nunca manda mensagem de verdade, nem enche a fila.
+
+    `bootstrap` chama `load_dotenv()`, então quem tiver as credenciais no `.env`
+    — o caso normal depois que isto entrar em produção — rodaria a suíte inteira
+    disparando WhatsApp. Apagar as vars é o que desliga: `_enabled()` exige um
+    destino configurado, então sem elas todo `notify()` é no-op.
+
+    Quem testa o notify de propósito religa a var que precisa; o `reset()` no
+    fim garante que a fila não vaze de um teste para o outro.
+    """
+    for var in NOTIFY_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    notify_module.reset()
+    yield
+    notify_module.reset()
 
 
 @pytest_asyncio.fixture(autouse=True)
