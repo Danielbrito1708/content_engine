@@ -4,7 +4,7 @@ import pytest
 
 from src.core import settings
 from src.llm_service.llm.base import BaseLLMClient
-from src.llm_service.prompts.story import build_user_prompt
+from src.llm_service.prompts.story import SYSTEM_PROMPT, build_user_prompt
 from src.llm_service.schemas.story import StoryItem, StoryVerdict
 
 
@@ -260,3 +260,17 @@ def test_non_numeric_score_still_fails_validation():
     """Clamping handles range, not type — garbage must not become a score."""
     with pytest.raises(Exception):
         StoryVerdict.model_validate({"index": 0, "hook": True, "score": "muito bom"})
+
+
+def test_prompt_asks_for_the_whole_scale():
+    """Nenhum post tirou 9-10 na medição: a régua virava efetivamente 2-8."""
+    assert "Use a escala inteira" in SYSTEM_PROMPT
+
+
+def test_prompt_no_longer_reserves_the_top_for_the_exceptional():
+    assert "Reserve 9–10" not in SYSTEM_PROMPT
+
+
+def test_prompt_still_puts_an_ordinary_post_in_the_middle():
+    """Soltar o topo não é inflacionar a régua inteira — o meio não se move."""
+    assert "post comum de fórum é 4–6" in SYSTEM_PROMPT

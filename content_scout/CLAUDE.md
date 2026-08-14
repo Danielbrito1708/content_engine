@@ -190,7 +190,9 @@ O ciclo para na primeira falha de moderação em vez de tentar os demais: se o s
 
 Desligável em `[scout] story_quality`.
 
-🚧 **A régua ainda não foi re-medida contra o corpus novo.** A decisão de corpus foi tomada (rota (a): trocar as fontes por subs de história-entretenimento), e o prompt de `story.py` foi ajustado junto — ele não desconta mais por "pergunta ao fórum" quando a pergunta *emoldura* a história, que é a forma de todo post do `EuSouOBabaca`. **A medição dos 30 posts em `docs/story_quality_baseline.json` agora é de um corpus que não está mais configurado**, então a taxa de 40% `weak_storytelling` não descreve mais o que roda. Refazer com `scripts/score_real_posts.py --subreddits EuSouOBabaca,story,stories` antes de mexer em `min_story_score`. As outras três decisões (corte 5 vs 6, tamanho do recorte, teto 9–10 nunca usado) continuam abertas em **`content_scout/docs/story_quality_calibration.md`**.
+✅ **Calibragem encerrada em 14/08/2026** — as quatro decisões de `docs/story_quality_calibration.md` estão fechadas. A decisão de corpus foi tomada antes (rota (a): trocar as fontes por subs de história-entretenimento), com o prompt de `story.py` ajustado junto — ele não desconta mais por "pergunta ao fórum" quando a pergunta *emoldura* a história, que é a forma de todo post do `EuSouOBabaca`. As três que faltavam: **`min_story_score` fica em 6** (nota 5 é fraco), **`story_excerpt_chars` fica em 700**, e o **teto 9–10 foi relaxado** — o prompt agora manda usar a escala inteira, porque nenhum post chegava lá e a régua era efetivamente 2–8.
+
+⚠️ **A re-medição foi dispensada por decisão, não esquecida.** `docs/story_quality_baseline.json` é de um corpus que **não está mais configurado** (`desabafos`/`relacionamentos`), então os 40% `weak_storytelling` de lá não descrevem o que roda hoje — leia aquele arquivo como histórico. Se um dia `min_story_score` for mexido, refazer antes com `scripts/score_real_posts.py --subreddits EuSouOBabaca,story,stories`; enquanto o corte não se move, a régua atual vale.
 
 ### Ciclo do scout (`src/content_scout/scout.py`)
 

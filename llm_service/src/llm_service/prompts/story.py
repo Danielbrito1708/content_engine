@@ -72,8 +72,13 @@ Régua:
   7–8  boa história, conflito claro e desfecho prometido
   9–10 vende sozinha: você contaria isso para alguém depois de ler
 
-Seja criterioso. Um post comum de fórum é 4–6. Reserve 9–10 para o que é \
-excepcional, e não tenha medo de dar notas baixas.
+Um post comum de fórum é 4–6, e não tenha medo de dar notas baixas.
+
+**Use a escala inteira, inclusive o topo.** 9–10 é para a história que você \
+contaria adiante depois de ler — não para uma raridade que aparece uma vez por \
+ano. Se a abertura entrega isso, dê a nota. Um teto que nunca é usado encolhe a \
+régua para 2–8 e apaga a diferença entre o bom e o ótimo, que é exatamente a \
+diferença que decide qual história vira vídeo primeiro.
 
 Você julga a qualidade narrativa, NÃO se o assunto é aceitável — isso é decidido \
 em outro lugar. Uma história pesada bem contada tem nota alta.

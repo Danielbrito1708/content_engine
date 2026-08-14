@@ -1,8 +1,27 @@
-# TODO — calibrar a classificação de storytelling
+# Calibragem da classificação de storytelling — ENCERRADA
 
-> **Status:** decisão 1 RESOLVIDA (28/07/2026), decisões 2–4 ainda abertas.
-> **Ação esperada do Daniel:** responder as perguntas 2, 3 e 4 da seção
-> "Decisões pendentes". Enquanto isso a feature roda com `min_story_score = 6`.
+> **Status:** todas as quatro decisões resolvidas. Decisão 1 em 28/07/2026, decisões
+> 2–4 em 14/08/2026. **Nenhuma ação pendente.**
+>
+> | # | Pergunta | Resposta |
+> |---|---|---|
+> | 1 | Qual é o corpus certo? | Trocar as fontes → `EuSouOBabaca,story,stories` |
+> | 2 | Nota 5 é fraco ou aceitável? | **Fraco.** `min_story_score` fica em 6 |
+> | 3 | Quanto do post o classificador vê? | **700 caracteres**, como está |
+> | 4 | O teto 9–10 está sendo usado? | **Relaxar.** O prompt manda usar a escala inteira |
+>
+> A decisão 4 é a única que virou mudança de código: `prompts/story.py` trocou
+> "Reserve 9–10 para o que é excepcional" por uma instrução explícita de usar a
+> escala inteira, com o meio da régua intacto (post comum de fórum continua em
+> 4–6). Fixada em `llm_service/tests/test_story.py`.
+>
+> **A re-medição no corpus novo foi dispensada**, também por decisão: a régua segue
+> como está, então não havia número novo a produzir. Se `min_story_score` for
+> mexido algum dia, refazer antes — ver o aviso no fim deste arquivo.
+>
+> O resto deste documento é o **histórico** que embasou as respostas. A medição dos
+> 30 posts descrita abaixo é de `desabafos`/`relacionamentos`, que não são mais as
+> fontes configuradas: leia como raciocínio registrado, não como estado atual.
 
 ---
 
@@ -154,45 +173,67 @@ a moderação barra por abuso — mas serve de aviso sobre o que a nota mede.
 
 ---
 
-## Decisões pendentes (é aqui que eu preciso da tua resposta)
+## Decisões — todas resolvidas
 
-### 1. Qual é o corpus certo? — ✅ RESOLVIDA, ver o topo do arquivo
+### 1. Qual é o corpus certo? — ✅ 28/07/2026
 
 Rota (a): fontes trocadas para `EuSouOBabaca,story,stories`, com tradução no
 `/refine` e a régua de "pergunta ao fórum" corrigida no `story.py`.
 
-### 2. Nota 5 é fraco ou é aceitável?
+### 2. Nota 5 é fraco ou é aceitável? — ✅ 14/08/2026: **fraco**
 
-Se história curta-mas-real conta como publicável, o corte desce pra 5 e a taxa
-de "fraco" cai de 40% pra 23%. Se não, fica em 6.
+O corte fica em 6. A alternativa era descer para 5, o que levaria a taxa de
+"fraco" de 40% para 23% no corpus antigo.
 
-### 3. Quanto do post o classificador deve ver?
+Consequência prática: nenhuma. A tag é etiqueta, não filtro — um candidato
+`weak_storytelling` continua sendo publicado se não houver nada melhor atrás.
+Manter o corte alto só significa que a etiqueta continua marcando a metade de
+baixo, que é o que ela existe para fazer.
 
-Hoje 700 caracteres (`story_excerpt_chars`). Opções:
-- subir pra ~1500 — pega mais lide enterrado, custa mais token, **ainda é uma
-  chamada só**;
-- mandar abertura **+ final** — encontra o desfecho sem pagar pelo meio;
-- manter 700 e aceitar que "abre mal" = nota baixa, por design.
+### 3. Quanto do post o classificador deve ver? — ✅ 14/08/2026: **fica em 700**
 
-### 4. O teto está sendo usado?
+As opções descartadas eram subir para ~1500 caracteres (pega mais lide enterrado,
+custa mais token, ainda numa chamada só) e mandar abertura + final.
 
-Nenhum post tirou 9–10. Isso é o prompt reservando o topo para o excepcional
-(intencional), mas se o topo nunca é usado a nota efetivamente vira uma escala
-de 2 a 8. Vale relaxar, ou o aperto é útil?
+Fica valendo o argumento original: 700 caracteres é o **input honesto**. O
+espectador decide com essa quantidade de texto, então "abre mal = nota baixa" é
+por design, não limitação. O custo aceito, explicitamente, é o caso "Acho q fui
+abusada" documentado acima — post bom cujo conflito só aparece depois do recorte.
+
+### 4. O teto está sendo usado? — ✅ 14/08/2026: **relaxar**
+
+Não estava: nenhum dos 30 posts tirou 9–10, ou seja, a régua era efetivamente de
+2 a 8. Um teto que nunca é alcançado não é rigor, é resolução perdida — e a perda
+cai justamente onde a nota é usada, que é separar a história boa da ótima para
+decidir qual vai primeiro.
+
+`prompts/story.py` agora manda usar a escala inteira: 9–10 é "você contaria isso
+adiante depois de ler", não uma raridade anual. **O meio não se moveu** — post
+comum de fórum continua em 4–6 —, então isto não desloca a taxa de
+`weak_storytelling`; só desempata melhor a cabeça da fila.
 
 ---
 
-## Como refazer a medição depois de decidir
+## Como refazer a medição, se um dia for preciso
+
+⚠️ **Não é uma pendência.** A re-medição foi dispensada por decisão em 14/08/2026:
+a régua ficou como está, então não havia número novo a produzir. O que segue vale
+para o dia em que `min_story_score` ou a régua do prompt forem mexidos — aí sim,
+medir **antes**, porque o baseline congelado não serve mais de comparação.
+
+⚠️ **`docs/story_quality_baseline.json` é histórico, não estado atual.** Ele mede
+`desabafos`/`relacionamentos`, que não são mais as fontes configuradas. Os 40%
+`weak_storytelling` que ele mostra não descrevem o que roda hoje.
 
 O script está em **`content_scout/scripts/score_real_posts.py`**. Reusa o
 `RedditSource` real e o mesmo recorte, então o que chega no endpoint é byte a byte
 o que o pipeline manda.
 
 ```bash
-# com o llm_service do worktree de pé na 8010:
+# com o llm_service de pé; use as fontes ATUAIS, não as do baseline:
 cd content_scout
 PYTHONPATH="$PWD" poetry run python scripts/score_real_posts.py \
-    --subreddits desabafos,relacionamentos --excerpt 700 --out novo.json
+    --subreddits EuSouOBabaca,story,stories --excerpt 700 --out novo.json
 ```
 
 Ele imprime a distribuição de notas e a lista ordenada no stderr. A medição
