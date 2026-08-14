@@ -10,6 +10,8 @@ content_engine/
   .env.example              ← vars de todos os serviços
   docs/
     vision.md               ← visão geral do sistema, pipeline, decisões
+    deploy.md               ← plano de deploy na máquina de casa (dimensionamento, monitoramento)
+    servidor.md             ← como acessar a máquina por SSH + estado verificado dela
   orchestrator/             ← coordenação do pipeline (FastAPI + DB próprio)
   blender_worker/           ← montagem VSE + renderização (FastAPI + Blender 4.2)
   llm_service/              ← refinamento e classificação de roteiros
@@ -85,6 +87,14 @@ docker compose logs -f orchestrator
 | MinIO API | 9000 |
 | MinIO Console | 9001 |
 
+## Servidor (máquina de casa)
+
+`ssh server@192.168.0.106` — Debian 13 bare metal, sem interface gráfica, autenticação por
+chave e `sudo` sem senha, então funciona com `BatchMode=yes` e não pede interação. É a
+máquina de deploy do `deploy.md`. **Ler `docs/servidor.md` antes de qualquer trabalho
+nela**: root não loga por SSH, o IP é DHCP e não está reservado, e o Docker ainda não está
+instalado.
+
 ## Comunicação entre serviços
 
 Internamente (dentro do Docker network), os serviços se comunicam pelo nome do container:
@@ -150,13 +160,31 @@ Nenhum outro serviço desta branch tem migration — `tts_service`, `llm_service
 
 ## Estado do projeto
 
-- `blender_worker` — implementado (MVP completo: API, DB, Blender pipeline, image compositor)
-- `orchestrator` — implementado (pipeline completo, rotação de background, recuperação de runs órfãos, retry de agendamento)
-- `llm_service` — planejado
-- `tts_service` — implementado (providers `azure`/`edge`, corte de silêncio + normalização de loudness, transcrição word-level)
-- `tiktok_poster` — planejado
-- `content_scout` — implementado (fonte Reddit via RSS; YouTube previsto como minerador de tema)
+**Os seis serviços estão implementados** e o pipeline fecha de ponta a ponta.
+
+- `blender_worker` — API, DB, Blender pipeline, image compositor, semáforo de render
+- `orchestrator` — pipeline completo, rotação de background, recuperação de runs órfãos, retry de agendamento, notificação
+- `llm_service` — `/refine`, `/moderate`, `/story-quality` (OpenRouter / Anthropic / Chutes)
+- `tts_service` — providers `edge`/`azure`, corte de silêncio + normalização de loudness, transcrição word-level
+- `tiktok_poster` — agendamento via Buffer, slots, séries, hashtags e caption
+- `content_scout` — fonte Reddit via RSS, varredura do arquivo, dedup por conteúdo, nota de storytelling (YouTube previsto como minerador de tema)
+
+O que falta para produção **não é código de feature** — é a máquina (`docs/deploy.md`:
+Docker não está instalado no servidor) e as credenciais de alerta. Ver também o TODO de
+backup/retenção em `docs/deploy.md` → "O que continua em aberto", adiado por decisão.
 
 ## Decisões em aberto
 
 Ver seção "Decisões em Aberto" em `docs/vision.md`.
+
+Decisões tomadas em 14/08/2026, para não serem reabertas sem motivo novo:
+
+| Decisão | Escolha |
+|---|---|
+| Provider de TTS | Fica no **`edge`**. Azure implementado, não ativado — não vale a conta a manter |
+| Corte `min_story_score` | Fica em **6** — nota 5 conta como fraco |
+| `story_excerpt_chars` | Fica em **700** |
+| Teto 9–10 da nota | **Relaxado** — o prompt manda usar a escala inteira |
+| Re-medir a régua no corpus novo | **Não fazer** — segue com a régua atual |
+| Fila do `blender_worker` | **Semáforo**, não Celery/Redis |
+| Backup e retenção | **Adiado**, registrado como TODO no `deploy.md` |
