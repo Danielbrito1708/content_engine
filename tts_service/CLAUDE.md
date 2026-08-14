@@ -114,9 +114,9 @@ Acelera (ou desacelera) a narração na **própria síntese** — `rate` do `edg
 
 | Var | Padrão | Descrição |
 |---|---|---|
-| `TTS_RATE` | `+15%` | Percentual **com sinal** sobre o ritmo natural da voz |
+| `TTS_RATE` | `+30%` | Percentual **com sinal** sobre o ritmo natural da voz |
 
-**Precedência:** `rate` da request (vem do `narration.rate` do `template.json`) → `TTS_RATE` → `+15%`. O env var é o fallback de quem chama o serviço direto ou de templates sem o bloco `narration`.
+**Precedência:** `rate` da request (vem do `narration.rate` do `template.json`) → `TTS_RATE` → `+30%`. O env var é o fallback de quem chama o serviço direto ou de templates sem o bloco `narration`, e é mantido igual ao rate do template publicado — divergir os dois faz o fallback narrar num ritmo diferente do resto do canal.
 
 Formato obrigatório: `^[+-]\d+%$` (`+15%`, `-10%`, `+0%` para desligar), validado por `validate_rate()` em `src/core/config.py` — mesma função para o env var (derruba o **boot**) e para o campo da request (devolve **422**). Em ambos os casos o erro aparece antes de qualquer síntese; o edge-tts só rejeitaria o formato na hora de gerar o áudio.
 

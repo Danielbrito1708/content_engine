@@ -46,8 +46,8 @@ O padrão é **uma parte só**: a história completa num vídeo. Dividir é exce
 
 **API pública** (constantes exportadas):
 - `MAX_PART_MINUTES = 30` — teto de duração de um vídeo
-- `NARRATION_WPM = 170` — voz neural pt-BR (~150 wpm) acelerada pelo `narration.rate` do template (`+15%`)
-- `MAX_PART_WORDS = MAX_PART_MINUTES * NARRATION_WPM` (5100) — o número que vai no prompt, porque palavra é o que o modelo conta
+- `NARRATION_WPM = 195` — voz neural pt-BR (~150 wpm) acelerada pelo `narration.rate` do template (`+30%`). **Anda junto com o rate**: mexer num sem o outro desloca o teto real de 30 minutos
+- `MAX_PART_WORDS = MAX_PART_MINUTES * NARRATION_WPM` (5850) — o número que vai no prompt, porque palavra é o que o modelo conta
 
 O prompt anterior cortava em 600 palavras (~1 min), o que fatiava uma história de 6000 caracteres em seis vídeos. O prompt também proíbe **resumir para caber** — sem isso o modelo troca a divisão por perda de conteúdo, que é pior e invisível.
 

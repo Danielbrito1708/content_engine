@@ -64,7 +64,7 @@ async def test_generate_still_returns_audio_bytes_with_rate():
 
 def test_default_rate_speeds_narration_up():
     """Narration ships faster than the raw TTS output unless overridden."""
-    assert settings.env.tts_rate == "+15%"
+    assert settings.env.tts_rate == "+30%"
 
 
 def test_rate_read_from_env(monkeypatch):
@@ -86,7 +86,7 @@ def test_invalid_rate_rejected(monkeypatch, bad):
 
 def test_rate_defaults_when_env_absent(monkeypatch):
     monkeypatch.delenv("TTS_RATE", raising=False)
-    assert TTSEnvSettings().tts_rate == "+15%"
+    assert TTSEnvSettings().tts_rate == "+30%"
 
 
 # ── rate por request (vem do template.json) ──────────────────────
@@ -190,4 +190,4 @@ def test_azure_ssml_carries_the_rate():
 async def test_health_exposes_rate(client):
     resp = await client.get("/health")
     assert resp.status_code == 200
-    assert resp.json()["rate"] == os.environ.get("TTS_RATE", "+15%")
+    assert resp.json()["rate"] == os.environ.get("TTS_RATE", "+30%")

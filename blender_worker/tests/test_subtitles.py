@@ -394,7 +394,7 @@ def test_end_padding_defaults_to_half_a_second():
     """Flush against the voice strip the last consonant is clipped — the video
     reads as if it ended mid-word."""
     assert end_padding_frames({}, 30) == 15
-    assert end_padding_frames({"rate": "+15%"}, 30) == 15
+    assert end_padding_frames({"rate": "+30%"}, 30) == 15
 
 
 def test_end_padding_is_a_duration_not_a_frame_count():

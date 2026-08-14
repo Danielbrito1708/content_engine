@@ -93,7 +93,7 @@ Assets estáticos (background + música) em `config.ini [template]`.
 
 O `llm_service` devolve `narrator_gender` (`male` / `female` / `unknown`) — o gênero de quem conta a história. O orchestrador guarda em `PipelineRun.narrator_gender` (migration `005`, exposto em `PipelineResponse`) e manda em **toda** chamada ao `tts_service`: no gancho e em cada parte.
 
-⚠️ **Requer a migration `005` aplicada** — sem a coluna, todo run morre no `_refine` com `UndefinedColumn`. O `CMD` do Dockerfile roda `alembic upgrade head` no boot, então subir com `--build` basta; fora do Docker é manual. Ver "Migrations pendentes" no `CLAUDE.md` da raiz.
+⚠️ **Requer a migration `005` aplicada** — sem a coluna, todo run morre no `_refine` com `UndefinedColumn`. O `CMD` do Dockerfile roda `alembic upgrade head` no boot, então subir com `--build` basta; fora do Docker é manual. Ver "Passos pendentes de deploy" no `CLAUDE.md` da raiz.
 
 **Sai o gênero, nunca o nome da voz.** Qual voz corresponde a que gênero é decisão do `tts_service`, que conhece os providers; daqui sai um fato sobre o roteiro. Ausente, o campo é **omitido** do payload (não vai `null`), e a narração sai na voz padrão de lá.
 
@@ -108,7 +108,7 @@ O `llm_service` devolve `narrator_gender` (`male` / `female` / `unknown`) — o 
 A velocidade da narração é definida no `template.json`, no bloco `narration.rate`. Como o TTS roda muito antes do render, o orchestrador precisa ler o template **antes** de chamar o `tts_service`:
 
 1. `GET blender_worker/templates/{BLENDER_TEMPLATE_ID}/config` → `template.json` parseado
-2. Extrai `narration.rate` (ex.: `"+15%"`)
+2. Extrai `narration.rate` (ex.: `"+30%"`)
 3. Repassa como `rate` no `POST tts_service/generate`
 
 Buscado **uma vez por run** em `run_pipeline`, antes do TTS do gancho — o template é o mesmo para todas as partes, e o gancho tem de sair no mesmo rate que elas.

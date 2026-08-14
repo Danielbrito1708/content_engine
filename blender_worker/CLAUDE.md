@@ -146,7 +146,7 @@ There is no closing segment: `scene.frame_end` is the end of the narration (see 
 
 **Template config** (the existing `narration` block, which the orchestrator already reads for `rate`):
 ```json
-"narration": { "rate": "+15%", "tail_seconds": 0.5 }
+"narration": { "rate": "+30%", "tail_seconds": 0.5 }
 ```
 Defaulted in code for the usual reason — `template.json` lives in the bucket, and the deployed one has no `tail_seconds` yet.
 

@@ -89,7 +89,7 @@ class TTSEnvSettings(BaseModel):
             # stays the fallback for a story whose narrator has none.
             "tts_voice_male": os.environ.get("TTS_VOICE_MALE", DEFAULT_MALE_VOICE),
             "tts_voice_female": os.environ.get("TTS_VOICE_FEMALE", DEFAULT_FEMALE_VOICE),
-            "tts_rate": os.environ.get("TTS_RATE", "+15%"),
+            "tts_rate": os.environ.get("TTS_RATE", "+30%"),
             "minio_endpoint": os.environ["MINIO_ENDPOINT"],
             "minio_access_key": os.environ["MINIO_ACCESS_KEY"],
             "minio_secret_key": os.environ["MINIO_SECRET_KEY"],

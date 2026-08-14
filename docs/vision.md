@@ -153,7 +153,7 @@ O formato anterior cortava em 600 palavras (~1 min de fala, segundo o prompt). E
 - Para partes 2+, o LLM gera um resumo curto ("Na parte anterior...") que é inserido no início do roteiro daquela parte antes de ir para o TTS.
 - O orchestrador cria um `pipeline_part` por parte e processa cada uma em sequência. Nada nessa mecânica mudou — o que mudou é quantas partes existem, que no caso normal passou a ser uma.
 
-**O teto é declarado em minutos e traduzido para palavras.** `MAX_PART_WORDS = MAX_PART_MINUTES × NARRATION_WPM` (30 × 170 = 5100). O prompt fala em palavras porque é o que o modelo consegue contar; minutos é o que a regra significa. `NARRATION_WPM = 170` sai de voz neural pt-BR em ~150 wpm acelerada pelo `narration.rate` do template (`+15%`) — é estimativa, e a única decisão que depende dela é o corte em 30 minutos, muito acima do que um roteiro real ocupa.
+**O teto é declarado em minutos e traduzido para palavras.** `MAX_PART_WORDS = MAX_PART_MINUTES × NARRATION_WPM` (30 × 195 = 5850). O prompt fala em palavras porque é o que o modelo consegue contar; minutos é o que a regra significa. `NARRATION_WPM = 195` sai de voz neural pt-BR em ~150 wpm acelerada pelo `narration.rate` do template (`+30%`) — é estimativa, e a única decisão que depende dela é o corte em 30 minutos, muito acima do que um roteiro real ocupa.
 
 **O prompt proíbe encurtar para caber.** Sem isso, um modelo que recebe "não divida" e um roteiro longo resolve resumindo — trocaria a divisão indesejada por uma perda de conteúdo pior e invisível, porque o resultado é um `parts` de tamanho 1 com a história mutilada.
 
@@ -212,7 +212,7 @@ O orchestrador narra o `hook` numa etapa própria (`_run_hook_tts`), entre o ref
 
 ## Velocidade da Narração
 
-Definida no `template.json`, no bloco `narration.rate` (padrão `+15%`), e aplicada pelo `tts_service`. No provider `edge` vai para `edge_tts.Communicate(..., rate=...)`; no `azure`, para o `<prosody rate='...'>` do SSML. É o mesmo parâmetro nos dois casos, então trocar de provider não muda o ritmo da narração.
+Definida no `template.json`, no bloco `narration.rate` (padrão `+30%`), e aplicada pelo `tts_service`. No provider `edge` vai para `edge_tts.Communicate(..., rate=...)`; no `azure`, para o `<prosody rate='...'>` do SSML. É o mesmo parâmetro nos dois casos, então trocar de provider não muda o ritmo da narração.
 
 **Por que no template, e não só em env var.** Velocidade de fala é decisão de design do formato, igual à tipografia da legenda e ao timing da edição — que já moram no `template.json`. Um template de drama quer narração pausada; um de curiosidades quer ritmo acelerado. Com env var, trocar de formato exigiria redeploy do `tts_service` e o valor seria global para todos os templates ao mesmo tempo.
 
@@ -228,7 +228,7 @@ template.json (narration.rate)
 
 Decisão: o orchestrador **não lê o MinIO nem parseia `template.json`**. O `blender_worker` é dono dos templates, então serve o config por HTTP. Isso evita duplicar o parsing e o conhecimento de bucket/key em dois serviços. O endpoint expõe o `template.json` inteiro, não só `narration` — outros campos vão precisar do mesmo caminho.
 
-**Precedência:** `narration.rate` do template → `TTS_RATE` do `tts_service` → `+15%`. O env var deixa de ser a fonte primária e vira fallback: cobre templates sem o bloco `narration` (compatibilidade) e chamadas diretas ao `tts_service` fora do pipeline.
+**Precedência:** `narration.rate` do template → `TTS_RATE` do `tts_service` → `+30%`. O env var deixa de ser a fonte primária e vira fallback: cobre templates sem o bloco `narration` (compatibilidade) e chamadas diretas ao `tts_service` fora do pipeline. Os dois são mantidos **no mesmo valor** — divergi-los faria o caminho de fallback narrar num ritmo diferente do resto do canal, e a diferença só apareceria no vídeo pronto.
 
 **Degradação.** Falha ao ler o config — template sem bloco, blender_worker fora do ar, JSON inválido — cai no `TTS_RATE` com warning, sem derrubar o run. Narração é estética; o render, não. Mesmo critério da remoção de silêncio (degrada) versus a transcrição (derruba).
 
@@ -240,7 +240,7 @@ Decisão: o orchestrador **não lê o MinIO nem parseia `template.json`**. O `bl
 
 **Ordem no pipeline.** O `rate` age na síntese, antes de tudo. Logo a remoção de silêncio e a transcrição já operam sobre o áudio acelerado, e o SRT sai com o timing certo sem nenhum ajuste — mesma razão pela qual a transcrição roda depois do corte de silêncio (ver "Legendas"). Nada no `blender_worker` muda: ele consome o par MP3+SRT como sempre.
 
-**Efeito na divisão em partes.** O limite é de fala, não de texto, e narração mais rápida encurta o áudio para o mesmo roteiro. O LLM decide o corte a partir do texto, sem conhecer o `rate`: `NARRATION_WPM` já embute o `+15%` do template publicado, então mudar `narration.rate` sem mexer nessa constante desloca o teto real de 30 minutos. A deriva é irrelevante no uso normal — com o scout ingerindo até 6000 caracteres (~1000 palavras), nenhum roteiro chega perto das 5100 palavras do teto, e o `parts` de tamanho 1 é o resultado independentemente do rate.
+**Efeito na divisão em partes.** O limite é de fala, não de texto, e narração mais rápida encurta o áudio para o mesmo roteiro. O LLM decide o corte a partir do texto, sem conhecer o `rate`: `NARRATION_WPM` já embute o `+30%` do template publicado, então mudar `narration.rate` sem mexer nessa constante desloca o teto real de 30 minutos — as duas andam juntas (a subida de `+15%` para `+30%` levou a constante de 170 para 195). A deriva é irrelevante no uso normal — com o scout ingerindo até 6000 caracteres (~1000 palavras), nenhum roteiro chega perto das 5850 palavras do teto, e o `parts` de tamanho 1 é o resultado independentemente do rate.
 
 ---
 
@@ -771,7 +771,7 @@ O piso não tem esse problema e por isso ficou onde estava: abaixo de `min_chars
 
 Consequência: o candidato longo é buscado, deduplicado, **pontuado** e gravado em `seen_items` com `story_score`/`story_tag` preenchidos, `status=filtered` e `skip_reason=too_long:{n}`. Ele nunca vira vídeo, mas a trilha de auditoria passa a responder *o que* foi deixado passar — que é o dado necessário para decidir se `max_chars` está no lugar certo. Sem isso, mover o teto seria chute: as linhas rejeitadas não diziam nada sobre a qualidade do que se estava recusando.
 
-**O teto continua sendo o gate de produção.** Subi-lo é o que transforma essas linhas em vídeo, e o refino já sabe lidar com o resultado: o padrão é uma parte só, e acima de `MAX_PART_WORDS` (5100, ~30 min de fala) ele divide em partes com cliffhanger. Não há nada abaixo do scout que quebre com roteiro longo — `raw_script` e `script` são `Text` sem limite.
+**O teto continua sendo o gate de produção.** Subi-lo é o que transforma essas linhas em vídeo, e o refino já sabe lidar com o resultado: o padrão é uma parte só, e acima de `MAX_PART_WORDS` (5850, ~30 min de fala) ele divide em partes com cliffhanger. Não há nada abaixo do scout que quebre com roteiro longo — `raw_script` e `script` são `Text` sem limite.
 
 O contador `too_long` no `ScoutReport` é o recorte dessa rejeição dentro de `filtered`, que continua sendo o total.
 

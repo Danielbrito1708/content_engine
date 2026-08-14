@@ -67,7 +67,8 @@ Define a estrutura de montagem. Reutilizado em múltiplos jobs.
   "frame_rate": 30,
   "frame_end": 900,
   "narration": {
-    "rate": "+15%"
+    "rate": "+30%",
+    "tail_seconds": 0.5
   },
   "channels": {
     "video": 1,

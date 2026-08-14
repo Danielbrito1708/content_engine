@@ -3,13 +3,13 @@
 MAX_PART_MINUTES = 30
 
 #: Palavras por minuto da narração publicada. Voz neural pt-BR fala em torno de
-#: 150 wpm, e o `narration.rate` do template acelera em +15% — 150 × 1.15 ≈ 172,
-#: arredondado para baixo. É estimativa: o número real só existe depois do TTS,
-#: e a única decisão que depende dele é o corte em 30 minutos, longe do que um
-#: roteiro típico ocupa.
-NARRATION_WPM = 170
+#: 150 wpm, e o `narration.rate` do template acelera em +30% — 150 × 1.30 = 195.
+#: É estimativa: o número real só existe depois do TTS, e a única decisão que
+#: depende dele é o corte em 30 minutos, longe do que um roteiro típico ocupa.
+#: Anda junto com o `narration.rate`: mexer num sem o outro desloca o teto real.
+NARRATION_WPM = 195
 
-#: ~5100 palavras. O prompt fala em palavras porque é o que o modelo consegue
+#: ~5850 palavras. O prompt fala em palavras porque é o que o modelo consegue
 #: contar; minutos é o que a regra realmente significa.
 MAX_PART_WORDS = MAX_PART_MINUTES * NARRATION_WPM
 
