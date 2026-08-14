@@ -28,6 +28,9 @@ class ScoutRunResponse(BaseModel):
     archive_wrapped: bool = False
     #: Candidates skipped because the same story was already seen under another id.
     duplicate_story: int = 0
+    #: Candidates that were judged and recorded with their story score, then
+    #: dropped for being too long to produce. Included in ``filtered`` too.
+    too_long: int = 0
     #: True when a cycle was already in flight, so this call did nothing.
     already_running: bool = False
 

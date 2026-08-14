@@ -99,9 +99,13 @@ Externamente (localhost), cada um usa a porta mapeada acima.
 
 ## Passos pendentes de deploy
 
-> Da branch `worktree-voz-narrador-fim-video`. Apagar esta seção quando os dois passos estiverem aplicados em todos os ambientes.
+> Da branch `worktree-voz-narrador-fim-video`, mergeada no `main`. **Os dois passos foram aplicados no ambiente local em 14/08/2026** — o upload do template vale para todos os ambientes (o bucket R2 é compartilhado), a migration é por ambiente e ainda não rodou em nenhum outro. Apagar esta seção quando não houver mais ambiente sem ela; até lá o procedimento abaixo continua valendo para os que faltam.
 
 ### 1. Republicar o `template.json` no bucket
+
+✅ **Feito em 14/08/2026** — `templates/template.json` no R2 agora é a cópia do repo. O objeto publicado estava muito mais defasado do que só a `narration`: não tinha `narration`, `card`, `music`, nem `channels.hook`/`channels.card` (todos vinham de default no código), e trazia `timing.outro_start`/`outro_end`/`music_fade_out`, chaves que nenhum código lê mais.
+
+⚠️ **O upload também aplicou a legenda de 100px**, que estava commitada desde `6ca851b` (28/07) e nunca tinha subido — o bucket ainda servia `font_size: 160`. É mudança visual real e não fazia parte desta branch; veio junto porque o repo é a fonte da verdade do template. Se 160 for o valor desejado, editar `blender_worker/template.json` e republicar.
 
 ⚠️ **O `template.json` do repo não é o que roda.** O `blender_worker` baixa `templates/template.json` do MinIO/R2 no momento do render, e o orchestrador lê `narration.rate` do mesmo objeto via `GET /templates/{id}/config`. Editar a cópia do repo não muda nada até o upload.
 
@@ -119,6 +123,8 @@ curl -s localhost:8001/templates/$BLENDER_TEMPLATE_ID/config | python -m json.to
 ```
 
 ### 2. Migration `005` do orchestrator
+
+✅ **Feito no local em 14/08/2026** via `docker compose up -d --build orchestrator`; coluna conferida no banco. Continua pendente em qualquer outro ambiente.
 
 **`005_add_narrator_gender_to_pipeline_runs`.** Adiciona `narrator_gender` em `pipeline_runs`, coluna que o `_refine` passou a escrever. Sem ela, todo run morre no refino com `UndefinedColumn`.
 

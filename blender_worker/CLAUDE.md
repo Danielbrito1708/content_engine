@@ -251,7 +251,7 @@ Without it, raising the body size clips long words, and the clipping is **silent
 
 `fit_font_size` is pure (the measurer is injected), so the rule is tested without Blender.
 
-**Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 160, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. At 160 the auto-fit touches only 2 of 178 words on a real narration. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
+**Defaults and why:** `outline_width` is 0.24, not Blender's 0.05 — 0.05 is a hairline that vanishes over a bright frame, and past ~0.30 the outline merges between glyphs and closes the counters of round letters. `font_size` has no code default (the strip keeps Blender's 60); `template.json` sets 100, since 60 is too small for 1080×1920 — body size is a per-template design choice, not a pipeline invariant. It was 160 (auto-fit touching 2 of 178 words on a real narration) until `6ca851b` dropped it to 100; the measurements quoted above for 140/170/190 come from that period and still describe the auto-fit rule, just not the shipped size. The scene's view transform must stay `Standard` (as `template.blend` has it); under `AgX` white 1.0 renders at ~0.78.
 
 - Tests: `tests/test_subtitles.py` (62 tests total, marked `no_db` — no docker compose, no Blender needed).
 

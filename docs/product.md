@@ -62,7 +62,11 @@ Nem toda história serve. O sistema recusa textos curtos demais, que não têm h
 
 **Mas o limite de tamanho deixou de ser o primeiro critério.** Ele era: o texto longo era descartado assim que chegava, antes de qualquer pergunta sobre qualidade. O problema é que isso descartava justamente o melhor material. Numa medição sobre 45 histórias reais, 11 estavam acima do teto — e **nenhuma delas tirou nota baixa**, enquanto todas as histórias fracas estavam dentro do teto. Metade das notas mais altas estava do lado descartado. Faz sentido: as comunidades onde mora o gênero premiam quem escreve bem e longo, então tamanho e qualidade andam juntos, e cortar por tamanho primeiro era cortar por qualidade ao contrário.
 
-Agora a história longa é coletada, lida e **avaliada normalmente**, recebe sua nota e sua etiqueta, e só então é recusada por tamanho. Ela não vira vídeo, mas fica registrada com a nota que tirou. A diferença prática é que o registro de rejeições passa a responder "o que estamos deixando passar", em vez de só dizer que algo foi descartado. Se essas histórias forem boas o bastante, subir o teto é o que as transforma em vídeo — e a etapa de refinamento já sabe dividir história longa em partes com gancho de continuação.
+Agora a história longa é coletada, lida e **avaliada normalmente**, recebe sua nota e sua etiqueta, e só então é recusada por tamanho. Ela não vira vídeo, mas fica registrada com a nota que tirou. A diferença prática é que o registro de rejeições passa a responder "o que estamos deixando passar", em vez de só dizer que algo foi descartado.
+
+**E o teto subiu: de 6.000 para 30.000 caracteres.** A medição acima dizia que o limite antigo estava recusando o melhor material, então ele foi movido para onde existe uma razão real para ele estar. Esse ponto é o maior texto que ainda vira **um** vídeo só: acima disso, a etapa de refinamento passa a dividir a história em série com gancho de continuação. O valor antigo equivalia a cerca de cinco minutos e meio de narração — um quinto do que cabe num vídeo. O novo equivale a quase vinte e oito minutos, encostado no limite de trinta que o formato admite, com uma folga para o texto crescer enquanto é reescrito.
+
+Na prática: as histórias longas e bem avaliadas que vinham sendo registradas e descartadas passam a virar vídeo. O teto continua existindo, mas agora ele marca uma fronteira de formato — onde um post deixa de caber num vídeo — em vez de um palpite sobre custo.
 
 Depois disso, cada história que está prestes a ser publicada passa por uma leitura de segurança feita por um modelo de linguagem. A pergunta é uma só: publicar isso coloca a conta em risco de suspensão? Assuntos como automutilação, abuso sexual e violência gráfica são recusados. Não é moralismo, é sobrevivência do canal — o TikTok remove contas que publicam esse tipo de conteúdo, e uma única coleta ruim custaria o perfil inteiro.
 
@@ -392,7 +396,7 @@ O tamanho anterior era o padrão interno do Blender — pequeno demais para víd
 
 **Dá para mudar sem mexer em código.** Posição vertical e tamanho são configuração do template: `y_position` (0.5 = centro exato, 0.05 = rodapé como antes) e `font_size`.
 
-Valores em uso hoje: **tamanho 160**, posição **0.474** — ou seja, 50 pixels abaixo do centro da tela.
+Valores em uso hoje: **tamanho 100**, posição **0.474** — ou seja, 50 pixels abaixo do centro da tela.
 
 ## Fundo diferente a cada vídeo
 

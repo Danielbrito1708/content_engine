@@ -17,7 +17,7 @@ from src.content_scout.clients.llm import (
 from src.content_scout.clients.orchestrator import OrchestratorClient
 from src.content_scout.db.engine import AsyncSessionLocal
 from src.content_scout.db.models import ArchiveCursor, ItemComment, SeenItem, SeenStatus
-from src.content_scout.filters import content_fingerprint, evaluate
+from src.content_scout.filters import content_fingerprint, evaluate, exceeds_length
 from src.content_scout.sources.base import (
     ArchiveCapableSource,
     Candidate,
@@ -54,6 +54,9 @@ class ScoutReport:
     archive_wrapped: bool = False
     #: Candidates dropped because the same story was already seen under another id.
     duplicate_story: int = 0
+    #: Candidates judged and recorded with their score, then dropped for being too
+    #: long to produce. Counted in ``filtered`` as well — this is the breakdown.
+    too_long: int = 0
 
 
 # One cycle at a time, process-wide. The periodic loop fires a cycle on startup,
@@ -340,6 +343,12 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
     candidates are recorded, so a full queue costs nothing and loses nothing —
     the filtered/seen bookkeeping still happens and the next cycle starts from a
     smaller pile.
+
+    Rejections are staged by what they cost, cheapest first: the length floor and
+    repost dedup are free and run over everything; the length ceiling runs after
+    the batched score, so a story too long to produce is still judged on the way
+    out; moderation is a call per candidate and runs only on what is about to be
+    published.
     """
     report = ScoutReport()
     # `is None`, not truthiness: an explicitly empty list means "no sources", and
@@ -383,11 +392,8 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
             # Guard against the same post appearing in two feeds in one cycle.
             seen.add(candidate.external_id)
 
-            reason = evaluate(
-                candidate,
-                min_chars=filter_cfg.min_chars,
-                max_chars=filter_cfg.max_chars,
-            )
+            # Only the floor here. The ceiling runs after scoring — see below.
+            reason = evaluate(candidate, min_chars=filter_cfg.min_chars)
             # Fingerprint dedup runs after the cheap length check and before
             # anything that costs a model call: a repost is the cheapest possible
             # rejection and should never reach moderation or scoring.
@@ -440,8 +446,50 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 if score.tag(scout_cfg.min_story_score) == TAG_WEAK
             )
 
+        # The length ceiling, applied only now that every candidate has been
+        # judged. It used to run with the cheap filters, which meant a story was
+        # discarded before anyone asked whether it was any good — and what it
+        # discarded was disproportionately the good stuff. Measured live over 45
+        # posts (14/08/2026): 11 were past the cap, and *none of them scored
+        # below 6*, while every candidate that scored 5 or less was under it.
+        # Four of the eight candidates that scored 9 were past it. The subs where
+        # the genre lives reward long writing, so cutting on length first was
+        # cutting on quality backwards. The cap still decides what gets produced;
+        # it no longer decides what gets *looked at*, so
+        # `GET /scout/seen?status=filtered` now carries the score of what was
+        # passed on instead of losing it silently.
+        #
+        # Rejecting here rather than in the submit loop keeps a too-long candidate
+        # from ever reaching moderation, which costs a model call for something
+        # that was never going to be published.
+        publishable: list[Candidate] = []
+        for candidate in fresh:
+            reason = exceeds_length(candidate, filter_cfg.max_chars)
+            if reason is None:
+                publishable.append(candidate)
+                continue
+            story = story_scores.get(candidate.external_id)
+            report.filtered += 1
+            report.too_long += 1
+            await _record(
+                session,
+                _seen_row(
+                    candidate,
+                    SeenStatus.filtered,
+                    skip_reason=reason,
+                    story=story,
+                    min_story_score=scout_cfg.min_story_score,
+                ),
+            )
+            log.info(
+                "scout_rejected_too_long",
+                external_id=candidate.external_id,
+                char_count=candidate.char_count,
+                story_score=story.score if story is not None else None,
+            )
+
         ordered = interleave_by_origin(
-            rank_by_story(fresh, story_scores, scout_cfg.min_story_score), usage
+            rank_by_story(publishable, story_scores, scout_cfg.min_story_score), usage
         )
 
         # Walk past the budget: rejected candidates don't consume a slot, so the
@@ -633,6 +681,7 @@ async def scout_loop() -> None:
                 archive_fetched=report.archive_fetched,
                 archive_wrapped=report.archive_wrapped,
                 duplicate_story=report.duplicate_story,
+                too_long=report.too_long,
                 no_capacity=report.skipped_no_capacity,
                 moderation_unavailable=report.moderation_unavailable,
                 story_quality_unavailable=report.story_quality_unavailable,

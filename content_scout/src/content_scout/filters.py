@@ -42,19 +42,35 @@ def content_fingerprint(text: str) -> str | None:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def evaluate(candidate: Candidate, min_chars: int, max_chars: int) -> str | None:
-    """Return a skip reason, or ``None`` when the candidate is usable.
+def evaluate(candidate: Candidate, min_chars: int) -> str | None:
+    """Return a skip reason, or ``None`` when the candidate is worth judging.
 
     Only cheap, deterministic checks live here. Safety is a separate step and a
     judgement about context — see ``clients/llm.py`` — so it does not belong in a
     function that runs over every candidate on every cycle.
 
-    Length bounds exist on both ends: too short has no story to tell, and too
-    long means the LLM would have to cut so much that what airs is barely the
-    original post.
+    Only the floor is checked. Below ``min_chars`` there is no story to tell, so
+    there is nothing for the scoring model to weigh in on — the rejection is as
+    true before a judgement as after it. The ceiling is not like that; it lives
+    in ``exceeds_length`` and runs later. See ``scout._run_cycle``.
     """
     if candidate.char_count < min_chars:
         return f"too_short:{candidate.char_count}"
+    return None
+
+
+def exceeds_length(candidate: Candidate, max_chars: int) -> str | None:
+    """Return a skip reason when the body is too long to produce, else ``None``.
+
+    Separate from ``evaluate`` because it answers a different question. The floor
+    is editorial — a 50-character post is not a story. The ceiling is about
+    production: the body is a fine story that would cost more narration and
+    render time than a slot is worth.
+
+    Keeping it out of the cheap pass is what lets the ceiling reject a candidate
+    the scout has already scored, so the audit trail records *what* was passed on
+    and not merely that something was.
+    """
     if candidate.char_count > max_chars:
         return f"too_long:{candidate.char_count}"
     return None

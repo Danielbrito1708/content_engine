@@ -948,6 +948,140 @@ async def test_seen_endpoint_filters_by_story_tag(
     assert weak[0]["has_hook"] is False
 
 
+# ============================================================== length ceiling
+
+
+@pytest.fixture
+def length_cfg(monkeypatch):
+    def _set(min_chars=600, max_chars=6000):
+        monkeypatch.setattr(settings.CONFIG.filters, "min_chars", min_chars)
+        monkeypatch.setattr(settings.CONFIG.filters, "max_chars", max_chars)
+    _set()
+    return _set
+
+
+async def test_long_candidate_is_judged_before_it_is_dropped(
+    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg, session
+):
+    """The point of the whole change: the score is recorded even though the
+    candidate is never produced. Without it, ``seen_items`` says a story was
+    dropped for length but never what it was worth."""
+    story_quality.set({"t3_longa": StoryScore(hook=True, score=9, hook_line="ela abriu a porta")})
+    source = FakeSource([_candidate("t3_longa", chars=9000)])
+
+    report = await run_cycle([source])
+
+    assert report.too_long == 1
+    assert report.filtered == 1
+    assert report.submitted == 0
+    assert submissions == []
+
+    row = (await _seen_rows(session))[0]
+    assert row.status == SeenStatus.filtered
+    assert row.skip_reason == "too_long:9000"
+    assert row.story_score == 9
+    assert row.story_tag == TAG_STRONG
+    assert row.has_hook is True
+    assert row.hook_line == "ela abriu a porta"
+
+
+async def test_long_candidate_is_in_the_scoring_batch(
+    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg
+):
+    """It has to be scored to be recorded with a score — so it goes in the batch.
+
+    The batch is one call whose cost is set by the excerpt, not by the body, so
+    carrying long candidates in it is free.
+    """
+    await run_cycle([FakeSource([_candidate("t3_longa", chars=9000), _candidate("t3_ok")])])
+
+    assert story_quality.calls == [["t3_longa", "t3_ok"]]
+
+
+async def test_long_candidate_is_never_moderated(
+    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg, moderation
+):
+    """Scoring is batched and cheap; moderation is a call per candidate. Something
+    that will never be published must not pay for one."""
+    await run_cycle([FakeSource([_candidate("t3_longa", chars=9000)])])
+
+    assert moderation.calls == []
+
+
+async def test_long_candidate_does_not_consume_budget(
+    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg
+):
+    """It is dropped before the submit loop, so it cannot take a slot — even when
+    its score would have put it at the head of the queue."""
+    budget(max_per_cycle=1)
+    story_quality.set({
+        "t3_longa": StoryScore(hook=True, score=10),
+        "t3_ok": StoryScore(hook=True, score=7),
+    })
+    source = FakeSource([_candidate("t3_longa", chars=9000), _candidate("t3_ok")])
+
+    report = await run_cycle([source])
+
+    assert report.submitted_ids == ["t3_ok"]
+    assert report.too_long == 1
+
+
+async def test_long_candidate_is_not_reconsidered_next_cycle(
+    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg
+):
+    """Recorded means burned: re-judging it every cycle would pay the batch cost
+    forever for a candidate the ceiling already answered."""
+    source = FakeSource([_candidate("t3_longa", chars=9000)])
+    await run_cycle([source])
+
+    second = await run_cycle([source])
+
+    assert second.already_seen == 1
+    assert second.too_long == 0
+
+
+async def test_long_candidate_is_kept_when_the_ceiling_is_raised(
+    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg
+):
+    """The ceiling is config, so raising it is what turns these rows into videos."""
+    length_cfg(max_chars=40000)
+
+    report = await run_cycle([FakeSource([_candidate("t3_longa", chars=9000)])])
+
+    assert report.too_long == 0
+    assert report.submitted_ids == ["t3_longa"]
+
+
+async def test_unscored_long_candidate_is_still_recorded(
+    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg, session
+):
+    """An ``llm_service`` outage leaves the story columns null — the length
+    rejection is deterministic and does not depend on the judgement."""
+    report = await run_cycle([FakeSource([_candidate("t3_longa", chars=9000)])])
+
+    assert report.too_long == 1
+
+    row = (await _seen_rows(session))[0]
+    assert row.skip_reason == "too_long:9000"
+    assert row.story_score is None
+    assert row.story_tag is None
+
+
+async def test_ceiling_is_not_paid_when_the_queue_is_full(
+    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg, session
+):
+    """A full queue publishes nothing, so it must not spend a judgement — and a
+    candidate recorded unjudged would be burned without ever being scored."""
+    set_active_runs(5)
+
+    report = await run_cycle([FakeSource([_candidate("t3_longa", chars=9000)])])
+
+    assert report.skipped_no_capacity is True
+    assert report.too_long == 0
+    assert story_quality.calls == []
+    assert await _seen_rows(session) == []
+
+
 # ============================================================== archive sweep
 
 

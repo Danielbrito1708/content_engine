@@ -124,11 +124,25 @@ O fingerprint é gravado **também nas linhas rejeitadas** — repost de histór
 
 ### Filtros determinísticos (`src/content_scout/filters.py`)
 
-`evaluate(candidate, min_chars, max_chars) -> str | None` — devolve o motivo da rejeição ou `None`.
+`evaluate(candidate, min_chars) -> str | None` — **só o piso**. Devolve `too_short:{n}` ou `None`. Roda na passagem barata, sobre todo candidato.
 
-Só checagens baratas e determinísticas. **Limites de tamanho nas duas pontas** — curto demais não tem história; longo demais obrigaria o LLM a cortar tanto que o que vai ao ar já não é o post.
+`exceeds_length(candidate, max_chars) -> str | None` — **o teto**, função separada porque roda em outro momento do ciclo. Devolve `too_long:{n}` ou `None`.
 
 Segurança **não** mora aqui — ver abaixo.
+
+⚠️ **As duas pontas não são simétricas e por isso não rodam juntas.** O piso é editorial: abaixo de `min_chars` não há história, então não há o que a nota pese — a rejeição é igualmente verdadeira antes ou depois do julgamento. O teto é de **produção**: o texto é uma história boa que custaria mais narração e render do que a vaga vale. Rodar o teto na passagem barata descartava a história antes de qualquer pergunta sobre qualidade, e o que ele descartava era desproporcionalmente o melhor material. Medido ao vivo sobre 45 posts (14/08/2026): 11 estavam acima do teto e **nenhum deles tirou menos que 6**, enquanto todos os candidatos com nota ≤5 estavam dentro do teto; **4 dos 8 candidatos com nota 9 estavam acima**. Os subs onde o gênero mora premiam texto longo, então cortar por tamanho primeiro era cortar por qualidade ao contrário.
+
+Por isso `exceeds_length` roda em `_run_cycle` **depois** da nota: o candidato longo é pontuado e gravado com `story_score`/`story_tag`, `status=filtered`, `skip_reason=too_long:{n}`. Nunca vira vídeo, mas `GET /scout/seen?status=filtered` passa a dizer *o que* foi recusado — o dado que faltava para mover `max_chars` com base em evidência em vez de chute.
+
+⚠️ **Roda depois do backpressure.** Fila cheia encerra o ciclo antes da nota, então o candidato longo não é gravado nesse ciclo e volta inteiro no próximo. Gravá-lo ali o queimaria sem nota — exatamente o estado que a mudança existe para evitar.
+
+⚠️ **Roda antes da moderação, fora do laço de submissão.** A nota é uma chamada em lote por ciclo; a moderação é uma por candidato. Deixar o candidato longo entrar no laço faria uma história que nunca seria publicada pagar uma chamada de modelo.
+
+Nada a jusante quebra com roteiro longo: `raw_script`/`script` são `Text` sem limite, e o refino divide acima de `MAX_PART_WORDS` (5850) em partes com cliffhanger.
+
+**O teto é 30000, e o número é derivado.** É o maior post cru que o refino ainda entrega como **um** vídeo: `MAX_PART_WORDS` são 5850 palavras (30 min × 195 wpm) e o pt-BR mede **5,54 caracteres por palavra** nos 30 posts de `docs/story_quality_baseline.json`, ou seja ~32400 chars numa parte só. Cortar em 30000 deixa ~7% de folga para o refino expandir o texto ao reescrever. Acima disso a história ainda publica, só que como série com cliffhanger — então o teto marca onde um post deixa de ser um vídeo, que é a única linha não arbitrária disponível.
+
+⚠️ **Era 6000, e estava recusando justamente o bom material** — ver a medição dos 45 posts acima. O valor antigo equivalia a ~1080 palavras, ~5,5 min de narração: um quinto do que cabe numa parte.
 
 ### Moderação por LLM (`src/content_scout/clients/llm.py` → `llm_service POST /moderate`)
 
@@ -170,7 +184,7 @@ O ciclo para na primeira falha de moderação em vez de tentar os demais: se o s
 
 ⚠️ **A tag é derivada, não pedida ao modelo.** O corte mora em config, então se move contra dados reais (`GET /scout/seen?story_tag=weak_storytelling`) — mesmo motivo de `min_chars`/`max_chars`. `story_score` fica cru, então mover o corte permite re-derivar as linhas antigas. A derivação acontece na escrita: mover o corte só afeta linhas novas.
 
-⚠️ **`story_tag IS NULL` ≠ fraco.** Nulo = não avaliado — todo filtrado (a nota roda **depois** dos filtros baratos e **depois** do backpressure: fila cheia não publica, então não paga julgamento) e todo candidato de ciclo em que o `llm_service` caiu.
+⚠️ **`story_tag IS NULL` ≠ fraco.** Nulo = não avaliado — o que foi barrado pelos filtros baratos (a nota roda **depois** deles e **depois** do backpressure: fila cheia não publica, então não paga julgamento) e todo candidato de ciclo em que o `llm_service` caiu. **Filtrado não implica nulo:** quem foi recusado por `too_long` passou pela nota e tem as colunas preenchidas — é o ponto da rejeição tardia por tamanho.
 
 `rank_by_story(candidates, scores, neutral)` — ordena por nota, desc, **estável**: como `interleave_by_origin` preserva a ordem interna de cada grupo, um sort estável na lista plana vira "melhor abertura primeiro dentro de cada origem" sem tocar na justiça entre origens. Empate mantém a posição do feed. **Candidato sem nota ordena no próprio limiar**, não no fim — mandá-lo para o fim converteria falha de modelo em handicap permanente, e são as sobras de cada ciclo que herdariam isso.
 
@@ -213,7 +227,9 @@ Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando
 - `POST /scout/run` — roda um ciclo agora, síncrono, e devolve os contadores. Feito para calibrar filtros vendo o resultado na hora.
 - `GET /scout/seen?status=&story_tag=&limit=&offset=` — trilha de auditoria; filtre por `filtered` para ver o que foi rejeitado e por quê, e por `story_tag=weak_storytelling` para calibrar `min_story_score`.
 
-**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `story_scored`, `weak_storytelling`, `story_quality_unavailable`, `archive_swept`, `archive_fetched`, `archive_wrapped`, `duplicate_story`, `already_running`.
+**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `story_scored`, `weak_storytelling`, `story_quality_unavailable`, `archive_swept`, `archive_fetched`, `archive_wrapped`, `duplicate_story`, `too_long`, `already_running`.
+
+`too_long` conta os candidatos julgados e gravados com a nota, depois recusados pelo teto de tamanho. É recorte de `filtered`, não uma categoria à parte.
 
 `archive_swept` é a origem varrida no ciclo (`None` quando nenhuma estava devida); `archive_wrapped` diz que a listagem acabou e voltou ao topo; `duplicate_story` conta candidatos pulados por já existir a mesma história sob outro id.
 
@@ -234,8 +250,9 @@ Nada mais muda: dedup, filtros, backpressure e orçamento tratam toda fonte igua
 
 ## Testing rules
 
-- `tests/test_reddit_source.py` (34), `tests/test_filters.py` (11) e `tests/test_story_quality.py` (23) — marcados `no_db`, rodam sem docker. O último usa `respx` para o cliente HTTP.
-- `tests/test_scout.py` (67) — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
+- `tests/test_reddit_source.py` (34), `tests/test_filters.py` (14) e `tests/test_story_quality.py` (23) — marcados `no_db`, rodam sem docker. O último usa `respx` para o cliente HTTP.
+- `tests/test_scout.py` (74) — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
+- A fixture `length_cfg` (não-autouse) fixa `min_chars`/`max_chars` nos testes do teto de tamanho, para eles não dependerem do `config.ini` — subir `max_chars` em produção não pode quebrar a suíte.
 - ⚠️ **Nunca rodar a suíte com DB contra o banco vivo**: o fixture autouse `clean_db` apaga `seen_items` e `archive_cursors`, ou seja, o histórico de dedup inteiro — o scout voltaria a republicar tudo. Criar um banco descartável: `docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE content_scout_wt;"`, `alembic upgrade head` nele e rodar com `DATABASE_URL=…/content_scout_wt`.
 - O helper `_candidate` em `test_scout.py` costura o `external_id` dentro do corpo. Corpos iguais fazem o dedup por fingerprint tratar todo candidato depois do primeiro como repost — um helper com `"aaa…"` para todos quebraria a suíte inteira.
 - A fixture autouse `archive_off` desliga a varredura histórica por padrão; use `archive_on` para exercitá-la.

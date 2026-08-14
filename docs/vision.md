@@ -773,6 +773,12 @@ Consequência: o candidato longo é buscado, deduplicado, **pontuado** e gravado
 
 **O teto continua sendo o gate de produção.** Subi-lo é o que transforma essas linhas em vídeo, e o refino já sabe lidar com o resultado: o padrão é uma parte só, e acima de `MAX_PART_WORDS` (5850, ~30 min de fala) ele divide em partes com cliffhanger. Não há nada abaixo do scout que quebre com roteiro longo — `raw_script` e `script` são `Text` sem limite.
 
+**E foi subido: 6000 → 30000.** Com a medição acima dizendo que o teto antigo recusava o melhor material, mantê-lo em 6000 seria conhecer o erro e não corrigi-lo. O valor novo é **derivado, não escolhido**: é o maior post cru que o refino ainda entrega como *um* vídeo. `MAX_PART_WORDS` são 5850 palavras; o pt-BR mede **5,54 caracteres por palavra** sobre os 30 posts de `content_scout/docs/story_quality_baseline.json`; logo uma parte comporta ~32400 chars. O corte em 30000 deixa ~7% de folga para o refino expandir o texto ao reescrever — ele reconta a história, não a copia, então encostar em 32400 arriscaria uma divisão acidental.
+
+Por que essa é a única linha não arbitrária disponível: acima dela a história **não é recusada pelo pipeline**, ela vira série com cliffhanger, que é formato suportado e já em produção. Então o teto deixou de ser um palpite sobre custo de render e passou a marcar uma fronteira de formato — onde um post deixa de ser um vídeo. Em unidades de narração: 6000 chars eram ~1080 palavras, ~5,5 min a 195 wpm; 30000 são ~5415 palavras, ~27,8 min.
+
+⚠️ **O teto anda junto com `narration.rate`.** `MAX_PART_WORDS` é `MAX_PART_MINUTES × NARRATION_WPM`, e o wpm é o da voz neural acelerada pelo rate do template. Baixar o rate encolhe `MAX_PART_WORDS`, e 30000 chars passariam a estourar uma parte. Mexer num exige refazer esta conta.
+
 O contador `too_long` no `ScoutReport` é o recorte dessa rejeição dentro de `filtered`, que continua sendo o total.
 
 ⚠️ **A rejeição por teto roda depois do backpressure, como a nota.** Fila cheia encerra o ciclo antes de pontuar, então o candidato longo **não** é gravado nesse ciclo — ele volta inteiro no próximo. Gravá-lo ali o queimaria sem nota, que é exatamente o estado que esta mudança existe para evitar.
