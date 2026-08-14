@@ -10,7 +10,8 @@ Serviço de geração de áudio a partir de texto. Expõe `POST /generate` que o
 - `tts/azure.py` — `AzureTTSClient` (Azure Speech REST, **padrão de produção**)
 - `tts/edge.py` — `EdgeTTSClient` (edge-tts, Microsoft Neural TTS, gratuito)
 - `tts/elevenlabs.py` — stub para implementação futura
-- `tts/factory.py` — `get_tts_client()` seleciona o provider via `TTS_PROVIDER` env var
+- `tts/factory.py` — `get_tts_client(rate, voice)` seleciona o provider via `TTS_PROVIDER` env var
+- `tts/voices.py` — mapa gênero do narrador → voz (puro)
 - `schemas/generate.py` — `GenerateRequest`, `GenerateResponse`
 - `storage/client.py` — `upload_audio(bucket, key, data)` via boto3 + MinIO
 
@@ -26,6 +27,7 @@ Serviço de geração de áudio a partir de texto. Expõe `POST /generate` que o
 - `part_number` (int, padrão `1`) — número da parte (1, 2, ...)
 - `label` (str | None) — nome do arquivo dentro do run, quando o áudio **não** é uma parte do roteiro
 - `rate` (str, opcional) — velocidade da narração desta request (`+15%`). Vem do `narration.rate` do `template.json`. Ausente ou `null` → usa `TTS_RATE`. Formato inválido → `422` antes de qualquer chamada ao TTS.
+- `narrator_gender` (str, opcional) — `male` / `female` / `unknown`, vindo do refino. Escolhe a voz (ver **Voz do narrador**). Valor irreconhecível vira `unknown`, **não** `422`.
 
 **Response** (`GenerateResponse`):
 - `audio_key` (str) — key MinIO do áudio gerado: `audio/{run_id}/{slug}.mp3`
@@ -56,11 +58,34 @@ Selecionado por `TTS_PROVIDER` env var:
 | `elevenlabs` | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | 44.1 kHz | Stub (NotImplementedError) |
 
 **Vozes PT-BR** (as mesmas nos providers `edge` e `azure`):
-- `pt-BR-ThalitaNeural` (padrão — feminina, jovem)
-- `pt-BR-FranciscaNeural` (feminina)
-- `pt-BR-AntonioNeural` (masculino)
+- `pt-BR-ThalitaNeural` (feminina, jovem — o `TTS_VOICE` padrão)
+- `pt-BR-FranciscaNeural` (feminina — voz do narrador `female`)
+- `pt-BR-AntonioNeural` (masculino — voz do narrador `male`)
 
-Voz configurada por `TTS_VOICE` env var.
+Qual delas narra é decidido por request, pelo gênero do narrador (ver abaixo).
+
+### Voz do narrador (`src/tts_service/tts/voices.py`)
+
+As histórias são contadas em primeira pessoa, então o narrador tem gênero e a voz precisa concordar com ele: história de homem lida por voz feminina é a primeira coisa que o espectador nota, e nenhum trabalho de ritmo ou loudness recupera isso. Antes, toda narração saía em `TTS_VOICE`.
+
+**API pública (pura — as três vozes são injetadas, porque `settings.env` é frozen e o teste não alcança o env):**
+- `normalize_gender(value) -> str` — qualquer entrada para `male` / `female` / `unknown`
+- `resolve_voice(gender, *, default, male, female) -> str` — a voz do narrador; `default` quando o gênero não é conhecido
+- `GENDERS`, `MALE`, `FEMALE`, `UNKNOWN`
+
+| Var | Padrão | Descrição |
+|---|---|---|
+| `TTS_VOICE` | `pt-BR-ThalitaNeural` | Narrador `unknown` ou request sem o campo |
+| `TTS_VOICE_MALE` | `pt-BR-AntonioNeural` | Narrador `male` |
+| `TTS_VOICE_FEMALE` | `pt-BR-FranciscaNeural` | Narrador `female` |
+
+Defaults em `DEFAULT_MALE_VOICE` / `DEFAULT_FEMALE_VOICE` (`src/core/config.py`, junto dos outros defaults de env). O `/health` reporta as três.
+
+⚠️ **O mapa gênero→voz mora aqui, não no orchestrador.** O que chega é um fato sobre o roteiro (`narrator_gender`), nunca um nome de voz: `edge` e `azure` servem as mesmas vozes neurais, então `male` é uma string só para os dois, e um provider novo mexe neste arquivo sozinho.
+
+⚠️ **Normaliza em vez de rejeitar.** O valor nasce numa classificação de LLM dois serviços acima; o pior caso de errar é a voz que todo vídeo usava antes disso existir. Um `422` custaria o run inteiro por um campo cosmético. A voz resolvida e o gênero recebido vão no log da rota, então um modelo que comece a responder `"masculino"` fica visível sem ser fatal.
+
+`get_tts_client(rate=..., voice=...)` repassa ao provider ativo — `EdgeTTSClient` e `AzureTTSClient` já aceitavam `voice=` e caem em `settings.env.tts_voice` sem argumento. **Um provider novo precisa aceitar `voice` no construtor**, senão a voz do narrador é silenciosamente ignorada ao trocar de provider (mesma armadilha do `rate`; o stub `elevenlabs` está nessa situação — o equivalente lá é `ELEVENLABS_VOICE_ID`).
 
 ### Provider Azure (`src/tts_service/tts/azure.py`)
 
@@ -209,6 +234,8 @@ O consumo dessa legenda (offset de sincronia, hold entre palavras, fades) é res
 ⚠️ **`settings.env` é um pydantic model frozen construído uma vez no bootstrap.** `monkeypatch.setenv` não alcança o código sob teste, e `setattr` no campo levanta `ValidationError` — para exercitar um branch que depende de env, troque o `settings` do módulo (ver `test_factory_unknown_raises`).
 
 Rodar com Python 3.11 (o do Dockerfile) — anotações são avaliadas no import, então um nome não importado numa assinatura quebra a coleção do arquivo inteiro, coisa que o Python 3.14 local não acusa.
+
+`tests/test_voice.py` — 33 testes da voz por gênero: a normalização, a resolução pura, os defaults de env (via `TTSEnvSettings()` direto), o repasse do `voice` na rota e na factory (edge **e** azure), o SSML do Azure carregando o nome da voz, o gênero irreconhecível que **não** vira `422`, e o `/health`.
 
 `tests/test_rate.py` — 31 testes; `edge_tts.Communicate` mockado. Cobre o repasse do `rate` na síntese, o override no construtor e na factory, a precedência request → env no endpoint, a validação de formato (env via `TTSEnvSettings()` direto, que relê o env; request via `422`) e o campo `rate` no `/health`.
 

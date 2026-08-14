@@ -244,6 +244,36 @@ Decisão: o orchestrador **não lê o MinIO nem parseia `template.json`**. O `bl
 
 ---
 
+## Voz da Narração
+
+As histórias do acervo são contadas em **primeira pessoa**, então o narrador tem gênero e a voz precisa concordar com ele. Até aqui toda narração saía em `TTS_VOICE` — uma voz feminina —, inclusive a de narrador homem. Isso não é detalhe de acabamento: é a primeira coisa que o espectador percebe, acontece nos segundos em que a retenção se decide, e nenhum acerto de ritmo ou de loudness compensa.
+
+**Quem decide é quem lê o roteiro inteiro.** O gênero do narrador só existe no texto, e o único ponto do pipeline que vê o texto completo antes do TTS é o refino. Daí o campo nascer lá:
+
+```
+llm_service: RefineResponse.narrator_gender   (male | female | unknown)
+  └→ orchestrator: PipelineRun.narrator_gender  (migration 005)
+      └→ tts_service: POST /generate {narrator_gender}
+          └→ resolve_voice() → TTS_VOICE_MALE | TTS_VOICE_FEMALE | TTS_VOICE
+              └→ provider ativo (edge: Communicate(voice) | azure: <voice name=...>)
+```
+
+**Trafega o gênero, nunca o nome da voz.** O que o orchestrador manda é um fato sobre o roteiro; que voz corresponde a ele é decisão do `tts_service`, que conhece os providers. Como `edge` e `azure` servem as mesmas vozes neurais, `male` é uma string só para os dois, e um provider novo mexe num arquivo só (`tts/voices.py`). Um provider novo precisa aceitar `voice` no construtor — senão a voz do narrador é ignorada em silêncio ao trocar de provider, exatamente a armadilha já documentada para o `rate`.
+
+**Padrões:** `TTS_VOICE_MALE` = `pt-BR-AntonioNeural`, `TTS_VOICE_FEMALE` = `pt-BR-FranciscaNeural`. O par foi escolhido para soar como duas pessoas da mesma idade e do mesmo registro: o que muda entre eles é o gênero, não o personagem. `TTS_VOICE` (`pt-BR-ThalitaNeural`) deixa de ser a voz de todo vídeo e vira o fallback de `unknown`.
+
+**`unknown` não é falha.** História sem narrador identificável — ou narrada em terceira pessoa — é resultado normal, e mantém a voz padrão. O prompt manda explicitamente **preferir `unknown` a chutar**, e proíbe deduzir pelo assunto ou pelo público: errar o gênero custa mais que não escolher.
+
+**Não confundir com `classification.target_audience.gender`.** Um é quem narra, o outro é para quem se narra, e os dois divergem o tempo todo — história de homem com público majoritariamente feminino é o caso comum do corpus. São campos separados, com regras separadas no prompt, e há teste nos dois serviços fixando a distinção.
+
+**Normaliza em vez de rejeitar, nas duas pontas.** O valor nasce numa classificação de LLM: o `llm_service` reduz qualquer coisa fora de `male`/`female` a `unknown`, e o `tts_service` faz o mesmo com o que chega na request — sem `422`. O pior caso de errar é a voz que todo vídeo usava antes disso existir; um erro de validação custaria o run inteiro por um campo cosmético. O gênero recebido e a voz resolvida vão no log da rota, então um modelo que comece a responder `"masculino"` é visível sem ser fatal. Contrasta com o `rate`, cuja validação é estrita: formato errado ali é erro de configuração, não de julgamento.
+
+**O gancho vai na mesma voz.** `_run_hook_tts` manda o mesmo `narrator_gender` das partes, pela mesma razão pela qual manda o mesmo `rate`: o gancho é montado na frente da narração, e basta a voz ou a velocidade divergir para o vídeo abrir com dois narradores. O valor é do **run**, não da parte — uma história dividida é a mesma pessoa contando.
+
+**Compatibilidade.** `LLMClient.refine` lê `data.get("narrator_gender")` com fallback `unknown`, e o `TTSClient` **omite** o campo quando não há gênero (não manda `null`), então um `llm_service` antigo ou uma chamada direta ao `tts_service` produzem exatamente o comportamento anterior. O deploy dos três serviços não é atômico.
+
+---
+
 ## Qualidade do Áudio da Narração
 
 **O teto era o provider.** O `edge-tts` tem o formato de saída hardcoded em `audio-24khz-48kbitrate-mono-mp3` (`edge_tts/communicate.py`) — não é parâmetro, é constante, porque o endpoint gratuito do Edge só serve esse formato. A 24 kHz de sample rate, nada acima de ~12 kHz existe no sinal: é matemática, não compressão. Era essa a causa da narração soar abafada, e nenhum pós-processamento recupera banda que nunca foi sintetizada.
@@ -416,6 +446,20 @@ Era este o defeito por trás da impressão de "trilha que não está lá": ela e
 
 **Segundos, não frames, na configuração.** Um fade é uma duração musical: o mesmo número tem que significar o mesmo encerramento a 30 ou a 60fps. `music_fade_frames()` faz a conversão; `0` desliga o fade (é como um template diz "sem fade"), e um timeline sem espaço para o fade não recebe keyframe nenhum em vez de recebê-los antes do próprio início da trilha.
 
+### Meio segundo de respiro depois da última palavra
+
+`scene.frame_end` é `content_end_frame(...) + end_padding_frames(...)`. A narração continua decidindo onde o vídeo acaba — mas não no frame exato em que ela para.
+
+**Por que o corte rente não funciona.** Duas coisas se somam: o fim do strip de voz já é arredondado para o frame, e o último pacote de áudio do MP4 cai justamente sobre o corte. A consoante final morre, e o vídeo lê como se tivesse acabado no meio da palavra — o oposto do que "termina na última palavra" deveria significar.
+
+`DEFAULT_END_PADDING_SECONDS` é **0,5s**: tempo de a palavra terminar de ser dita e de o fade da trilha completar, curto o bastante para não virar ar morto (o defeito que a regra dos beds foi criada para eliminar). Configurável no bloco `narration` do template (`tail_seconds`), o mesmo bloco de onde já sai o `rate`; `0` volta ao corte rente. Valor negativo é chão em 0 — um template não pode terminar o render **antes** da narração, o que trocaria uma sílaba cortada por uma palavra inteira perdida.
+
+**Segundos, não frames**, pela mesma razão do fade da música: é uma duração de escuta e tem que significar a mesma pausa a 30 ou a 60fps.
+
+**A ordem em `main()` importa.** O respiro entra **antes** de `extend_background()` e de `music_fade_start()`: sem isso o fundo não cobriria os frames extras (final preto, o defeito já conhecido) e o fade terminaria meio segundo antes do último frame.
+
+Default no código porque o `template.json` vive no bucket — o template publicado não tem `tail_seconds`, e precisa ganhar o respiro sem republicação.
+
 ### Rotação de fundo (`orchestrator/backgrounds.py`)
 
 `pick_background(keys, run_id, part_number)` escolhe o clipe de cada parte entre os objetos publicados sob `[template] background_prefix`.
@@ -527,6 +571,8 @@ Medido no render de validação: gancho de 2,60s, `tail` de 0,3s → narração 
 ### O gancho vai no rate da narração
 
 `_run_hook_tts` passou a receber o `narration.rate` do template, o que obrigou `_narration_rate()` a ser lido **antes** do primeiro TTS (era lido dentro de `_process_all_parts`). Enquanto o gancho era um artefato à parte, narrá-lo no `TTS_RATE` default não aparecia em lugar nenhum; montado na frente da narração, um rate diferente lê como uma segunda voz.
+
+Vale igual para o **`narrator_gender`**, que o gancho recebe do run pelo mesmo motivo — ali a segunda voz não seria uma impressão, seria literal. Ver "Voz da Narração".
 
 ### Canais novos, com default no código
 
@@ -646,7 +692,7 @@ Regras de projeto:
 - **Corpo que normaliza para vazio devolve `None`, não o hash de `""`.** Com o hash, todo candidato desses colidiria com todos os outros e o segundo seria descartado como repost do primeiro.
 - **A coluna é indexada mas não é única.** Um repost precisa ser gravado com a própria linha de auditoria dizendo que foi pulado; uma constraint única rejeitaria exatamente essa linha e não sobraria registro da rejeição.
 - **Cobertura começa na migration 004.** `seen_items` nunca guardou o corpo, só título, url e contagem de caracteres — o histórico anterior não pode ser reprocessado e fica `NULL`.
-- A checagem roda **depois** do filtro barato de tamanho e **antes** de moderação e nota: repost é a rejeição mais barata que existe e não pode custar chamada de modelo.
+- A checagem roda **depois** do piso de tamanho e **antes** de moderação e nota: repost é a rejeição mais barata que existe e não pode custar chamada de modelo. Fica *antes* da nota justamente pelo contrário do que vale para o teto de tamanho (ver "Filtros") — um repost não é uma história que valeria a pena julgar, é uma que já foi julgada.
 
 ### Sinal de qualidade
 
@@ -702,15 +748,38 @@ Daí um segundo sinal, independente do primeiro: `llm_service POST /story-qualit
 
 **A tag é derivada, não pedida ao modelo.** O modelo devolve nota; a linha entre fraco e forte é config (`min_story_score`, padrão 6 — a régua do prompt põe post comum de fórum em 4–6). Assim o corte se move contra dados reais via `GET /scout/seen?story_tag=weak_storytelling`, do mesmo jeito que `min_chars`/`max_chars` moram em config. `story_score` fica gravado cru, então mover o corte permite re-derivar as linhas antigas.
 
-**`story_tag IS NULL` ≠ fraco.** Nulo significa não avaliado: todo candidato barrado pelos filtros baratos (a nota roda depois deles, e depois do backpressure — fila cheia não publica, então não deve pagar julgamento) e todo candidato de um ciclo em que o `llm_service` caiu. Um candidato sem nota ordena **no próprio limiar**, não no fim da fila: manda-lo para o fim converteria uma falha de modelo em handicap permanente para uma história que ninguém julgou, e são justamente as sobras de cada ciclo que herdariam esse handicap.
+**`story_tag IS NULL` ≠ fraco.** Nulo significa não avaliado: o candidato barrado pelos filtros baratos (a nota roda depois deles, e depois do backpressure — fila cheia não publica, então não deve pagar julgamento) e todo candidato de um ciclo em que o `llm_service` caiu. **Filtrado não implica nulo**: quem caiu no teto de tamanho foi julgado antes de cair, e tem as colunas preenchidas. Um candidato sem nota ordena **no próprio limiar**, não no fim da fila: manda-lo para o fim converteria uma falha de modelo em handicap permanente para uma história que ninguém julgou, e são justamente as sobras de cada ciclo que herdariam esse handicap.
 
 ### Filtros
 
-Duas etapas, separadas de propósito por custo e por natureza:
+Três etapas, separadas de propósito por custo e por natureza — e **encenadas nessa ordem porque o que a ordem decide não é só custo, é o que o sistema fica sabendo**:
 
-**1. Determinística (`filters.py`).** Tamanho nas duas pontas: curto demais não sustenta um vídeo; longo demais obrigaria o LLM a cortar tanto que o que vai ao ar já não é o post. Roda sobre todo candidato, é grátis.
+**1. Piso de tamanho (`filters.evaluate`).** Curto demais não sustenta um vídeo. Roda sobre todo candidato, é grátis.
 
-**2. Moderação por LLM (`llm_service POST /moderate`).** Decide se publicar coloca a conta em risco de remoção.
+**2. Teto de tamanho (`filters.exceeds_length`), *depois* da nota.** Longo demais custa mais narração e render do que uma vaga vale — mas isso é restrição de **produção**, não juízo sobre a história, e por isso não pode rodar antes de a história ser julgada.
+
+O teto morava na etapa 1, junto com o piso, e a assimetria foi medida sobre 45 posts reais das três comunidades configuradas (14/08/2026):
+
+| | dentro do teto | acima do teto |
+|---|---|---|
+| candidatos | 34 | 11 |
+| notas | 2,3,3,4,4,5,5,5,6×8,7×5,8×9,9×4 | 6, 7×3, 8×3, 9×4 |
+
+**Nenhum dos 11 acima do teto tirou menos que 6**, e todos os oito candidatos com nota ≤5 estavam dentro dele. Metade das notas 9 estava acima. Não é coincidência — `r/story` e `r/stories` são onde mora o gênero "história escrita para entreter", e o gênero premia texto longo. Cortar por tamanho antes de julgar era, na prática, correlacionar o filtro negativamente com a qualidade.
+
+O piso não tem esse problema e por isso ficou onde estava: abaixo de `min_chars` não há história para o modelo pesar, então a rejeição é tão verdadeira antes do julgamento quanto depois. O teto rejeita algo que o julgamento tinha o que dizer sobre.
+
+Consequência: o candidato longo é buscado, deduplicado, **pontuado** e gravado em `seen_items` com `story_score`/`story_tag` preenchidos, `status=filtered` e `skip_reason=too_long:{n}`. Ele nunca vira vídeo, mas a trilha de auditoria passa a responder *o que* foi deixado passar — que é o dado necessário para decidir se `max_chars` está no lugar certo. Sem isso, mover o teto seria chute: as linhas rejeitadas não diziam nada sobre a qualidade do que se estava recusando.
+
+**O teto continua sendo o gate de produção.** Subi-lo é o que transforma essas linhas em vídeo, e o refino já sabe lidar com o resultado: o padrão é uma parte só, e acima de `MAX_PART_WORDS` (5100, ~30 min de fala) ele divide em partes com cliffhanger. Não há nada abaixo do scout que quebre com roteiro longo — `raw_script` e `script` são `Text` sem limite.
+
+O contador `too_long` no `ScoutReport` é o recorte dessa rejeição dentro de `filtered`, que continua sendo o total.
+
+⚠️ **A rejeição por teto roda depois do backpressure, como a nota.** Fila cheia encerra o ciclo antes de pontuar, então o candidato longo **não** é gravado nesse ciclo — ele volta inteiro no próximo. Gravá-lo ali o queimaria sem nota, que é exatamente o estado que esta mudança existe para evitar.
+
+⚠️ **O teto roda antes da moderação, não dentro do laço de submissão.** A nota é uma chamada em lote por ciclo; a moderação é uma chamada por candidato. Deixar o candidato longo entrar no laço faria uma história que nunca seria publicada pagar uma chamada de moderação, e a rejeição por tamanho é determinística — não precisa de modelo para acontecer.
+
+**3. Moderação por LLM (`llm_service POST /moderate`).** Decide se publicar coloca a conta em risco de remoção.
 
 A versão anterior era uma blocklist por substring, e ela errou de forma instrutiva: `me matar` casou dentro de `"Eram 3 mil que não me mataria"` — figura de linguagem sobre dinheiro — descartando uma história boa. Enquanto `"disseram que depois de me matar iam fazer com ela..."` é ameaça real e precisa ser barrada. **As duas contêm a mesma sequência de caracteres.** Segurança é julgamento de contexto, não casamento de padrão.
 

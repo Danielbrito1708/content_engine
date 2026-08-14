@@ -9,6 +9,13 @@ from pydantic import create_model
 
 _RATE_RE = re.compile(r"^[+-]\d+%$")
 
+#: Voices the narrator's gender maps to. Same neural names on `edge` and `azure`.
+#: The pair is chosen to read as two people of the same age and register — what
+#: changes between them is the gender, not the character. `TTS_VOICE` remains the
+#: voice for a story whose narrator has no gender to match.
+DEFAULT_MALE_VOICE = "pt-BR-AntonioNeural"
+DEFAULT_FEMALE_VOICE = "pt-BR-FranciscaNeural"
+
 
 def validate_rate(rate: str) -> str:
     """Raises ValueError unless `rate` is a signed SSML percentage ('+15%', '-10%')."""
@@ -46,6 +53,8 @@ class TTSEnvSettings(BaseModel):
 
     tts_provider: str
     tts_voice: str
+    tts_voice_male: str
+    tts_voice_female: str
     tts_rate: str
     minio_endpoint: str
     minio_access_key: str
@@ -76,6 +85,10 @@ class TTSEnvSettings(BaseModel):
         return {
             "tts_provider": os.environ.get("TTS_PROVIDER", "edge"),
             "tts_voice": os.environ.get("TTS_VOICE", "pt-BR-ThalitaNeural"),
+            # The voice is picked per request from the narrator's gender; TTS_VOICE
+            # stays the fallback for a story whose narrator has none.
+            "tts_voice_male": os.environ.get("TTS_VOICE_MALE", DEFAULT_MALE_VOICE),
+            "tts_voice_female": os.environ.get("TTS_VOICE_FEMALE", DEFAULT_FEMALE_VOICE),
             "tts_rate": os.environ.get("TTS_RATE", "+15%"),
             "minio_endpoint": os.environ["MINIO_ENDPOINT"],
             "minio_access_key": os.environ["MINIO_ACCESS_KEY"],

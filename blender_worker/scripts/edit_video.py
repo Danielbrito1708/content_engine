@@ -77,6 +77,16 @@ DEFAULT_HOOK_TAIL_SECONDS = 0.3
 DEFAULT_CARD_Y = 0.5
 DEFAULT_CARD_FADE_FRAMES = 4
 
+# Breathing room after the last narrated word. `content_end_frame` lands the last
+# frame exactly on the end of the voice strip, and that is too tight for two
+# reasons that compound: the strip end is rounded to the frame, and the MP4's
+# final audio packet falls right on the cut — so the last consonant is clipped
+# and the video reads as if it ended mid-word. Half a second is a breath: enough
+# for the word to finish and for the music fade to land, short enough that it
+# does not read as dead air. Overridable per template via
+# `narration.tail_seconds`; 0 restores the old flush ending.
+DEFAULT_END_PADDING_SECONDS = 0.5
+
 # Music bed. The video has no outro: it ends when the narration ends, so the
 # only thing that marks the ending is the bed going quiet under the last words.
 # 1.5s is a beat and a half — long enough to read as an ending, short enough
@@ -500,6 +510,27 @@ def content_end_frame(strips, bed_channels, fallback):
     return max(s.frame_final_end for s in content)
 
 
+def end_padding_frames(config, frame_rate, default_seconds=DEFAULT_END_PADDING_SECONDS):
+    """`narration.tail_seconds` in frames — the silence held after the last word.
+
+    Configured in seconds, like the music fade, because it is a length of
+    *listening*, not a frame count: the same number has to mean the same pause at
+    any `frame_rate`.
+
+    Ends the video on the narration and nothing else, which is the rule, but not
+    on the very frame the narration stops: the last word needs somewhere to
+    finish. Measured on a real render, `scene.frame_end` flush against the voice
+    strip clips the closing consonant — the strip end is already rounded to the
+    frame, and the encoder's last audio packet lands on the cut.
+
+    Pure — frame arithmetic, tested without Blender. Negative values are floored
+    at 0: a template must not be able to make the video end *before* the
+    narration does, which would cut a whole word instead of a syllable.
+    """
+    seconds = float((config or {}).get("tail_seconds", default_seconds))
+    return max(0, round(seconds * frame_rate))
+
+
 def background_repeats(clip_frames, first_start, needed_end, max_repeats=MAX_BACKGROUND_REPEATS):
     """Start frames for the extra background copies needed to reach `needed_end`.
 
@@ -790,7 +821,11 @@ def main():
     )
 
     bed_channels = {channels["music"], channels["video"]}
-    last_frame = content_end_frame(vse.sequences_all, bed_channels, timing["frame_end"])
+    # The narration decides where the video ends, plus the breath the last word
+    # needs to finish — flush against the voice strip, it gets clipped.
+    last_frame = content_end_frame(
+        vse.sequences_all, bed_channels, timing["frame_end"]
+    ) + end_padding_frames(timing.get("narration"), frame_rate)
     scene.frame_end = last_frame
 
     # After the length is fixed, never before: the repeats are on a bed channel

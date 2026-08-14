@@ -58,7 +58,11 @@ A segunda é **marcar**. Toda história avaliada recebe uma etiqueta: `strong` q
 
 **O que é descartado automaticamente:**
 
-Nem toda história serve. O sistema recusa textos curtos demais, que não têm história suficiente para sustentar um vídeo, e longos demais, que precisariam ser tão cortados que o que iria ao ar já não seria o post original.
+Nem toda história serve. O sistema recusa textos curtos demais, que não têm história suficiente para sustentar um vídeo, e textos longos demais, que custariam mais narração e renderização do que uma vaga vale.
+
+**Mas o limite de tamanho deixou de ser o primeiro critério.** Ele era: o texto longo era descartado assim que chegava, antes de qualquer pergunta sobre qualidade. O problema é que isso descartava justamente o melhor material. Numa medição sobre 45 histórias reais, 11 estavam acima do teto — e **nenhuma delas tirou nota baixa**, enquanto todas as histórias fracas estavam dentro do teto. Metade das notas mais altas estava do lado descartado. Faz sentido: as comunidades onde mora o gênero premiam quem escreve bem e longo, então tamanho e qualidade andam juntos, e cortar por tamanho primeiro era cortar por qualidade ao contrário.
+
+Agora a história longa é coletada, lida e **avaliada normalmente**, recebe sua nota e sua etiqueta, e só então é recusada por tamanho. Ela não vira vídeo, mas fica registrada com a nota que tirou. A diferença prática é que o registro de rejeições passa a responder "o que estamos deixando passar", em vez de só dizer que algo foi descartado. Se essas histórias forem boas o bastante, subir o teto é o que as transforma em vídeo — e a etapa de refinamento já sabe dividir história longa em partes com gancho de continuação.
 
 Depois disso, cada história que está prestes a ser publicada passa por uma leitura de segurança feita por um modelo de linguagem. A pergunta é uma só: publicar isso coloca a conta em risco de suspensão? Assuntos como automutilação, abuso sexual e violência gráfica são recusados. Não é moralismo, é sobrevivência do canal — o TikTok remove contas que publicam esse tipo de conteúdo, e uma única coleta ruim custaria o perfil inteiro.
 
@@ -124,6 +128,10 @@ O modelo também é instruído a não encurtar a história para caber em menos t
 
 **Classificação do conteúdo:**
 
+**Quem conta a história também é identificado.** Além de refinar o texto, o modelo diz se quem narra é homem ou mulher — deduzindo do próprio roteiro: a concordância das palavras ("fiquei cansada", "eu estava sozinho"), como as pessoas chamam o narrador, o papel que ele diz ter ("meu marido", "sou pai de dois"). É a partir daí que a voz da narração é escolhida (ver Feature 3).
+
+Isso é diferente do público-alvo, que também é estimado logo abaixo: um é quem conta, o outro é para quem se conta, e os dois divergem o tempo todo — história de homem com público majoritariamente feminino é o caso mais comum do acervo. Na dúvida, o sistema prefere dizer que não sabe a chutar: errar o gênero de quem narra é a primeira coisa que o espectador percebe, e "não sei" apenas mantém a voz padrão.
+
 Junto com o roteiro refinado, o sistema produz uma classificação automática do conteúdo. Ela inclui o tipo de conteúdo (drama, comédia, motivacional, educativo, entretenimento, suspense), o tom (suspense, engraçado, emocional, educativo, inspiracional, chocante), o público-alvo estimado (faixa etária, gênero, interesses) e sugestões de hashtags relevantes. Essa classificação é usada em etapas posteriores para escolher as hashtags certas e montar a legenda do post.
 
 ---
@@ -132,9 +140,11 @@ Junto com o roteiro refinado, o sistema produz uma classificação automática d
 
 Com o roteiro pronto, o sistema gera a narração em áudio. O texto é transformado em fala por um motor de síntese de voz, e o resultado é um arquivo de áudio MP3.
 
-A voz padrão é feminina, jovem e adequada para o estilo TikTok brasileiro. É possível configurar outras vozes, inclusive masculinas, dependendo do tipo de conteúdo. Para roteiros divididos em partes, cada parte recebe seu próprio arquivo de áudio separado.
+**A voz combina com quem está contando a história.** As histórias são narradas em primeira pessoa, então o narrador tem um gênero — e agora a voz concorda com ele: história de homem sai em voz masculina, história de mulher em voz feminina. Antes, todas saíam na mesma voz feminina, inclusive as narradas por homens; é o tipo de coisa que o espectador percebe na primeira frase e que nenhum acerto de ritmo ou de volume compensa.
 
-**A frase gancho também é narrada, num arquivo só dela.** A mesma locutora, o mesmo ritmo, o mesmo tratamento de áudio das partes — só que dizendo apenas a frase de abertura. O arquivo fica guardado junto com os outros do vídeo e pode ser usado para abrir a peça, testar ganchos diferentes ou montar uma prévia, sem depender de recortar o áudio da parte 1. O vídeo em si continua sendo montado como antes: a narração completa já contém o gancho na primeira frase, então nada é dito duas vezes.
+Quando o roteiro não deixa claro quem narra, o vídeo usa a voz padrão de sempre — o sistema não chuta. As três vozes (a masculina, a feminina e a padrão) são configuráveis, então trocar o timbre do canal é uma questão de configuração, não de código. Para roteiros divididos em partes, cada parte recebe seu próprio arquivo de áudio — todas na mesma voz, porque é a mesma pessoa contando.
+
+**A frase gancho também é narrada, num arquivo só dela.** A mesma voz, o mesmo ritmo, o mesmo tratamento de áudio das partes — só que dizendo apenas a frase de abertura. O arquivo fica guardado junto com os outros do vídeo e pode ser usado para abrir a peça, testar ganchos diferentes ou montar uma prévia, sem depender de recortar o áudio da parte 1. O vídeo em si continua sendo montado como antes: a narração completa já contém o gancho na primeira frase, então nada é dito duas vezes.
 
 Se a narração do gancho falhar, o vídeo é produzido do mesmo jeito. Esse arquivo é um extra — perdê-lo não pode custar a peça inteira, e a falta dele fica registrada para quem for olhar depois.
 
@@ -365,6 +375,8 @@ Se o fundo for **mais curto** que a narração, o sistema repete o próprio fund
 ## O fim do vídeo é a última palavra da história
 
 O vídeo não tem finalização. Nada é acrescentado depois que a narração termina: a última palavra da história é o último frame, e a única coisa que marca o encerramento é a **música de fundo sumindo por baixo dessa última frase** — um fade de 1,5 segundo.
+
+**Com meio segundo de respiro no fim.** O vídeo acabava colado na narração, tão em cima que a última palavra saía cortada — o vídeo parecia terminar no meio de uma frase. Agora ficam **0,5 segundo** depois do último som: o suficiente para a palavra terminar de ser dita e para a música completar o fade, e curto o bastante para não virar tempo morto. Quem manda continua sendo a narração — esse meio segundo é o respiro dela, não uma finalização. A duração desse respiro é configuração do template, e zero volta ao comportamento anterior.
 
 Antes o fade era escrito como um instante fixo na linha do tempo: "comece a sumir no segundo 28", número anotado quando os vídeos eram rascunhos de 30 segundos. Como a duração passou a ser a da narração, esse instante deixou de significar "no finalzinho". Medido num vídeo de 23 segundos: a trilha começava a cair **desde o primeiro segundo** e chegava ao fim praticamente inaudível — de -26 dBFS no começo para -73 dBFS no fim, ou seja, mais da metade do vídeo com a música morrendo. Era esse o motivo de a trilha "não estar lá" mesmo estando no arquivo.
 

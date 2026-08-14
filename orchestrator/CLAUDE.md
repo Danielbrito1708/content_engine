@@ -13,7 +13,7 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `db/engine.py` — engine async + `AsyncSessionLocal` + `get_session()` dependency
 - `schemas/pipeline.py` — `PipelineCreate`, `PipelineResponse`, `PartResponse`
 - `clients/llm.py` — `LLMClient.refine(script, metadata) → RefineResult`
-- `clients/tts.py` — `TTSClient.generate(text, run_id, part_number=1, rate=None, label=None) → (audio_key, srt_key)`
+- `clients/tts.py` — `TTSClient.generate(text, run_id, part_number=1, rate=None, label=None, narrator_gender=None) → (audio_key, srt_key)`
 - `clients/blender.py` — `BlenderClient`: `create_video(...)` (inclui `card_key`/`hook_voice_key`), `create_job(...)`, `render_card(text, template, output_key)`, `get_template_config(...)`, `get_job_status(...)`, `poll_job(...)`
 - `clients/tiktok.py` — `TikTokClient.schedule(video_key, classification, part_number, series_id, total_parts=1, follows_at=None)` + exceção `BufferQueueFull`
 - `clients/http.py` — `request(method, url, *, timeout, attempts)`: política única de retry
@@ -80,7 +80,7 @@ Assets estáticos (background + música) em `config.ini [template]`.
 
 `run_pipeline(run_id)` — executa as fases sequencialmente:
 
-1. **`_refine`**: chama `LLMClient.refine()` → guarda `hook` no run e cria `PipelinePart` para cada parte retornada
+1. **`_refine`**: chama `LLMClient.refine()` → guarda `hook` e `narrator_gender` no run e cria `PipelinePart` para cada parte retornada
 2. **`_narration_rate`**: lê `narration.rate` do template uma vez por run, antes do primeiro TTS
 3. **`_run_hook_tts`**: narra a frase gancho num arquivo próprio (degradável — ver abaixo)
 4. **`_render_card`**: compõe o card de comentário com o gancho (degradável — ver abaixo)
@@ -88,6 +88,20 @@ Assets estáticos (background + música) em `config.ini [template]`.
 6. **`_schedule`**: chama `TikTokClient.schedule()` para cada part com `video_key` definido
 
 **`_run_tts`**: chama `POST tts_service/generate` → salva `audio_key` e `srt_key` na part. Recebe o `rate` da narração e o repassa; `None` deixa o `tts_service` aplicar seu `TTS_RATE`. O roteiro vai inteiro: quem evita a repetição do gancho é o `hook_muted` do render, não um corte no texto.
+
+### Voz do narrador (`narrator_gender`)
+
+O `llm_service` devolve `narrator_gender` (`male` / `female` / `unknown`) — o gênero de quem conta a história. O orchestrador guarda em `PipelineRun.narrator_gender` (migration `005`, exposto em `PipelineResponse`) e manda em **toda** chamada ao `tts_service`: no gancho e em cada parte.
+
+⚠️ **Requer a migration `005` aplicada** — sem a coluna, todo run morre no `_refine` com `UndefinedColumn`. O `CMD` do Dockerfile roda `alembic upgrade head` no boot, então subir com `--build` basta; fora do Docker é manual. Ver "Migrations pendentes" no `CLAUDE.md` da raiz.
+
+**Sai o gênero, nunca o nome da voz.** Qual voz corresponde a que gênero é decisão do `tts_service`, que conhece os providers; daqui sai um fato sobre o roteiro. Ausente, o campo é **omitido** do payload (não vai `null`), e a narração sai na voz padrão de lá.
+
+**Do run, não da parte** — uma história dividida é a mesma pessoa contando. Mesma razão pela qual o gancho leva o mesmo `narrator_gender` **e** o mesmo `rate` das partes: basta a voz ou a velocidade divergir para o vídeo abrir com dois narradores.
+
+`LLMClient.refine` lê `data.get("narrator_gender")` com fallback `"unknown"`, como faz com o `hook` — um `llm_service` antigo produz run sem gênero, não erro.
+
+- Testes: `tests/test_narrator_voice.py` (10 — persistência no refino, fallback e normalização, o campo chegando ao TTS no gancho e nas partes, a omissão quando não há gênero, a garantia de que nenhum nome de voz sai daqui, o pipeline inteiro com um valor só, e o campo na API).
 
 ### Velocidade da narração (`_narration_rate`)
 
@@ -179,4 +193,4 @@ docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE orchestrato
 alembic upgrade head && python -m pytest -q
 ```
 
-88 testes em 10 arquivos: `test_pipeline.py` (6, API layer), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (10), `test_backgrounds.py` (6) e `test_http.py` (5).
+98 testes em 11 arquivos: `test_pipeline.py` (6, API layer), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (10), `test_backgrounds.py` (6) e `test_http.py` (5).

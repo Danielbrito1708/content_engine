@@ -70,6 +70,7 @@ async def _refine(session, run: PipelineRun) -> None:
 
     run.refined_script = "\n\n".join(result.parts)
     run.hook = result.hook or None
+    run.narrator_gender = result.narrator_gender
     run.classification = result.classification
     run.parts_count = len(result.parts)
     run.status = PipelineStatus.refined
@@ -79,16 +80,22 @@ async def _refine(session, run: PipelineRun) -> None:
         session.add(PipelinePart(run_id=run.id, part_number=i, script=script))
     await session.commit()
 
-    log.info("script refined", run_id=str(run.id), parts=run.parts_count, hook=bool(run.hook))
+    log.info(
+        "script refined",
+        run_id=str(run.id),
+        parts=run.parts_count,
+        hook=bool(run.hook),
+        narrator=run.narrator_gender,
+    )
 
 
 async def _run_hook_tts(session, run: PipelineRun, rate: str | None = None) -> None:
     """Narra a frase gancho num arquivo próprio, separado das partes.
 
     Esse áudio abre o vídeo: ele é montado sobre o card, e a narração da parte
-    só começa quando ele termina. Vai com o mesmo `rate` das partes — o gancho e
-    a narração que ele apresenta são a mesma voz, e velocidades diferentes soam
-    como duas.
+    só começa quando ele termina. Vai com o mesmo `rate` **e o mesmo
+    `narrator_gender`** das partes — o gancho e a narração que ele apresenta são
+    a mesma pessoa, e basta a voz ou a velocidade divergir para soarem como duas.
 
     Não derruba o run em caso de falha: a intro é uma camada a mais sobre um
     vídeo que já se sustenta sem ela (a narração da parte 1 abre com essa mesma
@@ -100,7 +107,13 @@ async def _run_hook_tts(session, run: PipelineRun, rate: str | None = None) -> N
         log.info("no hook returned by refine, skipping hook audio", run_id=str(run.id))
         return
 
-    log.info("generating hook audio", run_id=str(run.id), chars=len(run.hook), rate=rate)
+    log.info(
+        "generating hook audio",
+        run_id=str(run.id),
+        chars=len(run.hook),
+        rate=rate,
+        narrator=run.narrator_gender,
+    )
 
     try:
         audio_key, srt_key = await TTSClient().generate(
@@ -108,6 +121,7 @@ async def _run_hook_tts(session, run: PipelineRun, rate: str | None = None) -> N
             run_id=str(run.id),
             label=HOOK_LABEL,
             rate=rate,
+            narrator_gender=run.narrator_gender,
         )
     except Exception as exc:
         log.warning("hook audio failed, continuing without it", run_id=str(run.id), error=str(exc))
@@ -179,7 +193,13 @@ async def _process_all_parts(session, run: PipelineRun, rate: str | None = None)
 
 
 async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | None = None) -> None:
-    log.info("generating audio", run_id=str(run.id), part=part.part_number, rate=rate)
+    log.info(
+        "generating audio",
+        run_id=str(run.id),
+        part=part.part_number,
+        rate=rate,
+        narrator=run.narrator_gender,
+    )
     part.status = PartStatus.tts_running
     await session.commit()
 
@@ -188,6 +208,8 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | No
         run_id=str(run.id),
         part_number=part.part_number,
         rate=rate,
+        # Do run, não da parte: uma história dividida é a mesma pessoa contando.
+        narrator_gender=run.narrator_gender,
     )
 
     part.audio_key = audio_key

@@ -102,7 +102,7 @@ A bed shorter than the narration used to render a **black tail** — no error, n
 
 `background_repeats` **coerces its frame numbers to int**: the caller reads them off a strip, where Blender's RNA returns `frame_start`/`frame_duration` as floats, and `sequences.new_movie()` only takes ints — the repeats died with a `TypeError` mid-assembly. It never fired in production because a clip longer than the narration asks for no repeats at all, so the float never reached the API; it fired on the first validation render with a short clip.
 
-**Render length** — `content_end_frame(strips, bed_channels, fallback)` sets `scene.frame_end`. The music **and the background video** are *beds*: each is however long its asset happens to be, so neither may define where the video ends — only the narration and its subtitles do. Measured: a 90s background under a 68s narration rendered 22s of dead air after the last word left the screen. Previously only music was excluded, which went unnoticed because the placeholder background was a single frame. A bed *shorter* than the narration is covered by repeating it (see **Background coverage** above) rather than by shrinking the timeline, which would cut narration mid-sentence. Pure, so the rule is tested without Blender.
+**Render length** — `content_end_frame(strips, bed_channels, fallback)` **mais `end_padding_frames(...)`** sets `scene.frame_end` (see **The last word needs room to finish** below). The music **and the background video** are *beds*: each is however long its asset happens to be, so neither may define where the video ends — only the narration and its subtitles do. Measured: a 90s background under a 68s narration rendered 22s of dead air after the last word left the screen. Previously only music was excluded, which went unnoticed because the placeholder background was a single frame. A bed *shorter* than the narration is covered by repeating it (see **Background coverage** above) rather than by shrinking the timeline, which would cut narration mid-sentence. Pure, so the rule is tested without Blender.
 
 **`scripts/edit_video.py` VSE layout:**
 - Scene — `fps = frame_rate` **and `fps_base = 1.0`**. Blender's effective fps is `fps / fps_base`, and `fps_base` comes from the `.blend` (the current `template.blend` is `6/0.1` = 60fps). Leaving it alone makes the scene run at `frame_rate / 0.1` — 10x off, which desyncs every frame-based timing and stretches sound strips 10x.
@@ -132,6 +132,25 @@ There is no closing segment: `scene.frame_end` is the end of the narration (see 
 **Template config** (optional `music` block): `"music": { "fade_out_seconds": 1.5 }`. Defaults in code (`DEFAULT_MUSIC_FADE_SECONDS`) for the same reason the intro channels do — `template.json` lives in the bucket, and a template published before this feature has no `music` block.
 
 - Tests: `tests/test_music.py` (12 tests, marked `no_db` — the pure arithmetic, the keyframes via a fake strip, and two guards on the shipped `template.json`).
+
+### The last word needs room to finish (`scripts/edit_video.py`)
+
+`scene.frame_end` is `content_end_frame(...) + end_padding_frames(...)`: the narration still decides where the video ends, but not on the very frame it stops.
+
+**Public API (pure, no `bpy`):**
+- `end_padding_frames(config, frame_rate, default_seconds=DEFAULT_END_PADDING_SECONDS) -> int` — the `narration` block's `tail_seconds` in frames. Seconds and not frames for the same reason as the music fade: it is a length of listening, and must mean the same pause at any `frame_rate`. `0` restores the old flush ending; negative values are floored at 0, so a template cannot end the render *before* the narration and cut a whole word.
+
+**Why it exists.** Flush against the voice strip, the closing consonant is clipped and the video reads as ending mid-word. Two things compound: the strip end is already rounded to the frame, and the encoder's last audio packet lands right on the cut. `DEFAULT_END_PADDING_SECONDS` is 0.5 — a breath, long enough for the word to land and for the music fade to complete, short enough not to read as dead air.
+
+**Order matters in `main()`.** The padding is added *before* `extend_background` and `music_fade_start` are called, so the background bed covers the extra frames (otherwise the tail is black) and the fade still reaches 0.0 exactly on the last frame.
+
+**Template config** (the existing `narration` block, which the orchestrator already reads for `rate`):
+```json
+"narration": { "rate": "+15%", "tail_seconds": 0.5 }
+```
+Defaulted in code for the usual reason — `template.json` lives in the bucket, and the deployed one has no `tail_seconds` yet.
+
+- Tests: `tests/test_subtitles.py` (6 tests next to `content_end_frame`'s, including a guard on the shipped `template.json`).
 
 ### Video intro — comment card + hook narration (`scripts/edit_video.py`)
 

@@ -30,6 +30,7 @@ Serviço de refinamento e classificação de roteiros via LLM. Expõe `POST /ref
 **Response** (`RefineResponse`):
 - `parts` (list[str]) — partes do roteiro refinado (1 ou mais)
 - `hook` (str) — a frase gancho, isolada. **Sempre preenchida** (ver abaixo)
+- `narrator_gender` (str) — `male` / `female` / `unknown`. Quem narra, não o público (ver abaixo)
 - `classification.content_type` — drama / comédia / motivacional / educativo / entretenimento / suspense
 - `classification.tone` — suspenseful / funny / emotional / educational / inspirational / shocking
 - `classification.target_audience` — `{age_range, gender, interests}`
@@ -73,6 +74,25 @@ O gancho era só uma regra de escrita no prompt; virou campo porque o orchestrad
 **O campo nunca volta vazio quando há roteiro.** O prompt pede o `hook` copiado literal da primeira frase da parte 1, mas o contrato não pode depender de o modelo obedecer — daí o fallback. Fim de frase = pontuação terminal (`. ! ? …` + aspas/parênteses de fechamento) **seguida de espaço**; exigir o espaço é o que impede `R$ 3.5 mil` de virar fim de frase.
 
 O gancho **não** é removido de `parts[0]` — o campo é uma cópia identificada, não um recorte. Quem monta o vídeo usa o áudio da parte; o áudio do gancho é artefato à parte.
+
+### Gênero do narrador (`narrator_gender`)
+
+Campo de topo do `RefineResponse`, ao lado do `hook` — não entra em `classification`. É o gênero de **quem conta** a história em primeira pessoa, e é o que faz o `tts_service` escolher a voz da narração.
+
+**API pública** (`schemas/refine.py`):
+- `NARRATOR_GENDERS = ("male", "female", "unknown")`
+- `normalize_narrator_gender(value) -> str` — qualquer entrada para um desses três
+- `RefineResponse._normalize_narrator` — validator `mode="after"`; campo ausente é `"unknown"`
+
+**Por que existe.** As histórias são narradas em primeira pessoa e a voz precisa concordar com quem fala; até aqui toda narração saía na mesma voz feminina, inclusive a de narrador homem. Quem lê o roteiro inteiro é este serviço, então é aqui que a dedução acontece — nenhum outro ponto do pipeline vê o texto completo antes do TTS.
+
+⚠️ **Não é `target_audience.gender`.** Um é quem narra, o outro é para quem se narra, e os dois divergem o tempo todo (história de homem com público majoritariamente feminino é o caso comum do corpus). O prompt separa os dois explicitamente, e há teste fixando a distinção.
+
+O prompt manda deduzir do texto — concordância (`"fiquei cansada"`, `"eu estava sozinho"`), como chamam o narrador, papel declarado (`"meu marido"`, `"sou pai de dois"`) — e **preferir `unknown` a chutar**: errar o gênero é a primeira coisa que o espectador percebe, e `unknown` apenas mantém a voz padrão.
+
+**Normaliza em vez de rejeitar**, pela mesma razão do fallback do `hook`: o campo sai de um modelo, e um `"masculino"` não pode derrubar o refino de um roteiro que está inteiro e correto.
+
+- Testes: `tests/test_narrator.py` (24 — normalização, default do schema, as cláusulas do prompt, o campo no exemplo de JSON fora de `classification`, e o endpoint).
 
 ### O texto narrado não tem finalização (`prompts/refine.py`)
 
@@ -132,7 +152,7 @@ Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`). `ge
 
 ## Testes
 
-63 testes: `tests/test_refine.py` (11), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_split_policy.py` (8 — teto de 30 min e as cláusulas do prompt), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
+87 testes: `tests/test_refine.py` (11), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_split_policy.py` (8 — teto de 30 min e as cláusulas do prompt), `tests/test_narrator.py` (24 — o gênero de quem narra), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
 
 ```bash
 poetry run pytest

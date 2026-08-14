@@ -97,6 +97,32 @@ Internamente (dentro do Docker network), os serviços se comunicam pelo nome do 
 
 Externamente (localhost), cada um usa a porta mapeada acima.
 
+## Migrations pendentes
+
+> Apagar esta seção quando a migration estiver aplicada em todos os ambientes.
+
+**`orchestrator` — `005_add_narrator_gender_to_pipeline_runs`** (branch `worktree-voz-narrador-fim-video`). Adiciona `narrator_gender` em `pipeline_runs`, coluna que o `_refine` passou a escrever. Sem ela, todo run morre no refino com `UndefinedColumn`.
+
+**No Docker não há passo manual**: o `CMD` do `orchestrator/Dockerfile` é `alembic upgrade head && uvicorn ...`, então a migration roda sozinha ao subir o container — **desde que a imagem seja reconstruída**:
+
+```bash
+docker compose up -d --build orchestrator
+```
+
+⚠️ `docker compose up -d` **sem `--build`** sobe a imagem antiga em silêncio: o código novo não entra, a migration não roda, e o sintoma é o run falhando no refino como se fosse bug de código. Conferir depois de subir:
+
+```bash
+docker compose exec db psql -U postgres -d orchestrator -c "\d pipeline_runs" | grep narrator_gender
+```
+
+Rodando o orchestrador **fora** do Docker, aí sim é manual, com `DATABASE_URL` apontando para o banco `orchestrator`:
+
+```bash
+cd orchestrator && poetry run alembic upgrade head
+```
+
+Nenhum outro serviço desta branch tem migration — `tts_service`, `llm_service` e `blender_worker` mudaram só em código e config.
+
 ## Estado do projeto
 
 - `blender_worker` — implementado (MVP completo: API, DB, Blender pipeline, image compositor)

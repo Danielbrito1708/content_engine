@@ -11,6 +11,9 @@ class RefineResult:
     #: Frase gancho do roteiro. Vazia quando o `llm_service` do outro lado
     #: ainda não devolve o campo — deploy dos dois serviços não é atômico.
     hook: str = ""
+    #: Gênero de quem narra a história — escolhe a voz. `"unknown"` também é o
+    #: que se lê de um `llm_service` antigo, e cai na voz padrão do `tts_service`.
+    narrator_gender: str = "unknown"
 
 
 class LLMClient:
@@ -29,4 +32,5 @@ class LLMClient:
             parts=data["parts"],
             classification=data["classification"],
             hook=(data.get("hook") or "").strip(),
+            narrator_gender=(data.get("narrator_gender") or "unknown").strip().lower(),
         )

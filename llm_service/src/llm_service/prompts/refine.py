@@ -47,6 +47,19 @@ REGRAS DE CLASSIFICAÇÃO:
 - target_audience.gender: "female" | "male" | "all"
 - hashtag_hints: 5 a 8 hashtags em português e inglês relevantes para o conteúdo
 
+REGRA DO NARRADOR (campo "narrator_gender", fora de "classification"):
+- É o gênero de QUEM CONTA a história — a pessoa que fala "eu". A história vai \
+ser narrada em voz alta por essa pessoa, e a voz escolhida é essa
+- NÃO é o público-alvo (isso é "target_audience.gender") e NÃO é o gênero de \
+quem aparece na história
+- Valores: "male" | "female" | "unknown"
+- Deduza do próprio texto: concordância de adjetivos e particípios ("fiquei \
+cansada", "eu estava sozinho"), como as pessoas chamam o narrador, papel \
+declarado ("meu marido", "sou pai de dois")
+- Na dúvida, "unknown". Não chute pelo assunto da história nem pelo público: \
+errar o gênero do narrador é a primeira coisa que o espectador percebe, e \
+"unknown" só mantém a voz padrão
+
 Retorne APENAS um JSON válido, sem markdown, sem explicações fora do JSON."""
 
 
@@ -61,6 +74,7 @@ def build_user_prompt(script: str, metadata: dict) -> str:
 Retorne um JSON com esta estrutura exata:
 {{
   "hook": "a primeira frase da parte 1, literal",
+  "narrator_gender": "female",
   "parts": ["texto completo da história — uma única parte, salvo o caso acima"],
   "classification": {{
     "content_type": "drama",

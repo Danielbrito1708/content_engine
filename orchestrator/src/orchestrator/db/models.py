@@ -48,6 +48,10 @@ class PipelineRun(Base):
     #: PNG do card de comentário com a frase gancho, mostrado na intro de todas
     #: as partes. `None` quando não há gancho ou quando a composição falhou.
     card_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    #: Gênero de quem narra a história (`male` / `female` / `unknown`), vindo do
+    #: refino. Escolhe a voz da narração no `tts_service`. `None` só num run
+    #: criado antes deste campo existir.
+    narrator_gender: Mapped[str | None] = mapped_column(String(16), nullable=True)
     classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     parts_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[PipelineStatus] = mapped_column(Enum(PipelineStatus), nullable=False, default=PipelineStatus.pending)
