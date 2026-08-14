@@ -280,7 +280,9 @@ llm_service: RefineResponse.narrator_gender   (male | female | unknown)
 
 **Provider `azure`.** Azure Speech (Cognitive Services) expõe as **mesmas vozes neurais** do edge (`pt-BR-ThalitaNeural` etc.) via REST, com o formato de saída escolhido pelo cliente. Default `audio-48khz-192kbitrate-mono-mp3`. Decisão: é a menor mudança possível que resolve o problema — mesma voz, mesmo `TTS_RATE`, mesma interface `BaseTTSClient.generate(text) -> bytes`, mesma key MinIO. Só o transporte muda. O ElevenLabs resolveria também, mas trocaria a voz do canal e custa por caractere; o Azure tem free tier de 500k caracteres/mês.
 
-O `edge` continua registrado como fallback sem-configuração — útil em dev e quando não há key. Não é mais o padrão de produção.
+O `edge` continua registrado como fallback sem-configuração — útil em dev e quando não há key.
+
+⚠️ **Decisão (14/08/2026): produção fica no `edge`.** O `azure` está implementado e testado, e o parágrafo acima continua descrevendo por que ele é melhor — mas ele exige uma conta e uma key para manter, e a diferença de nitidez não bloqueia publicação. O default do código (`TTS_PROVIDER`, `config.py`) é `edge` e permanece assim; a narração em produção sai a 24 kHz / 48 kbps, com o abafamento descrito acima. Reverter é preencher `AZURE_SPEECH_KEY`/`AZURE_SPEECH_REGION` e apontar `TTS_PROVIDER=azure` — sem migration, sem mudança de contrato, e com a validação de boot abaixo garantindo que a troca falhe visível se a key faltar.
 
 **Falha no boot, não na request.** `AZURE_SPEECH_KEY` e `AZURE_SPEECH_REGION` são validados em `TTSEnvSettings._check_provider_key` quando `TTS_PROVIDER=azure`. Mesma razão do `TTS_RATE`: config errada tem que derrubar o start, não virar `502` no meio de um pipeline run que já pagou LLM.
 
@@ -746,6 +748,8 @@ Daí um segundo sinal, independente do primeiro: `llm_service POST /story-qualit
 
 **Um candidato marcado como fraco continua sendo publicado** se não houver nada melhor atrás dele. Transformar a nota em corte rígido converteria um sinal probabilístico em filtro e poderia esvaziar a fila numa semana ruim, com o agravante de que o custo de um vídeo mediano é muito menor que o de não publicar. A nota atua na ordem; a etiqueta atua como informação — para o refinamento e para a calibragem.
 
+**A escala vai até o topo, e o topo é alcançável.** O prompt reservava 9–10 para o excepcional, e a medição mostrou o efeito: **nenhum** dos 30 posts chegou lá, ou seja, a régua era efetivamente 2–8. Um teto que nunca é usado não é rigor, é resolução perdida — e a perda cai justamente onde a nota é usada, que é distinguir a história boa da ótima para decidir qual vai primeiro. O prompt agora manda usar a escala inteira: 9–10 é "você contaria isso adiante depois de ler", não uma raridade anual. **O meio não se moveu** — post comum de fórum continua em 4–6, e o corte `min_story_score` continua em 6, então relaxar o topo não inflaciona a taxa de `weak_storytelling`; ele só desempata melhor a cabeça da fila. Fixado em `tests/test_story.py`.
+
 **A tag é derivada, não pedida ao modelo.** O modelo devolve nota; a linha entre fraco e forte é config (`min_story_score`, padrão 6 — a régua do prompt põe post comum de fórum em 4–6). Assim o corte se move contra dados reais via `GET /scout/seen?story_tag=weak_storytelling`, do mesmo jeito que `min_chars`/`max_chars` moram em config. `story_score` fica gravado cru, então mover o corte permite re-derivar as linhas antigas.
 
 **`story_tag IS NULL` ≠ fraco.** Nulo significa não avaliado: o candidato barrado pelos filtros baratos (a nota roda depois deles, e depois do backpressure — fila cheia não publica, então não deve pagar julgamento) e todo candidato de um ciclo em que o `llm_service` caiu. **Filtrado não implica nulo**: quem caiu no teto de tamanho foi julgado antes de cair, e tem as colunas preenchidas. Um candidato sem nota ordena **no próprio limiar**, não no fim da fila: manda-lo para o fim converteria uma falha de modelo em handicap permanente para uma história que ninguém julgou, e são justamente as sobras de cada ciclo que herdariam esse handicap.
@@ -883,13 +887,20 @@ O alvo é uma máquina ligada o tempo todo, sem ninguém olhando. O que o `docke
 
 **Cache do Whisper em volume** (`whisper_cache` em `/root/.cache/huggingface`). Os pesos (~420 MB) são baixados no primeiro uso e iam para a camada gravável do container: todo recreate baixava de novo, e um restart com o HuggingFace fora do ar deixava o serviço incapaz de transcrever — sem SRT, o render não acontece.
 
+**Um render por vez, e um teto de memória para ele.** A máquina alvo tem 8 GB e um render 1080×1920 custa ~1–2 GB, então a concorrência de render é o único item do orçamento que estoura. Ela era ilimitada em dois pontos, e os dois foram fechados:
+
+- **`[blender] max_concurrent_renders` (padrão 1)** — `POST /jobs` entrega todo job a `BackgroundTasks`, que não impõe limite nenhum: N jobs aceitos eram N processos Blender disputando a mesma RAM. `render_job` agora espera um `asyncio.Semaphore` antes de começar, e quem espera **continua `pending`** — que é exatamente o que esse status já significa para o orchestrador, que faz polling. Nada é recusado, nada se perde; só deixa de acontecer junto.
+- **`[scout] max_pending_runs`: 5 → 2** — o freio a montante. Ele limita quantos runs ficam em voo, o que limita quanto trabalho chega ao gate acima. Com 3 publicações/dia, 2 em produção simultânea mantém a fila cheia: o corte remove um pico, não throughput.
+
+**`mem_limit: 3g` no `blender_worker`.** Contraintuitivo, mas é proteção. Sem limite, quem o OOM killer derruba é arbitrário — e se for o Postgres, perde-se o estado de **todos** os runs, não um render. Com limite, quem morre é o render: o job vira `failed` com o motivo, e a recuperação de runs órfãos no boot cuida do resto. É trocar uma falha catastrófica por uma recuperável. O valor é ~2× a estimativa de um render; medir um real e apertar.
+
 **O que continua sendo responsabilidade de fora do compose:**
 
-- O Docker Desktop no Windows exige sessão de usuário logada; um daemon Linux (VM ou WSL como serviço) é o alvo certo para 24h.
+- Um daemon Docker Linux. O alvo é uma máquina Debian dedicada (ver [`deploy.md`](deploy.md)); Docker Desktop no Windows não serve para 24h, porque exige sessão de usuário logada.
 - Espaço em disco: as imagens somam ~36 GB e o build cache cresce sem limite (`docker builder prune`).
 - Backup do Postgres e retenção dos `outputs/` no R2 — nada é apagado hoje.
 
-**O plano de deploy está em [`deploy.md`](deploy.md)** — máquina alvo, orçamento de RAM, os ajustes a aplicar antes de subir (o principal: `max_pending_runs = 5` permite 5 renders Blender simultâneos, o que não cabe em 8 GB) e o desenho do monitoramento em quatro camadas com notificação por WhatsApp. **A camada 3 daquele documento — a que depende de código — está implementada** (ver abaixo); as camadas 1, 2 e 4 são configuração da máquina e continuam pendentes.
+**O plano de deploy está em [`deploy.md`](deploy.md)** — máquina alvo, orçamento de RAM, os ajustes que sobraram para a hora de subir e o desenho do monitoramento em camadas com notificação por WhatsApp. Os ajustes de concorrência e o `mem_limit` que aquele documento pedia já estão aplicados no repo (acima); o que resta lá é configuração da máquina. **A camada 3 daquele documento — a que depende de código — está implementada** (ver abaixo); as camadas 1, 2 e 4 são configuração da máquina e continuam pendentes.
 
 ---
 

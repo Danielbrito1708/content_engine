@@ -44,6 +44,8 @@ A primeira: **existe um gancho ali?** Um gancho é uma frase que, sozinha, faz q
 
 A segunda: **a história se conta bem?** Isso rende uma nota de 0 a 10. Ganha ponto quem tem conflito claro, gente que age, cenas concretas e sinal de que vem uma virada. Perde ponto quem só reclama, quem apresenta gente demais de uma vez, quem faz pergunta ao fórum em vez de contar o que aconteceu, ou quem escreve uma abertura da qual não se entende nada.
 
+**A nota máxima voltou a ser alcançável.** O topo da escala estava reservado para o excepcional, e na prática nenhuma história chegava lá: a nota ia de 2 a 8 e nada mais. Isso apagava justamente a diferença entre uma história boa e uma ótima — que é a diferença que decide qual vira vídeo primeiro. Agora a nota máxima é para a história que você contaria adiante depois de ler, não para uma raridade anual. O meio da escala não mudou: um post comum de fórum continua valendo nota média.
+
 **O que o sistema faz com isso:**
 
 Duas coisas, e nenhuma delas é jogar a história no lixo.
@@ -152,9 +154,11 @@ Quando o roteiro não deixa claro quem narra, o vídeo usa a voz padrão de semp
 
 Se a narração do gancho falhar, o vídeo é produzido do mesmo jeito. Esse arquivo é um extra — perdê-lo não pode custar a peça inteira, e a falta dele fica registrada para quem for olhar depois.
 
-O sistema suporta três motores de voz. O primeiro é gratuito e funciona sem nenhuma configuração extra, mas entrega o áudio numa qualidade fixa e baixa — é a razão pela qual a narração soava abafada, como se viesse de um rádio. O segundo é o Azure, que usa exatamente as mesmas vozes do gratuito, só que numa qualidade muito superior: é o motor recomendado e o padrão de produção. O terceiro é o ElevenLabs, ainda não implementado, para quando fizer sentido pagar por vozes mais expressivas. A escolha entre eles é feita por configuração, sem alterar nada no fluxo de produção.
+O sistema suporta três motores de voz. O primeiro é gratuito e funciona sem nenhuma configuração extra, mas entrega o áudio numa qualidade fixa e baixa — é a razão pela qual a narração soa abafada, como se viesse de um rádio. O segundo é o Azure, que usa exatamente as mesmas vozes do gratuito, só que numa qualidade muito superior. O terceiro é o ElevenLabs, ainda não implementado, para quando fizer sentido pagar por vozes mais expressivas. A escolha entre eles é feita por configuração, sem alterar nada no fluxo de produção.
 
-Trocar o motor gratuito pelo Azure não muda a voz nem o ritmo da narração — é a mesma locutora, gravada com muito mais definição. O que muda é a nitidez: os agudos da fala, que simplesmente não existiam no áudio anterior, passam a estar lá. Em compensação, o Azure exige uma conta e uma chave de acesso; sem elas o sistema se recusa a subir, em vez de descobrir o problema no meio de uma produção.
+**O motor em uso é o gratuito, por decisão.** O Azure está pronto e é melhor em áudio, mas exige uma conta e uma chave para manter — e a diferença, ainda que audível, não impede nada de ser publicado. Trocar continua sendo uma questão de configuração: preencher a chave e apontar para o Azure. Se a chave faltar, o sistema se recusa a subir em vez de descobrir o problema no meio de uma produção, então a troca falha de forma limpa e visível.
+
+Quando essa troca acontecer, a voz e o ritmo não mudam — é a mesma locutora, gravada com muito mais definição. O que muda é a nitidez: os agudos da fala, que simplesmente não existem no áudio de hoje, passam a estar lá.
 
 A narração sai acelerada em relação ao ritmo natural da voz. O padrão é **30% mais rápido** — o ritmo apressado que o formato do TikTok pede, sem que a fala fique difícil de acompanhar. A voz continua com o tom normal: ela fala mais rápido, não fica mais aguda, porque a aceleração é feita pelo próprio motor de voz e não por acelerar o arquivo depois de pronto.
 
@@ -238,6 +242,10 @@ O visual do vídeo é controlado por templates reutilizáveis. Um template defin
 
 A renderização é um processo pesado e acontece em segundo plano. O sistema não bloqueia durante esse tempo — é possível submeter novos roteiros enquanto um vídeo está sendo renderizado. O progresso pode ser acompanhado em tempo real.
 
+**Um vídeo é montado por vez.** Renderizar é a etapa mais pesada de todas em memória, e a máquina que roda o sistema comporta um render de cada vez. Antes não havia limite nenhum: se cinco vídeos fossem aceitos juntos, cinco montagens começavam juntas e a máquina simplesmente ficava sem memória — e quando isso acontece, quem o sistema operacional derruba é arbitrário. Podia ser o banco de dados, levando junto o estado de todas as histórias em produção, e não só o render.
+
+Agora os vídeos além do primeiro esperam a vez, na fila, exatamente como esperavam antes de começar. Nada é recusado e nada se perde: só deixa de acontecer ao mesmo tempo. Para três vídeos por dia isso não custa throughput nenhum — a fila continua cheia. Quantos podem rodar juntos é configuração, para o dia em que a máquina for maior.
+
 ---
 
 ## Feature 6 — Agendamento no TikTok
@@ -312,7 +320,7 @@ O resultado é uma imagem PNG salva no storage, pronta para ser usada como asset
 
 O sistema é configurável em vários aspectos sem precisar alterar o código:
 
-**Voz:** qual voz e qual motor de TTS usar. Padrão: voz feminina jovem brasileira, motor Azure (o gratuito continua disponível para quem não quiser configurar uma chave, ao custo da qualidade).
+**Voz:** qual voz e qual motor de TTS usar. Padrão: voz feminina jovem brasileira, motor gratuito (o Azure está pronto e entrega áudio bem melhor, ao custo de uma conta e uma chave para manter).
 
 **Velocidade da narração:** quanto mais rápido (ou mais devagar) a voz fala em relação ao ritmo natural dela. Definida no template do vídeo, junto com o resto do visual. Padrão: 30% mais rápido.
 
