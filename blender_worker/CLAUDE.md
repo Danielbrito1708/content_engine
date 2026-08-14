@@ -76,9 +76,24 @@ The app requires a `.env` file at the project root. Copy from `.env.example` and
 
 ## Features
 
+### Render concurrency gate (`src/blender_worker/worker.py`)
+
+One Blender process at a time, by default. `render_job(job_id)` waits on a module-level `asyncio.Semaphore` and delegates the actual work to `_render(job_id)` — the old body, unchanged.
+
+**Public API:**
+- `render_slot() -> asyncio.Semaphore` — the gate, built on first use (so it reads config after bootstrap, and so tests can rebuild it). Size from `config.ini [blender] max_concurrent_renders`, falling back to `DEFAULT_MAX_CONCURRENT_RENDERS` (1) when the key is absent — `config.prod.ini` and any config predating the key must not crash the render. Clamped to a minimum of 1: a limit of 0 would deadlock every job forever, which is worse than the OOM it guards against.
+
+**Why it exists.** `POST /jobs` hands every job to `BackgroundTasks`, which imposes no limit of its own — N accepted jobs meant N Blender processes competing for the same RAM. On the deploy target that is an OOM kill whose victim the kernel picks, and if the victim is Postgres the state of every run goes with it, not just one render.
+
+**Waiting jobs stay `pending`**, which is what that status already means to the orchestrator — it polls, so waiting costs nothing and no job is refused. The status flip to `running` lives inside `_render`, *after* the slot is acquired, which is what makes this true.
+
+Upstream, `content_scout`'s `[scout] max_pending_runs = 2` limits how much work reaches this gate at all. Two independent brakes on purpose: this one is the hard guarantee, that one keeps work from piling up in front of it.
+
+- Tests: `tests/test_worker.py` (5, marked `no_db` — `_render` is patched out, so the gate is exercised without Blender or the DB): serialisation under `asyncio.gather`, the configured limit, the missing-key fallback, the floor at 1, and release on exception.
+
 ### Blender render pipeline (`src/blender_worker/worker.py` + `scripts/edit_video.py`)
 
-Assembles video assets in Blender VSE and renders to MP4. Triggered by `POST /jobs` → `BackgroundTasks`.
+Assembles video assets in Blender VSE and renders to MP4. Triggered by `POST /jobs` → `BackgroundTasks` → the concurrency gate above.
 
 **`render_job(job_id)` flow:**
 1. Sets job status → `running`
@@ -350,7 +365,7 @@ Optional `background.shadow` block in the guide: `enabled` (default `False`), `c
 
 ## Known tech debt
 
-- `worker.py` uses FastAPI `BackgroundTasks` — jobs are lost if the container restarts mid-render. For production, replace with a proper queue (Celery + Redis, or similar).
+- `worker.py` uses FastAPI `BackgroundTasks` — jobs are lost if the container restarts mid-render. A durable queue (Celery + Redis, or similar) is the full fix. **Concurrency is no longer part of this debt** — see "Render concurrency gate" under `## Features`; the deliberate decision was to take the gate and leave durability, because losing a render to a mid-render restart is rare and recoverable, while the RAM blowup was a daily risk on the target machine.
 - MinIO bucket is not auto-created on startup — if the bucket configured in `config.ini [storage] bucket` doesn't exist, `POST /images/render` returns 500. Create manually: `mc mb local/<bucket>` or via the MinIO console (localhost:9001).
 
 ## graphify

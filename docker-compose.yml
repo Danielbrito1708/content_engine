@@ -53,6 +53,14 @@ services:
   blender_worker:
     <<: *runtime
     build: ./blender_worker
+    # Counterintuitive, but this is protection. Unbounded, a render that eats the
+    # machine gets *some* process killed by the kernel, and if that process is
+    # Postgres the state of every run goes with it. Bounded, the render itself is
+    # what dies: the job is marked failed, with the reason, and orphan recovery
+    # picks it up. Trading a catastrophic failure for a recoverable one is the
+    # whole point. 3g is roughly twice the estimated cost of one 1080x1920 render
+    # — measure a real one and tighten it.
+    mem_limit: 3g
     ports:
       - "8001:8000"
     env_file:

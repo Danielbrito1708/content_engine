@@ -18,8 +18,35 @@ log = get_logger(__name__)
 
 SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "scripts")
 
+#: Fallback for `config.ini [blender] max_concurrent_renders`.
+DEFAULT_MAX_CONCURRENT_RENDERS = 1
+
+_render_slot: asyncio.Semaphore | None = None
+
+
+def render_slot() -> asyncio.Semaphore:
+    """The concurrency gate, built on first use so it reads config after bootstrap."""
+    global _render_slot
+    if _render_slot is None:
+        limit = getattr(
+            settings.CONFIG.blender,
+            "max_concurrent_renders",
+            DEFAULT_MAX_CONCURRENT_RENDERS,
+        )
+        _render_slot = asyncio.Semaphore(max(1, int(limit)))
+    return _render_slot
+
 
 async def render_job(job_id: uuid.UUID) -> None:
+    """Wait for a render slot, then render. Queued jobs stay `pending`."""
+    slot = render_slot()
+    if slot.locked():
+        log.info("render queued", job_id=str(job_id))
+    async with slot:
+        await _render(job_id)
+
+
+async def _render(job_id: uuid.UUID) -> None:
     async with AsyncSessionLocal() as session:
         job = await session.get(Job, job_id)
         if job is None:

@@ -1,9 +1,13 @@
+import asyncio
 import uuid
 from subprocess import CalledProcessError
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from sqlalchemy import select
 
+from src.blender_worker import worker
 from src.blender_worker.db.engine import AsyncSessionLocal
 from src.blender_worker.db.models import Job, JobStatus, Template, Video
 from src.blender_worker.worker import render_job
@@ -166,6 +170,75 @@ async def test_render_job_takes_the_card_without_the_hook(session, template):
 
     assert "card" in config["assets"]
     assert "hook" not in config["assets"]
+
+
+@pytest.fixture
+def fresh_slot():
+    """The gate is a module global built on first use — rebuild it per test."""
+    worker._render_slot = None
+    yield
+    worker._render_slot = None
+
+
+def _settings_with(**blender_keys):
+    return SimpleNamespace(CONFIG=SimpleNamespace(blender=SimpleNamespace(**blender_keys)))
+
+
+@pytest.mark.no_db
+async def test_render_slot_runs_one_render_at_a_time(fresh_slot, monkeypatch):
+    monkeypatch.setattr(worker, "settings", _settings_with(max_concurrent_renders=1))
+    running = peak = 0
+
+    async def slow_render(_job_id):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0)
+        running -= 1
+
+    with patch("src.blender_worker.worker._render", new=slow_render):
+        await asyncio.gather(*(render_job(uuid.uuid4()) for _ in range(4)))
+
+    # Without the gate all four interleave at the first await and peak is 4.
+    assert peak == 1
+
+
+@pytest.mark.no_db
+async def test_render_slot_honours_the_configured_limit(fresh_slot, monkeypatch):
+    monkeypatch.setattr(worker, "settings", _settings_with(max_concurrent_renders=3))
+
+    assert worker.render_slot()._value == 3
+
+
+@pytest.mark.no_db
+async def test_render_slot_falls_back_when_the_template_has_no_limit(fresh_slot, monkeypatch):
+    # config.prod.ini, or any config predating the key, must not crash the render.
+    monkeypatch.setattr(worker, "settings", _settings_with())
+
+    assert worker.render_slot()._value == worker.DEFAULT_MAX_CONCURRENT_RENDERS
+
+
+@pytest.mark.no_db
+async def test_render_slot_never_goes_below_one(fresh_slot, monkeypatch):
+    # A limit of 0 would deadlock every job forever, which is worse than the OOM.
+    monkeypatch.setattr(worker, "settings", _settings_with(max_concurrent_renders=0))
+
+    assert worker.render_slot()._value == 1
+
+
+@pytest.mark.no_db
+async def test_render_slot_is_released_when_a_render_raises(fresh_slot, monkeypatch):
+    # `_render` swallows its own exceptions today; this guards the day it stops.
+    monkeypatch.setattr(worker, "settings", _settings_with(max_concurrent_renders=1))
+
+    async def boom(_job_id):
+        raise RuntimeError("blender died")
+
+    with patch("src.blender_worker.worker._render", new=boom):
+        with pytest.raises(RuntimeError):
+            await render_job(uuid.uuid4())
+
+    assert not worker.render_slot().locked()
 
 
 async def test_render_job_fails_on_subprocess_error(session, video, template):
