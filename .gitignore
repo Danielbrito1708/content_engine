@@ -1,5 +1,12 @@
 .env
 **/.env
+# Qualquer variante do .env (backups tipo .env.bak-20260728, .env.local,
+# .env.prod) — todas carregam credencial em texto puro. O .env.example e a
+# unica excecao: ele e o template versionado, sem segredo dentro.
+.env.*
+**/.env.*
+!.env.example
+!**/.env.example
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
