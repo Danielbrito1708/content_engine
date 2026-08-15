@@ -16,7 +16,7 @@ content_engine/
   blender_worker/           ← montagem VSE + renderização (FastAPI + Blender 4.2)
   llm_service/              ← refinamento e classificação de roteiros
   tts_service/              ← geração de áudio (edge-tts → ElevenLabs)
-  tiktok_poster/            ← publicação, agendamento e analytics do TikTok
+  tiktok_poster/            ← agendamento no TikTok e no YouTube (nome histórico: dois destinos)
   content_scout/            ← descoberta automática de roteiros na internet (Reddit)
 ```
 
@@ -90,10 +90,12 @@ docker compose logs -f orchestrator
 ## Servidor (máquina de casa)
 
 `ssh server@192.168.0.106` — Debian 13 bare metal, sem interface gráfica, autenticação por
-chave e `sudo` sem senha, então funciona com `BatchMode=yes` e não pede interação. É a
-máquina de deploy do `deploy.md`. **Ler `docs/servidor.md` antes de qualquer trabalho
-nela**: root não loga por SSH, o IP é DHCP e não está reservado, e o Docker ainda não está
-instalado.
+chave e `sudo` sem senha, então funciona com `BatchMode=yes` e não pede interação.
+
+**É o ambiente de produção desde 14/08/2026** — a stack roda em `~/content_engine` lá, e a
+stack local está desligada de propósito. **Ler `docs/servidor.md` antes de qualquer trabalho
+nela**: root não loga por SSH, o IP é DHCP e não está reservado, e a máquina puxa do GitHub
+por uma deploy key read-only (não dá para commitar de lá).
 
 ## Comunicação entre serviços
 
@@ -107,56 +109,24 @@ Internamente (dentro do Docker network), os serviços se comunicam pelo nome do 
 
 Externamente (localhost), cada um usa a porta mapeada acima.
 
-## Passos pendentes de deploy
+## O `template.json` do repo não é o que roda
 
-> Da branch `worktree-voz-narrador-fim-video`, mergeada no `main`. **Os dois passos foram aplicados no ambiente local em 14/08/2026** — o upload do template vale para todos os ambientes (o bucket R2 é compartilhado), a migration é por ambiente e ainda não rodou em nenhum outro. Apagar esta seção quando não houver mais ambiente sem ela; até lá o procedimento abaixo continua valendo para os que faltam.
+Vale para sempre, não só num deploy. O `blender_worker` baixa `templates/template.json` do
+MinIO/R2 **no momento do render**, e o orchestrador lê `narration.rate` do mesmo objeto via
+`GET /templates/{id}/config`. Editar `blender_worker/template.json` no repo não muda nada
+até o objeto ser republicado no bucket.
 
-### 1. Republicar o `template.json` no bucket
-
-✅ **Feito em 14/08/2026** — `templates/template.json` no R2 agora é a cópia do repo. O objeto publicado estava muito mais defasado do que só a `narration`: não tinha `narration`, `card`, `music`, nem `channels.hook`/`channels.card` (todos vinham de default no código), e trazia `timing.outro_start`/`outro_end`/`music_fade_out`, chaves que nenhum código lê mais.
-
-⚠️ **O upload também aplicou a legenda de 100px**, que estava commitada desde `6ca851b` (28/07) e nunca tinha subido — o bucket ainda servia `font_size: 160`. É mudança visual real e não fazia parte desta branch; veio junto porque o repo é a fonte da verdade do template. Se 160 for o valor desejado, editar `blender_worker/template.json` e republicar.
-
-⚠️ **O `template.json` do repo não é o que roda.** O `blender_worker` baixa `templates/template.json` do MinIO/R2 no momento do render, e o orchestrador lê `narration.rate` do mesmo objeto via `GET /templates/{id}/config`. Editar a cópia do repo não muda nada até o upload.
-
-Duas mudanças desta branch dependem disso:
-
-| Chave | Valor | O que muda sem o upload |
-|---|---|---|
-| `narration.rate` | `+30%` | A narração continua no rate do template publicado |
-| `narration.tail_seconds` | `0.5` | Nada — o default de 0,5s está no código e já vale |
-
-O rate é o único que **exige** o upload. Conferir o que está publicado, antes e depois — é o mesmo endpoint que o orchestrador usa, então responde exatamente o que o pipeline vai ler:
+Conferir o que está publicado — é o mesmo endpoint que o pipeline lê:
 
 ```bash
 curl -s localhost:8001/templates/$BLENDER_TEMPLATE_ID/config | python -m json.tool
 ```
 
-### 2. Migration `005` do orchestrator
+O bucket R2 é **compartilhado entre ambientes**, então republicar afeta todos de uma vez.
 
-✅ **Feito no local em 14/08/2026** via `docker compose up -d --build orchestrator`; coluna conferida no banco. Continua pendente em qualquer outro ambiente.
-
-**`005_add_narrator_gender_to_pipeline_runs`.** Adiciona `narrator_gender` em `pipeline_runs`, coluna que o `_refine` passou a escrever. Sem ela, todo run morre no refino com `UndefinedColumn`.
-
-**No Docker não há passo manual**: o `CMD` do `orchestrator/Dockerfile` é `alembic upgrade head && uvicorn ...`, então a migration roda sozinha ao subir o container — **desde que a imagem seja reconstruída**:
-
-```bash
-docker compose up -d --build orchestrator
-```
-
-⚠️ `docker compose up -d` **sem `--build`** sobe a imagem antiga em silêncio: o código novo não entra, a migration não roda, e o sintoma é o run falhando no refino como se fosse bug de código. Conferir depois de subir:
-
-```bash
-docker compose exec db psql -U postgres -d orchestrator -c "\d pipeline_runs" | grep narrator_gender
-```
-
-Rodando o orchestrador **fora** do Docker, aí sim é manual, com `DATABASE_URL` apontando para o banco `orchestrator`:
-
-```bash
-cd orchestrator && poetry run alembic upgrade head
-```
-
-Nenhum outro serviço desta branch tem migration — `tts_service`, `llm_service` e `blender_worker` mudaram só em código e config.
+⚠️ **`BLENDER_TEMPLATE_ID` também é uma linha na tabela `templates`** do banco do
+`blender_worker`, não só um objeto no bucket. Num banco novo ela não existe e o endpoint
+acima responde `404 Template not found` — que parece erro de credencial do R2 e não é.
 
 ## Estado do projeto
 
@@ -166,12 +136,31 @@ Nenhum outro serviço desta branch tem migration — `tts_service`, `llm_service
 - `orchestrator` — pipeline completo, rotação de background, recuperação de runs órfãos, retry de agendamento, notificação
 - `llm_service` — `/refine`, `/moderate`, `/story-quality` (OpenRouter / Anthropic / Chutes)
 - `tts_service` — providers `edge`/`azure`, corte de silêncio + normalização de loudness, transcrição word-level
-- `tiktok_poster` — agendamento via Buffer, slots, séries, hashtags e caption
+- `tiktok_poster` — agendamento via Buffer, slots, séries, hashtags e caption; **dois destinos** (TikTok + YouTube) no mesmo slot
 - `content_scout` — fonte Reddit via RSS, varredura do arquivo, dedup por conteúdo, nota de storytelling (YouTube previsto como minerador de tema)
 
-O que falta para produção **não é código de feature** — é a máquina (`docs/deploy.md`:
-Docker não está instalado no servidor) e as credenciais de alerta. Ver também o TODO de
-backup/retenção em `docs/deploy.md` → "O que continua em aberto", adiado por decisão.
+**Desde 14/08/2026 a stack roda no servidor** (`192.168.0.106`), que é o ambiente de
+produção — a stack da máquina Windows foi desligada para não haver dois produtores no mesmo
+perfil do Buffer. Primeiro vídeo produzido de ponta a ponta lá em 14/08/2026; render medido
+em ~12min42s por parte. Ver `docs/servidor.md` → "O que roda na máquina".
+
+### Passos pendentes de deploy (YouTube, 15/08/2026)
+
+O código está pronto e **desligado por padrão** — sem os passos abaixo a stack publica só
+no TikTok, exatamente como antes, sem erro e sem aviso.
+
+1. Conectar o canal do YouTube na conta do Buffer (`vozes.do.reddit7`) e pegar o ID do canal.
+2. `BUFFER_YOUTUBE_CHANNEL_ID=<id>` no `.env` do servidor.
+3. Subir `orchestrator` e `tiktok_poster` com `--build` — a **migration `006`** roda no boot
+   pelo `CMD` do Dockerfile; sem ela todo run morre no refino com `UndefinedColumn`.
+4. Conferir no primeiro post se o Buffer aceita vídeo **acima de 3 minutos** no canal do
+   YouTube. É o único ponto não verificável sem publicar: o canal é do tipo Shorts e a
+   política de divisão permite até 30 minutos de fala.
+
+O que falta **não é código de feature** — é monitoramento: os três checks do
+Healthchecks.io, o cron do disco (script pronto, falta agendar) e o Uptime Kuma. Ver também
+o TODO de backup/retenção em `docs/deploy.md` → "O que continua em aberto", adiado por
+decisão e mais urgente agora que se sabe que cada MP4 pesa ~270 MB.
 
 ## Decisões em aberto
 
@@ -188,3 +177,11 @@ Decisões tomadas em 14/08/2026, para não serem reabertas sem motivo novo:
 | Re-medir a régua no corpus novo | **Não fazer** — segue com a régua atual |
 | Fila do `blender_worker` | **Semáforo**, não Celery/Redis |
 | Backup e retenção | **Adiado**, registrado como TODO no `deploy.md` |
+
+Decisão tomada em 15/08/2026:
+
+| Decisão | Escolha |
+|---|---|
+| Publicação no YouTube | Pelo **Buffer**, canal novo na mesma conta. A API direta trava o vídeo como **privado** enquanto o projeto não passar pela auditoria do Google |
+| Título do YouTube | **Campo novo** no refino (`youtube_title`), não o gancho reciclado — o título é lido antes do vídeo abrir, o gancho é ouvido depois |
+| Horário no YouTube | **O mesmo do TikTok** — o slot sai da fila do TikTok e é reusado nos dois canais |

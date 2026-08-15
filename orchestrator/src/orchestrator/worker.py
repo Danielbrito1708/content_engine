@@ -84,6 +84,7 @@ async def _refine(session, run: PipelineRun) -> None:
     run.refined_script = "\n\n".join(result.parts)
     run.hook = result.hook or None
     run.narrator_gender = result.narrator_gender
+    run.youtube_title = result.youtube_title or None
     run.classification = result.classification
     run.parts_count = len(result.parts)
     run.status = PipelineStatus.refined
@@ -99,6 +100,7 @@ async def _refine(session, run: PipelineRun) -> None:
         parts=run.parts_count,
         hook=bool(run.hook),
         narrator=run.narrator_gender,
+        title=bool(run.youtube_title),
     )
     notify(
         "Roteiro refinado",
@@ -426,6 +428,7 @@ async def _schedule(session, run: PipelineRun) -> bool:
                 series_id=str(run.id),
                 total_parts=len(parts),
                 follows_at=previous_slot,
+                youtube_title=run.youtube_title,
             )
         except BufferQueueFull as exc:
             # Not a failure: the run keeps its rendered videos and stays in
@@ -451,6 +454,7 @@ async def _schedule(session, run: PipelineRun) -> bool:
         raw_ts = data.get("scheduled_at")
         part.scheduled_at = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")) if raw_ts else None
         part.tiktok_video_id = data.get("buffer_update_id")
+        part.youtube_video_id = data.get("youtube_update_id")
         await session.commit()
 
         notify(
@@ -459,7 +463,34 @@ async def _schedule(session, run: PipelineRun) -> bool:
             run=short_id(run.id),
             parte=f"{part.part_number}/{len(parts)}",
             para=_when(part.scheduled_at),
+            youtube="ok" if part.youtube_video_id else None,
         )
+
+        # Sexta degradação silenciosa: o TikTok saiu, o run vai terminar
+        # `scheduled` e nada no status distingue "publicado nos dois" de
+        # "publicado só num". Sem este aviso, a ausência do vídeo no YouTube só
+        # apareceria olhando a coluna `youtube_video_id` de um run específico.
+        #
+        # ⚠️ Condicionado a `youtube_enabled`: destino desligado não é
+        # degradação, é configuração. Sem essa guarda, toda parte de todo run
+        # dispararia um aviso enquanto o canal não estivesse conectado — e um
+        # alarme que toca sempre é um alarme que ninguém lê.
+        youtube_error = data.get("youtube_error")
+        if data.get("youtube_enabled") and part.youtube_video_id is None:
+            log.warning(
+                "part not scheduled on youtube",
+                run_id=str(run.id),
+                part=part.part_number,
+                error=youtube_error,
+            )
+            notify(
+                "Parte não foi agendada no YouTube",
+                level="warning",
+                icon="⚠️",
+                run=short_id(run.id),
+                parte=part.part_number,
+                motivo=youtube_error,
+            )
 
         if part.scheduled_at is not None:
             previous_slot = part.scheduled_at

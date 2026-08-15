@@ -184,9 +184,34 @@ usando teclado e monitor na máquina. **O SSH não é afetado por nenhum dos qua
 targets de sleep continua de pé e é o que segura o GNOME, mas ele é reversível por engano
 com um `unmask`. Interface ligada **sem** o mask = máquina dormindo de novo.
 
+### O que roda na máquina — desde 14/08/2026
+
+**A stack do `content_engine` está no ar aqui**, e esta é a máquina de produção: a stack da
+máquina Windows foi desligada na mesma data, para não haver dois produtores publicando no
+mesmo perfil do Buffer (ver `deploy.md` → "A virada da máquina local para o servidor").
+
+| | |
+|---|---|
+| Docker | 29.7.2 + Compose v5.4.0, repo oficial `trixie`, `docker.service` habilitado |
+| Repo | `/home/server/content_engine`, clonado por SSH |
+| `.env` | `/home/server/content_engine/.env`, modo 600 — copiado por `scp`, **não está no git** |
+| Subir/descer | `cd ~/content_engine && docker compose up -d` / `down` |
+| Portas | as mesmas do `CLAUDE.md`, agora em `192.168.0.106` em vez de `localhost` |
+
+**A máquina puxa do GitHub com uma deploy key própria**, `~/.ssh/id_ed25519_deploy`,
+registrada no repositório como **read-only** e selecionada por um bloco `Host github.com` no
+`~/.ssh/config`. Ela não é a chave de acesso SSH do Windows, e é read-only de propósito: a
+máquina de deploy puxa, nunca empurra. Para atualizar o código lá:
+
+```bash
+ssh server@192.168.0.106 "cd ~/content_engine && git pull && docker compose up -d --build"
+```
+
+⚠️ O `--build` não é opcional — ver o aviso sobre `up -d` sem `--build` no `CLAUDE.md`.
+
 ### O que falta na máquina
 
-- **Docker não está instalado.** `docker --version` não responde e não existe grupo
-  `docker`; o `server` está em `sudo`, `video`, `netdev` e afins. É o primeiro passo do
-  deploy — procedimento completo em `deploy.md` → "Ajustes antes de subir".
-- **Reserva de DHCP** no roteador, amarrando `84:7b:eb:ff:77:8d` ao `.106`.
+- **Reserva de DHCP** no roteador, amarrando `84:7b:eb:ff:77:8d` ao `.106`. Ficou mais
+  urgente agora que a stack roda aqui: se o IP mudar, todo comando fixado no `.106` quebra.
+- **Monitoramento** — os três checks do Healthchecks.io, o cron do disco e o Uptime Kuma.
+  Ver `deploy.md` → "Monitoramento".

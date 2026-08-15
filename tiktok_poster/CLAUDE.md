@@ -1,15 +1,18 @@
 # CLAUDE.md — tiktok_poster
 
-Serviço de agendamento e publicação de vídeos no TikTok via Buffer. Recebe `POST /schedule` do orchestrador com o vídeo pronto, calcula o próximo slot disponível, monta a caption e agenda no Buffer.
+Serviço de agendamento e publicação de vídeos via Buffer. Recebe `POST /schedule` do orchestrador com o vídeo pronto, calcula o próximo slot disponível, monta a caption e agenda no Buffer — **no TikTok e, quando o canal está conectado, também no YouTube**.
+
+⚠️ **O nome do serviço é histórico.** Ele nasceu com um destino só; hoje publica em dois. Renomear tocaria o compose, o repo individual, as URLs de serviço e o deploy da máquina de produção, então o nome ficou. Nada aqui é específico do TikTok além do `BUFFER_PROFILE_ID` ser o canal dele.
 
 ## Arquitetura
 
-- `api/routes/schedule.py` — endpoint principal
+- `api/routes/schedule.py` — endpoint principal; `_schedule_youtube()` é o segundo destino
 - `api/routes/health.py` — `GET /health`, verifica conexão com Buffer
-- `buffer/client.py` — `BufferClient`: `get_pending_posts()`, `create_post()`, `verify_connection()`
+- `buffer/client.py` — `BufferClient(channel_id=None)`: `get_pending_posts()`, `create_post()`, `verify_connection()`
 - `buffer/scheduler.py` — `next_available_slot()`: calcula próximo horário livre respeitando limite de fila
 - `storage/client.py` — `generate_presigned_url()`: gera URL pré-assinada do MinIO/R2 para o Buffer baixar o vídeo
 - `hashtags/selector.py` — `select_hashtags()` + `compose_caption()`
+- `youtube/metadata.py` — `youtube_category_id()`, `compose_title()`, `build_metadata()`; puro
 - `schemas/schedule.py` — `ScheduleRequest`, `ScheduleResponse`
 - `hashtags.json` — pool configurável de hashtags + obrigatórias
 
@@ -17,19 +20,23 @@ Serviço de agendamento e publicação de vídeos no TikTok via Buffer. Recebe `
 
 ### Endpoint de agendamento (`src/tiktok_poster/api/routes/schedule.py`)
 
-`POST /schedule` — agenda um vídeo no Buffer para publicação no TikTok.
+`POST /schedule` — agenda um vídeo no Buffer para publicação no TikTok e no YouTube.
 
 **Request** (`ScheduleRequest`):
 - `video_key` (str) — MinIO/R2 key do vídeo renderizado
-- `classification` (dict) — objeto de classificação do orchestrador (com `hashtag_hints`, `cta_per_part`)
+- `classification` (dict) — objeto de classificação do orchestrador (com `hashtag_hints`, `cta_per_part`, `content_type`)
 - `part_number` (int) — número da parte (1, 2, ...)
 - `series_id` (str) — UUID do pipeline run (usado para log e rastreamento)
 - `total_parts` (int, default 1) — quantas partes a história tem ao todo
 - `follows_at` (datetime, opcional) — horário já agendado da parte anterior; presente só em partes 2+
+- `youtube_title` (str, opcional) — título do vídeo no YouTube, vindo do refino
 
 **Response** (`ScheduleResponse`):
-- `scheduled_at` (datetime) — horário UTC agendado no Buffer
-- `buffer_update_id` (str) — ID do post no Buffer
+- `scheduled_at` (datetime) — horário UTC agendado no Buffer, o mesmo nos dois canais
+- `buffer_update_id` (str) — ID do post no TikTok (nome histórico)
+- `youtube_update_id` (str | None) — ID do post no YouTube
+- `youtube_error` (str | None) — por que não saiu no YouTube
+- `youtube_enabled` (bool) — se o destino estava ligado
 
 Erros: `429` com `{ error: "buffer_queue_full", pending_count }` se a fila do Buffer atingir o limite configurado.
 
@@ -54,6 +61,28 @@ Usado quando o request traz `follows_at` — ou seja, em partes 2+. Devolve `max
 
 ⚠️ **`classification["parts"]` não manda mais na caption.** A chave nunca foi preenchida pelo `llm_service` (`Classification` não tem esse campo), então `compose_caption` recebia `total_parts=1` sempre e o rótulo "(Parte 1/2)" **nunca apareceu**, nem em série dividida. O número agora vem de `total_parts` no request, que o orchestrador preenche com a contagem real de parts.
 
+### Segundo destino: YouTube (`_schedule_youtube` + `src/tiktok_poster/youtube/metadata.py`)
+
+O **mesmo vídeo**, no **mesmo slot**, pelo **mesmo Buffer** — só o canal muda. O slot sai da fila do TikTok e é reusado: ritmo de publicação é uma decisão só, e a série continua encadeada nos dois lugares porque o `follows_at` já resolveu isso antes.
+
+**O que o YouTube exige e o TikTok não.** `title` e `categoryId` são **obrigatórios na criação** — sem eles o Buffer recusa a mutation inteira. Daí o campo novo no refino (`youtube_title`) e o mapa de categorias.
+
+- `youtube_category_id(content_type, default)` — `comédia`→23, `educativo`→27, `entretenimento`→24; qualquer outro cai no default (22, People & Blogs). `drama` e `suspense` **não têm** categoria própria no YouTube e ficam melhor em People & Blogs que forçados em Entertainment.
+- `compose_title(title, part_number, total_parts)` — acrescenta `(Parte n/N)` em série. **O corte protege o rótulo, não o título**: numa série "(Parte 2/3)" é o que não pode faltar, então é o título que encolhe para caber nos 100 chars.
+- `build_metadata(...)` — o bloco `metadata.youtube` do `createPost`.
+
+⚠️ **A falha no YouTube é degradável e nunca levanta.** Quando `_schedule_youtube` roda, o post do TikTok **já foi criado**; derrubar o request aqui faria o orchestrador tratar como falha um run cujo destino principal saiu — e o retry republicaria a parte no TikTok, que sairia duas vezes lá. Todo desfecho ruim vira string em `youtube_error`.
+
+⚠️ **`youtube_enabled` separa "desligado" de "falhou".** Só o segundo é degradação. Sem essa distinção, toda parte de todo run dispararia aviso no WhatsApp enquanto o canal não estivesse conectado — e um alarme que toca sempre é um alarme que ninguém lê.
+
+⚠️ **A cláusula `metadata` é montada só quando há metadata**, em vez de mandar `metadata: null`. O caminho do TikTok publica em produção hoje sem esse argumento, e servidor GraphQL não é obrigado a tratar `null` explícito como ausente. Coberto por teste.
+
+**Desligar**: `BUFFER_YOUTUBE_CHANNEL_ID` vazio (o normal, e o estado de quem ainda não conectou o canal) ou `config.ini [youtube] enabled = false` (freio manual, sem apagar a credencial).
+
+**Contrato verificado por introspecção** no schema real do Buffer (`YoutubePostMetadataInput`): `title`, `categoryId`, `privacy` (`private`/`public`/`unlisted`), `madeForKids`, `notifySubscribers`, `embeddable`, `license`, `isAiGenerated`.
+
+`ai_disclosed` sai `true` por padrão — a narração é voz sintética e o YouTube pede que isso seja declarado.
+
 ### Hashtags (`src/tiktok_poster/hashtags/selector.py`)
 
 `select_hashtags(hints, mandatory, pool, max_total) -> list[str]`
@@ -63,6 +92,8 @@ Usado quando o request traz `follows_at` — ou seja, em partes 2+. Devolve `max
 - Total limitado por `config.ini [hashtags] max_total` (padrão: 8)
 - Obrigatórias configuradas em `config.ini [hashtags] mandatory` (padrão: `#tiktokbrasil,#fyp`)
 - Pool em `hashtags.json` (versionado no repo, editável sem deploy)
+
+**O YouTube tem outras obrigatórias** (`[hashtags] youtube_mandatory`, padrão `#historiasreais,#reddit`): `#tiktokbrasil` e `#fyp` não significam nada lá — hashtag de YouTube é busca, não distribuição. `#shorts` **não** está na lista: a política de divisão permite vídeo de até 30 minutos e Short é só até 3, então marcar como Short um vídeo que não é engana o espectador sem mudar a distribuição.
 
 ### Storage e URL pré-assinada (`src/tiktok_poster/storage/client.py`)
 
@@ -77,6 +108,7 @@ Usado quando o request traz `follows_at` — ou seja, em partes 2+. Devolve `max
 Ver `.env.example`. Variáveis críticas:
 - `BUFFER_ACCESS_TOKEN` — token da API do Buffer
 - `BUFFER_PROFILE_ID` — ID do perfil TikTok no Buffer
+- `BUFFER_YOUTUBE_CHANNEL_ID` — **opcional**; vazio desliga o YouTube e o serviço segue publicando só no TikTok
 - `MINIO_ENDPOINT` — em dev: `http://localhost:9000`; em prod: endpoint do R2
 
 ## Produção (Cloudflare R2)
@@ -91,7 +123,9 @@ O bucket deve ser o mesmo configurado nos demais serviços (`blender-jobs`).
 
 ## Testes
 
-31 testes em 3 arquivos: `test_hashtags.py`, `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim e o rótulo de parte). Buffer e MinIO são sempre mockados.
+60 testes em 4 arquivos: `test_hashtags.py`, `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim e o rótulo de parte) e `test_youtube.py` (26 — mapa de categorias, título com rótulo protegido, metadata, os dois destinos no mesmo slot, a mutation com e sem `metadata`, e cada caminho de degradação). Buffer e MinIO são sempre mockados.
+
+⚠️ O destino do YouTube é ligado nos testes pelo fixture `youtube_on`, que troca `_youtube_channel_id`. A função existe para ser essa costura: `settings.env` é um modelo congelado e não aceita `monkeypatch.setattr`.
 
 ```bash
 poetry run pytest

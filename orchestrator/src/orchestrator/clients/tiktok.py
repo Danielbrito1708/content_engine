@@ -32,12 +32,20 @@ class TikTokClient:
         series_id: str,
         total_parts: int = 1,
         follows_at: datetime | None = None,
+        youtube_title: str | None = None,
     ) -> dict:
-        """Returns {"scheduled_at": "...", "buffer_update_id": "..."}
+        """Agenda a parte nos destinos do poster (TikTok e, se houver, YouTube).
+
+        Devolve ``{"scheduled_at", "buffer_update_id", "youtube_update_id",
+        "youtube_error"}`` — os dois últimos podem vir nulos, porque o YouTube é
+        destino secundário e sua ausência não é falha do run.
 
         ``follows_at`` é o horário já agendado da parte anterior. Mandado só em
         partes 2+: é o que faz a continuação sair um intervalo depois dela, em
         vez de cair no próximo horário livre do calendário do poster.
+
+        ``youtube_title`` é o título do vídeo lá. Omitido do payload quando
+        vazio (não vai `null`), como o `narrator_gender` no `tts_service`.
         """
         payload: dict = {
             "video_key": video_key,
@@ -48,6 +56,8 @@ class TikTokClient:
         }
         if follows_at is not None:
             payload["follows_at"] = follows_at.isoformat()
+        if youtube_title:
+            payload["youtube_title"] = youtube_title
 
         try:
             resp = await request(

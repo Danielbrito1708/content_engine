@@ -3,10 +3,10 @@
 Este documento é o plano de deploy do `content_engine` na máquina de casa. Ele existe
 para ser lido **na hora de subir**.
 
-> **Estado (14/08/2026):** os ajustes que moram no repo — concorrência de render,
-> `mem_limit`, notificação — já estão aplicados e vão junto com o `git pull`. Na máquina, a
-> suspensão automática já foi corrigida (item 1). O que resta é instalar o Docker, criar os
-> checks e preencher as credenciais de alerta.
+> **Estado (14/08/2026, fim do dia): a stack está no ar na máquina e produziu um vídeo de
+> ponta a ponta.** Docker instalado, repo clonado, bancos migrados da máquina local e a
+> stack local desligada — o servidor é o produtor único. O que resta é monitoramento: os
+> três checks do Healthchecks.io, o cron do disco e o Uptime Kuma.
 
 A seção "Operação 24h" do `vision.md` descreve o que o `docker-compose.yml` já garante
 sozinho. Este documento cobre o que fica **fora** do compose — a máquina, os limites do
@@ -188,11 +188,21 @@ como ligar e desligar está em `servidor.md` → "Interface gráfica".
 complementares, e é de propósito — o `set-default` remove quem pedia a suspensão, o `mask`
 impede que qualquer outro peça. Reativar a interface um dia não traz o problema de volta.
 
-### 2. Instalar o Docker
+### 2. Instalar o Docker ✅ feito em 14/08/2026
 
-**Não está instalado** — `docker --version` não responde, e não existe grupo `docker`
-(o `server` está em `sudo`, `video`, `netdev` e afins, mas não nele). É o primeiro passo
-real, e o único bloqueio de infraestrutura que restou.
+**Docker 29.7.2 + Compose v5.4.0**, do repositório oficial, `docker.service` habilitado
+(sobe sozinho no boot) e o `server` no grupo `docker`. O procedimento abaixo fica
+registrado para reproduzir numa máquina nova.
+
+Duas notas do que aconteceu na prática:
+
+- **`trixie` publica.** A ressalva do contorno para `bookworm` não precisou ser usada —
+  `dists/trixie/Release` responde `200`. Vale conferir antes de assumir, não depois.
+- **`curl` também não estava instalado**, e nem `git`. O primeiro comando do procedimento
+  já resolve o `curl`; o `git` veio de carona como dependência do `docker-ce`.
+
+Estado anterior, para contexto: `docker --version` não respondia e não existia grupo
+`docker` (o `server` estava em `sudo`, `video`, `netdev` e afins, mas não nele).
 
 Repositório oficial, não o `docker.io` do Debian: o pacote da distro atrasa versões e não
 traz o plugin `compose` v2, que o `docker-compose.yml` deste projeto usa (`docker compose`,
@@ -221,20 +231,76 @@ docker --version && docker compose version
 `trixie`, apontar o `VERSION_CODENAME` para `bookworm` funciona e é o contorno usual —
 verificar antes de assumir que quebrou.
 
-### 3. Buildar antes, não durante
+### 3. Buildar antes, não durante ✅ feito em 14/08/2026
 
-`docker compose build` das 6 imagens (com o download do Blender) é pesado, e nesta CPU de
-35 W é mais demorado do que o plano original supunha. Build primeiro, `up` depois.
+`docker compose build` das 6 imagens (com o download do Blender) é pesado. Build primeiro,
+`up` depois. E atenção ao `up -d` sem `--build`: ele sobe a imagem antiga em silêncio.
 
-E atenção ao `up -d` sem `--build`: ele sobe a imagem antiga em silêncio.
+**Medido:** o build completo levou ~13 min e as seis imagens somam **~13 GB**, não os
+~36 GB que este documento estimava. O disco saiu de 5 GB para 18 GB usados.
 
 ### 4. Olho no disco, que agora é o recurso escasso
 
-São 193 GB livres, não os 500 GB que este documento assumia. As imagens somam ~36 GB — um
-quinto do disco — e nem o build cache do Docker nem os `outputs/` têm limite ou retenção.
+São 193 GB livres, não os 500 GB que este documento assumia. Com as imagens medidas em
+~13 GB (e não ~36 GB), o quadro é mais folgado do que parecia — mas o item que cresce
+sozinho não é a imagem, é o `outputs/`, e nem ele nem o build cache têm limite ou retenção.
+
+⚠️ **Medido no primeiro render real: um MP4 de saída tem ~270 MB.** A 3 vídeos/dia são
+~810 MB/dia, ~24 GB/mês, monotônico. Com 180 GB livres, o disco enche em cerca de **7
+meses** sem ninguém fazer nada de errado.
 
 Não bloqueia subir, mas inverte a prioridade: **retenção deixou de ser um "depois"
 confortável**. Ver "O que continua em aberto".
+
+### 5. O render, finalmente medido
+
+`deploy.md` dizia que o tempo de render "continua sem medição real". **12 min 42 s** para
+uma parte, do `starting render` ao `render done`, incluindo o download dos assets do R2 e o
+upload do MP4 — primeiro render de verdade nesta máquina, 14/08/2026.
+
+A 3 vídeos/dia isso é ~38 min de CPU por dia. A folga é enorme, e confirma pelos números o
+que a seção de RAM argumentava: **não há throughput a ganhar soltando a concorrência**.
+O semáforo em 1 continua certo, agora por medição e não por precaução.
+
+Durante o pipeline inteiro a RAM ficou em ~2,3 GB de 11,6 GB, sem chegar perto do
+`mem_limit: 3g` do `blender_worker` e sem OOM.
+
+---
+
+## A virada da máquina local para o servidor
+
+Feita em 14/08/2026. Registrada porque o passo perigoso não é subir a stack nova — é o
+intervalo em que **as duas estão no ar ao mesmo tempo**.
+
+⚠️ **Duas stacks vivas publicam duplicado.** O `.env` é copiado inteiro, então a stack nova
+nasce apontando para o mesmo perfil do Buffer, o mesmo bucket R2, o mesmo número de
+WhatsApp e os mesmos subreddits. Só que o banco `content_scout` dela está **vazio**: ela não
+sabe quais histórias já foram usadas, trata as 62 já vistas como novas e as reproduz. O
+scout do servidor começou uma varredura ~30 s depois do primeiro `up`, antes de haver
+qualquer chance de configurar isso.
+
+A ordem que funciona:
+
+1. **Parar o scout da máquina nova assim que ela sobe** (`docker compose stop
+   content_scout`), antes que o primeiro ciclo feche.
+2. **Congelar a antiga** — parar os seis serviços e deixar só `db` e `minio` de pé.
+3. **`pg_dump` dos três bancos** (`orchestrator`, `content_scout`, `blender_worker`) com
+   `--clean --if-exists`, e restaurar na nova **com os serviços dela parados**.
+4. **Subir a nova inteira**, conferir os números (`seen_items`, runs por status, o template)
+   e só então **desligar a antiga**.
+
+**Não espere os runs em andamento terminarem.** Um run em `scheduling` pode ficar dias nesse
+estado esperando vaga na fila do Buffer — é o retry projetado, não travamento. O estado vive
+na linha do banco, então o dump o carrega: no boot, o orchestrador da máquina nova
+reconciliou o run órfão sozinho (`retomados: 1 · perdidos: 0`) e voltou a tentar o
+agendamento.
+
+**O template é uma linha de banco, não só um objeto no bucket.** `BLENDER_TEMPLATE_ID` no
+`.env` aponta para um id da tabela `templates` do `blender_worker`; num banco novo ele não
+existe e `GET /templates/{id}/config` responde `404 Template not found` — que parece
+problema de credencial do R2 e não é. `POST /templates` gera um **UUID novo**, o que
+quebraria o `.env`, então o certo é replicar a linha com o mesmo id (o `pg_dump` do passo 3
+já faz isso; a inserção manual só é necessária se você subir antes de migrar).
 
 ---
 
@@ -242,8 +308,12 @@ confortável**. Ver "O que continua em aberto".
 
 O requisito é ser avisado no WhatsApp quando algo der errado, 24h, sem ninguém olhando.
 
-> **Estado:** camada 3 implementada em código (falta só configurar as credenciais);
-> camadas 1, 2 e 4 são configuração desta máquina e continuam pendentes.
+> **Estado (14/08/2026):** camada 3 implementada em código, **com o WhatsApp já
+> funcionando** — `CALLMEBOT_PHONE`/`APIKEY` estão preenchidos e as mensagens de operação
+> chegam (verificado nos logs: "no ar", "Pesquisa iniciada", "Fila do Buffer cheia",
+> "Runs órfãos reconciliados"). O que falta na camada 3 são só os três checks do
+> Healthchecks.io. A camada 4 tem o script pronto e testado, faltando agendar. As camadas
+> 1 e 2 continuam pendentes.
 
 **A regra que organiza tudo:** o monitor não pode viver só na máquina que ele monitora. Se
 a caixa morre, um Uptime Kuma rodando nela morre junto e não avisa ninguém. Por isso a
@@ -318,9 +388,20 @@ O que precisa de olho, porque cresce sozinho e ninguém percebe até parar:
 | Logs | limitados no compose (`10m` × 3) | já resolvido |
 
 Um cron diário comparando `df --output=pcent /` com um limiar (80%) e mandando o alerta
-pelo `NOTIFY_WEBHOOK_URL` cobre o caso — é a mesma URL que o resto do sistema já usa, sem
-serviço novo e sem RAM. Vale somar `smartd` (o disco é um SSD/HD único, sem RAID: se ele
-morrer, morre tudo) e `unattended-upgrades` para os patches de segurança.
+pelo CallMeBot cobre o caso — é o mesmo destino que o resto do sistema já usa, sem serviço
+novo e sem RAM. Vale somar `smartd` (o disco é um SSD/HD único, sem RAID: se ele morrer,
+morre tudo) e `unattended-upgrades` para os patches de segurança.
+
+✅ **O script existe e foi testado**: `/home/server/check_disk.sh`, lê `CALLMEBOT_PHONE` e
+`CALLMEBOT_APIKEY` do `.env` do projeto para não duplicar segredo, e aceita `THRESHOLD` por
+variável de ambiente (`THRESHOLD=1 ./check_disk.sh` força o disparo, que foi como se
+verificou que a mensagem chega).
+
+🔲 **Falta agendar**:
+
+```bash
+( crontab -l 2>/dev/null; echo '17 9 * * * /home/server/check_disk.sh' ) | crontab -
+```
 
 ### A entrega no WhatsApp
 

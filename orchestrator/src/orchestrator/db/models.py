@@ -52,6 +52,10 @@ class PipelineRun(Base):
     #: refino. Escolhe a voz da narração no `tts_service`. `None` só num run
     #: criado antes deste campo existir.
     narrator_gender: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: Título do vídeo no YouTube, vindo do refino. É do run e não da parte:
+    #: uma história dividida é a mesma história, e o que distingue as partes é o
+    #: rótulo "(Parte n/N)", que o poster acrescenta por saber `total_parts`.
+    youtube_title: Mapped[str | None] = mapped_column(String(200), nullable=True)
     classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     parts_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[PipelineStatus] = mapped_column(Enum(PipelineStatus), nullable=False, default=PipelineStatus.pending)
@@ -78,6 +82,11 @@ class PipelinePart(Base):
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     tiktok_video_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: ID do post no YouTube. `None` quando o canal não está conectado ou quando
+    #: o agendamento lá falhou — o run segue `scheduled` nos dois casos, porque
+    #: o YouTube é destino secundário. É esta coluna que torna a ausência
+    #: auditável depois do aviso ter passado.
+    youtube_video_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

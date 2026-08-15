@@ -1,3 +1,8 @@
+#: Teto do título do YouTube. O prompt precisa dizer o número ao modelo; quem
+#: garante o corte, se o modelo passar, é `truncate_title` no schema.
+from src.llm_service.schemas.refine import MAX_TITLE_CHARS
+
+
 #: Teto de duração de um vídeo, em minutos. A história completa vai num vídeo
 #: só; dividir é a exceção, e só acontece quando a narração não caberia aqui.
 MAX_PART_MINUTES = 30
@@ -41,6 +46,19 @@ texto que é narrado
 - Preserve o conteúdo e a essência do roteiro original — apenas melhore a apresentação.
   Não resuma, não encurte e não corte trechos para o roteiro caber em menos tempo
 
+REGRA DO TÍTULO DO YOUTUBE (campo "youtube_title", fora de "classification"):
+- O mesmo vídeo é publicado no TikTok e no YouTube. O TikTok não tem título; o \
+YouTube tem, e ele é lido ANTES de o vídeo abrir — é o que decide o clique
+- No máximo {MAX_TITLE_CHARS} caracteres, em português do Brasil
+- NÃO é o gancho copiado. O gancho é a primeira fala da narração, escrita para \
+ser ouvida; o título é escrito para ser lido numa lista de resultados, por \
+quem ainda não sabe nada da história
+- Diga o conflito da história, não o desfecho. O título entrega o suficiente \
+para dar vontade de saber como termina, e nunca como termina
+- Sem clickbait falso: o que o título promete tem que acontecer no vídeo
+- Sem CAIXA ALTA inteira, sem emoji, sem "#" e sem "(Parte 1/2)" — o número da \
+parte é acrescentado depois, automaticamente
+
 REGRAS DE CLASSIFICAÇÃO:
 - content_type: "drama" | "comédia" | "motivacional" | "educativo" | "entretenimento" | "suspense"
 - tone: "suspenseful" | "funny" | "emotional" | "educational" | "inspirational" | "shocking"
@@ -74,6 +92,7 @@ def build_user_prompt(script: str, metadata: dict) -> str:
 Retorne um JSON com esta estrutura exata:
 {{
   "hook": "a primeira frase da parte 1, literal",
+  "youtube_title": "título do vídeo no YouTube, até {MAX_TITLE_CHARS} caracteres",
   "narrator_gender": "female",
   "parts": ["texto completo da história — uma única parte, salvo o caso acima"],
   "classification": {{

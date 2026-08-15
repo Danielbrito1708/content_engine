@@ -32,5 +32,6 @@ async def refine(body: RefineRequest) -> RefineResponse:
         content_type=result.classification.content_type,
         hook_chars=len(result.hook),
         narrator_gender=result.narrator_gender,
+        title_chars=len(result.youtube_title),
     )
     return result

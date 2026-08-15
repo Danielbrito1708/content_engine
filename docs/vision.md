@@ -626,6 +626,54 @@ Card e gancho são **independentes e degradáveis**: cada etapa vira `warning` e
 
 ---
 
+## Publicação no YouTube
+
+O mesmo MP4 vai para dois destinos, pelo mesmo Buffer, no mesmo slot. O serviço continua se chamando `tiktok_poster` — o nome é histórico, e renomear tocaria o compose, o repo individual, as URLs de serviço e o deploy da máquina de produção sem mudar comportamento nenhum.
+
+### Por que pelo Buffer e não pela API do YouTube
+
+A `videos.insert` da YouTube Data API v3 é o caminho direto e não tem intermediário. Mas todo vídeo enviado por um projeto de API **não auditado** fica travado como privado, sem apelação — a única saída documentada é reenviar por um cliente auditado ou submeter o projeto à auditoria do Google. A política vale desde julho de 2020 e continua na documentação atual. Some-se a cota: `videos.insert` custa 1600 unidades das 10.000 diárias, o que dá ~6 uploads por dia.
+
+O Buffer é um cliente auditado, já estava no sistema com token, fila e backpressure funcionando, e o canal do YouTube entra na mesma organização. O custo de somar o destino virou um ID de canal e um bloco de metadata. A API direta continua sendo o caminho se um dia a auditoria for feita — ou se o Buffer se mostrar ruim com vídeo longo.
+
+### O contrato do Buffer, verificado por introspecção
+
+O que o YouTube exige e o TikTok não é o par `title` + `categoryId`, os dois **obrigatórios na criação**: sem eles o `createPost` é recusado inteiro. O bloco vai em `metadata.youtube` (`YoutubePostMetadataInput`), com `privacy` (`private`/`public`/`unlisted`), `madeForKids`, `notifySubscribers`, `embeddable`, `license` e `isAiGenerated`.
+
+O formato não foi deduzido da documentação e sim lido do schema real por introspecção GraphQL. Era a peça load-bearing da feature: errar a forma da mutation faria nada funcionar, e nenhum teste com mock pegaria isso.
+
+**A cláusula `metadata` é montada só quando há metadata**, em vez de mandar `metadata: null` sempre. O caminho do TikTok publica em produção hoje sem esse argumento; servidor GraphQL não é obrigado a tratar `null` explícito como ausente, e o destino que já funciona não pode mudar de forma para acomodar o novo.
+
+### O título é um campo novo, não o gancho reciclado
+
+O TikTok não tem título — tem legenda, que é lida por baixo de um vídeo que já está tocando. No YouTube o título é a única coisa lida **antes** de o vídeo abrir, numa lista ao lado de dezenas de outros. São textos com trabalhos distintos e momentos distintos de leitura, e reaproveitar um como o outro desperdiça exatamente o momento em que o clique se decide — o mesmo raciocínio que fez o gancho virar campo próprio em vez de continuar sendo "a primeira frase".
+
+Então `youtube_title` é campo de topo do `RefineResponse`, com prompt próprio: até 100 chars (teto da API, não escolha editorial), o conflito sem o desfecho, sem clickbait falso, sem caixa alta, sem emoji e sem rótulo de parte.
+
+**O rótulo `(Parte n/N)` é acrescentado pelo poster**, que é quem sabe `total_parts` — mesma razão pela qual o rótulo da caption saiu de `classification["parts"]` e passou a vir do request. E **o corte protege o rótulo, não o título**: numa série, saber qual parte é aquela é a informação que não pode faltar, então é o título que encolhe para caber.
+
+**O título é do run, não da parte.** Uma história dividida é a mesma história; o que distingue as partes é o rótulo.
+
+### As hashtags do YouTube são outras
+
+`#tiktokbrasil` e `#fyp` são inúteis lá: hashtag no YouTube é busca, não distribuição. Daí `[hashtags] youtube_mandatory` existir separado de `mandatory`.
+
+**`#shorts` ficou de fora de propósito.** A política de divisão permite até 30 minutos de fala num vídeo, e Short é só até 3 — a maioria das histórias não é Short. Marcar como Short um vídeo que não é engana quem clica sem mudar a distribuição. Se um dia o formato encurtar, a tag entra por config, sem código.
+
+### A falha no YouTube é degradável
+
+O post do TikTok **já foi criado** quando o YouTube é tentado. Derrubar o request nesse ponto faria o orchestrador tratar como falha um run cujo destino principal saiu — e o retry republicaria a parte no TikTok, que apareceria duas vezes lá. Então `_schedule_youtube` nunca levanta: todo desfecho ruim vira string em `youtube_error`, e o run termina `scheduled`.
+
+É a sexta degradação silenciosa do sistema, e a razão de existir é a mesma das outras cinco: o status não distingue vídeo publicado nos dois lugares de vídeo publicado em um só, então sem o aviso no WhatsApp não há aviso em lugar nenhum. `PipelinePart.youtube_video_id` torna a ausência auditável depois que o aviso passou.
+
+**`youtube_enabled` separa "desligado" de "falhou"**, e só o segundo vira aviso. Sem essa distinção, toda parte de todo run dispararia um warning enquanto o canal não estivesse conectado — e um alarme que toca sempre é um alarme que ninguém lê. Destino desligado é configuração, não degradação.
+
+### O destino é opcional por construção
+
+`BUFFER_YOUTUBE_CHANNEL_ID` vazio desliga o YouTube e o serviço segue publicando só no TikTok. Um destino secundário não pode impedir o serviço de subir, e essa é também a razão de o campo ser opcional no request (`youtube_title`) e na resposta: deploy dos serviços não é atômico, e cada lado tem de sobreviver ao outro estando velho.
+
+---
+
 ## Trigger (entrada)
 
 Duas portas de entrada, ambas terminando no mesmo `POST /pipeline`:

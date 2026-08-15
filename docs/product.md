@@ -276,6 +276,28 @@ O indicador de parte **nunca chegou a aparecer**: ele era lido de um campo que o
 
 ---
 
+## Feature 11 — O mesmo vídeo também vai para o YouTube
+
+O vídeo que é publicado no TikTok passa a ser publicado também no YouTube, no **mesmo horário**, sem trabalho a mais e sem render a mais. É o mesmo arquivo indo para dois lugares, pelo mesmo Buffer — o que muda é o canal.
+
+**Por que pelo Buffer e não direto pelo YouTube:** o YouTube tem uma API de upload própria, mas todo vídeo enviado por ela, vindo de um aplicativo que não passou pela auditoria do Google, fica **travado como privado** — e não há recurso: o vídeo precisa ser reenviado por outro caminho. Passar pela auditoria é um processo à parte, com prazo e critérios do Google. O Buffer já é um cliente auditado e já estava no sistema, então o vídeo sai público desde o primeiro dia.
+
+**O título é escrito para o YouTube, não copiado do TikTok:**
+
+No TikTok não existe título — existe só a legenda, que aparece por baixo do vídeo enquanto ele já está tocando. No YouTube o título é a única coisa que a pessoa lê **antes** de o vídeo abrir, numa lista ao lado de dezenas de outros. São textos com trabalhos diferentes, e reaproveitar um como o outro desperdiça o momento que mais decide o clique.
+
+Então o refinamento passou a escrever um título próprio: até 100 caracteres, dizendo o conflito da história sem entregar o desfecho, sem caixa alta, sem emoji e sem prometer o que o vídeo não cumpre. Quando a história foi dividida, o "(Parte 2/3)" é acrescentado automaticamente — e se o título ficar comprido demais para caber com o rótulo, **quem encolhe é o título**, porque numa série saber qual parte é aquela é o que não pode faltar.
+
+**As hashtags são outras:** `#tiktokbrasil` e `#fyp` não significam nada no YouTube, onde hashtag é busca e não distribuição. O YouTube tem sua própria lista de obrigatórias. `#shorts` ficou de fora de propósito: as histórias podem passar de três minutos, que é o limite de um Short, e marcar como Short um vídeo que não é engana quem clica sem trazer alcance nenhum.
+
+**O vídeo é declarado como tendo narração gerada por IA**, que é o que ele é.
+
+**Se o YouTube falhar, o vídeo não é perdido.** O TikTok é o destino principal e sai primeiro; se o agendamento no YouTube der errado depois disso, a produção continua normalmente e você recebe um aviso no WhatsApp dizendo qual parte não subiu e por quê. O contrário — deixar a falha do YouTube derrubar tudo — faria a tentativa seguinte republicar a mesma história no TikTok, que apareceria duas vezes lá.
+
+**Enquanto o canal não estiver conectado**, nada muda: o sistema publica só no TikTok e não reclama. Destino desligado é uma escolha de configuração, não um problema — e um aviso que dispara em todo vídeo é um aviso que ninguém lê.
+
+---
+
 ## Feature 7 — Acompanhamento do pipeline
 
 Em qualquer momento, é possível consultar o estado de um pipeline em andamento. O sistema expõe o status em tempo real, desde que o roteiro foi submetido até a publicação no TikTok.
@@ -482,9 +504,9 @@ Os silêncios do áudio são removidos
          ↓
 O áudio é montado num vídeo com legenda e trilha sonora
          ↓
-O vídeo é agendado no TikTok (partes de uma série, 30 min uma da outra)
+O vídeo é agendado no TikTok e no YouTube, no mesmo horário
          ↓
-O TikTok publica automaticamente no horário certo
+Os dois publicam automaticamente no horário certo
 ```
 
 Do roteiro à publicação, sem intervenção manual.

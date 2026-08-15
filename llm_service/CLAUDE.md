@@ -31,6 +31,7 @@ Serviço de refinamento e classificação de roteiros via LLM. Expõe `POST /ref
 - `parts` (list[str]) — partes do roteiro refinado (1 ou mais)
 - `hook` (str) — a frase gancho, isolada. **Sempre preenchida** (ver abaixo)
 - `narrator_gender` (str) — `male` / `female` / `unknown`. Quem narra, não o público (ver abaixo)
+- `youtube_title` (str) — título do vídeo no YouTube, até 100 chars. **Sempre preenchido** (ver abaixo)
 - `classification.content_type` — drama / comédia / motivacional / educativo / entretenimento / suspense
 - `classification.tone` — suspenseful / funny / emotional / educational / inspirational / shocking
 - `classification.target_audience` — `{age_range, gender, interests}`
@@ -74,6 +75,24 @@ O gancho era só uma regra de escrita no prompt; virou campo porque o orchestrad
 **O campo nunca volta vazio quando há roteiro.** O prompt pede o `hook` copiado literal da primeira frase da parte 1, mas o contrato não pode depender de o modelo obedecer — daí o fallback. Fim de frase = pontuação terminal (`. ! ? …` + aspas/parênteses de fechamento) **seguida de espaço**; exigir o espaço é o que impede `R$ 3.5 mil` de virar fim de frase.
 
 O gancho **não** é removido de `parts[0]` — o campo é uma cópia identificada, não um recorte. Quem monta o vídeo usa o áudio da parte; o áudio do gancho é artefato à parte.
+
+### Título do YouTube (`youtube_title`)
+
+Campo de topo do `RefineResponse`, ao lado do `hook`. Existe porque o mesmo vídeo passou a ser publicado também no YouTube, e lá o post tem **título obrigatório** — o Buffer recusa a criação sem ele. O TikTok não tem título, só legenda, então até aqui o refino não produzia nenhum.
+
+**Não é o gancho reaproveitado.** Os dois textos são lidos em momentos diferentes: o gancho é a primeira coisa **ouvida** depois que o vídeo abre, escrito para prender quem já está assistindo; o título é a única coisa **lida** antes de o vídeo abrir, por quem ainda não sabe nada da história e está decidindo se clica. O prompt proíbe explicitamente copiar o gancho.
+
+**API pública** (`schemas/refine.py`):
+- `MAX_TITLE_CHARS = 100` — teto rígido da API do YouTube, não escolha editorial
+- `truncate_title(text) -> str` — normaliza espaço, corta na última palavra inteira e limpa pontuação pendurada (`,;:-–—`) para o título não terminar no meio de uma enumeração
+- `derive_youtube_title(hook, parts) -> str` — fallback: o gancho truncado
+- `RefineResponse._fill_youtube_title` — validator `mode="after"`
+
+⚠️ **`_fill_youtube_title` é definido DEPOIS de `_fill_hook`.** Validators `mode="after"` rodam na ordem de definição, e o fallback do título é o gancho — inverter os dois derivaria o título de um gancho ainda vazio. Coberto por teste.
+
+**Nunca volta vazio quando há roteiro**, pela mesma razão do `hook`: um modelo que ignora o campo novo não pode produzir vídeo sem título, porque sem título não há post.
+
+O prompt também proíbe `(Parte 1/2)` no título — o rótulo de parte é acrescentado pelo `tiktok_poster`, que é quem sabe quantas partes a história tem.
 
 ### Gênero do narrador (`narrator_gender`)
 
@@ -152,7 +171,7 @@ Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`). `ge
 
 ## Testes
 
-87 testes: `tests/test_refine.py` (11), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_split_policy.py` (8 — teto de 30 min e as cláusulas do prompt), `tests/test_narrator.py` (24 — o gênero de quem narra), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
+108 testes: `tests/test_refine.py` (11), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_split_policy.py` (8 — teto de 30 min e as cláusulas do prompt), `tests/test_narrator.py` (24 — o gênero de quem narra), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo), `tests/test_youtube_title.py` (18 — corte em 100 chars, fallback pelo gancho, a ordem dos validators e as cláusulas do prompt). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
 
 ```bash
 poetry run pytest

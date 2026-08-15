@@ -14,6 +14,9 @@ class RefineResult:
     #: Gênero de quem narra a história — escolhe a voz. `"unknown"` também é o
     #: que se lê de um `llm_service` antigo, e cai na voz padrão do `tts_service`.
     narrator_gender: str = "unknown"
+    #: Título do vídeo no YouTube. Vazio quando o `llm_service` do outro lado
+    #: ainda não devolve o campo — o poster cai no CTA nesse caso.
+    youtube_title: str = ""
 
 
 class LLMClient:
@@ -33,4 +36,5 @@ class LLMClient:
             classification=data["classification"],
             hook=(data.get("hook") or "").strip(),
             narrator_gender=(data.get("narrator_gender") or "unknown").strip().lower(),
+            youtube_title=(data.get("youtube_title") or "").strip(),
         )

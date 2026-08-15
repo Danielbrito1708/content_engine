@@ -35,6 +35,11 @@ class TikTokEnvSettings(BaseModel):
     buffer_access_token: str
     buffer_profile_id: str
     buffer_org_id: str | None
+    #: Canal do YouTube no mesmo Buffer. **Opcional de propósito**: vazio
+    #: desliga a publicação no YouTube e o serviço segue postando só no TikTok.
+    #: Sem isso, subir esta versão antes de conectar o canal derrubaria o
+    #: serviço inteiro por causa de um destino secundário.
+    buffer_youtube_channel_id: str
     minio_endpoint: str
     minio_access_key: str
     minio_secret_key: str
@@ -52,6 +57,7 @@ class TikTokEnvSettings(BaseModel):
             "buffer_access_token": os.environ["BUFFER_ACCESS_TOKEN"],
             "buffer_profile_id": os.environ["BUFFER_PROFILE_ID"],
             "buffer_org_id": os.environ.get("BUFFER_ORG_ID"),
+            "buffer_youtube_channel_id": os.environ.get("BUFFER_YOUTUBE_CHANNEL_ID", ""),
             "minio_endpoint": os.environ["MINIO_ENDPOINT"],
             "minio_access_key": os.environ["MINIO_ACCESS_KEY"],
             "minio_secret_key": os.environ["MINIO_SECRET_KEY"],

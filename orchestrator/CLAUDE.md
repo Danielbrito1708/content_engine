@@ -15,7 +15,7 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `clients/llm.py` — `LLMClient.refine(script, metadata) → RefineResult`
 - `clients/tts.py` — `TTSClient.generate(text, run_id, part_number=1, rate=None, label=None, narrator_gender=None) → (audio_key, srt_key)`
 - `clients/blender.py` — `BlenderClient`: `create_video(...)` (inclui `card_key`/`hook_voice_key`), `create_job(...)`, `render_card(text, template, output_key)`, `get_template_config(...)`, `get_job_status(...)`, `poll_job(...)`
-- `clients/tiktok.py` — `TikTokClient.schedule(video_key, classification, part_number, series_id, total_parts=1, follows_at=None)` + exceção `BufferQueueFull`
+- `clients/tiktok.py` — `TikTokClient.schedule(video_key, classification, part_number, series_id, total_parts=1, follows_at=None, youtube_title=None)` + exceção `BufferQueueFull`
 - `clients/http.py` — `request(method, url, *, timeout, attempts)`: política única de retry
 - `backgrounds.py` — `pick_background(keys, run_id, part_number)`, puro
 - `hook_text.py` — `opens_with_hook(script, hook) -> bool`, puro: se a parte já abre pela frase gancho
@@ -102,6 +102,23 @@ O `llm_service` devolve `narrator_gender` (`male` / `female` / `unknown`) — o 
 `LLMClient.refine` lê `data.get("narrator_gender")` com fallback `"unknown"`, como faz com o `hook` — um `llm_service` antigo produz run sem gênero, não erro.
 
 - Testes: `tests/test_narrator_voice.py` (10 — persistência no refino, fallback e normalização, o campo chegando ao TTS no gancho e nas partes, a omissão quando não há gênero, a garantia de que nenhum nome de voz sai daqui, o pipeline inteiro com um valor só, e o campo na API).
+
+### Publicação no YouTube (`youtube_title` + `youtube_video_id`)
+
+O mesmo vídeo passou a ser publicado também no YouTube, pelo mesmo Buffer. **O orchestrador não conhece o YouTube**: ele guarda o título que o refino escreveu, manda no `POST /schedule` e lê de volta o que o poster conseguiu fazer. Quem fala com a API é o `tiktok_poster`.
+
+- `PipelineRun.youtube_title` (migration `006`, exposto em `PipelineResponse`) — vindo de `RefineResult.youtube_title`. **É do run, não da parte**: uma história dividida é a mesma história, e o que distingue as partes é o rótulo `(Parte n/N)`, que o poster acrescenta por saber `total_parts`.
+- `PipelinePart.youtube_video_id` (migration `006`, exposto em `PartResponse`) — `None` quando o destino está desligado ou quando o agendamento lá falhou. É esta coluna que torna a ausência auditável depois de o aviso ter passado.
+
+`LLMClient.refine` lê `data.get("youtube_title")` com fallback `""`, como faz com o `hook` — um `llm_service` antigo produz run sem título, não erro. `_schedule` **omite** o campo do payload quando vazio (não manda `null`), mesmo contrato do `narrator_gender` no `tts_service`.
+
+⚠️ **Requer a migration `006` aplicada.** O `CMD` do Dockerfile roda `alembic upgrade head` no boot, então subir com `--build` basta; fora do Docker é manual.
+
+⚠️ **Sexta degradação silenciosa.** Falha no YouTube não derruba o run: o TikTok já está agendado, e o run termina `scheduled` publicando nos dois lugares ou em um só — o status não distingue os dois casos. Daí o `warning` em `_schedule`.
+
+⚠️ **O aviso é condicionado a `youtube_enabled`**, que vem na resposta do poster. Destino desligado não é degradação, é configuração: sem essa guarda, toda parte de todo run dispararia um aviso enquanto o canal não estivesse conectado, e um alarme que toca sempre é um alarme que ninguém lê.
+
+- Testes: `tests/test_youtube_destination.py` (12 — o título persistido no refino, a omissão do campo, o mesmo título em toda a série, o ID de volta, o poster antigo sem os campos novos, e o aviso disparando na falha e **não** disparando no destino desligado).
 
 ### Velocidade da narração (`_narration_rate`)
 
@@ -203,12 +220,13 @@ Avisa no WhatsApp o que o pipeline está fazendo, evento a evento. Arquivo **id�
 | 🎞️ Render iniciado / 🎬 Vídeo renderizado | debug / info | `_run_render` |
 | 📋 Agendando / 📅 Publicação agendada / 🚀 Run concluído | debug / info / info | `_schedule` |
 | ⏸️ Fila do Buffer cheia | info | `_schedule` (`BufferQueueFull`) |
+| ⚠️ Parte não agendada no YouTube | warning | `_schedule` (só com o destino ligado) |
 | ▶️ Runs destravados | info | `maintenance_loop` |
 | 🔧 Runs órfãos reconciliados | warning | `recover_interrupted_runs` |
 | ⚠️ Degradações silenciosas | warning | ver abaixo |
 | ❌ Falhas | error | `run_pipeline`, `_schedule_in_background`, `retry_pending_schedules`, `maintenance_loop` |
 
-**As cinco degradações `warning` são o motivo principal disto existir**: gancho não narrado (`_run_hook_tts`), card não composto (`_render_card`), template ilegível (`_narration_rate`), biblioteca de fundos vazia (`background_key_for`) e parte sem `video_key` (`_schedule`). Em todas o vídeo publica e o run termina `scheduled` — o status não distingue vídeo íntegro de vídeo capado, então sem o aviso aqui não há aviso em lugar nenhum.
+**As seis degradações `warning` são o motivo principal disto existir**: gancho não narrado (`_run_hook_tts`), card não composto (`_render_card`), template ilegível (`_narration_rate`), biblioteca de fundos vazia (`background_key_for`), parte sem `video_key` (`_schedule`) e parte não agendada no YouTube (`_schedule`, só quando o destino estava ligado). Em todas o vídeo publica e o run termina `scheduled` — o status não distingue vídeo íntegro de vídeo capado, então sem o aviso aqui não há aviso em lugar nenhum.
 
 ⚠️ **O estágio da falha é lido antes de `run.status = failed`.** Depois da atribuição todo run falha "em `failed`", e o estágio é a única pista da mensagem sobre onde procurar.
 
@@ -239,4 +257,4 @@ docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE orchestrato
 alembic upgrade head && python -m pytest -q
 ```
 
-131 testes em 11 arquivos: `test_pipeline.py` (6, API layer), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (11 — inclui a regressão do `greenlet_spawn`: um run que falha não pode abortar os seguintes da mesma varredura), `test_backgrounds.py` (6) e `test_http.py` (5).
+143 testes em 12 arquivos: `test_pipeline.py` (6, API layer), `test_youtube_destination.py` (12 — o segundo destino de publicação), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (11 — inclui a regressão do `greenlet_spawn`: um run que falha não pode abortar os seguintes da mesma varredura), `test_backgrounds.py` (6) e `test_http.py` (5).

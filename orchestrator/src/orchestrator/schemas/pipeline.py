@@ -20,6 +20,7 @@ class PartResponse(BaseModel):
     scheduled_at: datetime | None
     posted_at: datetime | None
     tiktok_video_id: str | None
+    youtube_video_id: str | None
     error: str | None
 
     model_config = {"from_attributes": True}
@@ -34,6 +35,7 @@ class PipelineResponse(BaseModel):
     hook_srt_key: str | None
     card_key: str | None
     narrator_gender: str | None
+    youtube_title: str | None
     classification: dict | None
     error: str | None
     parts: list[PartResponse]

@@ -8,9 +8,17 @@ _BASE = "https://api.buffer.com"
 
 
 class BufferClient:
-    def __init__(self):
+    """Cliente de **um** canal do Buffer.
+
+    O canal é argumento e não mais uma leitura direta do settings porque o mesmo
+    vídeo passou a ir para dois destinos (TikTok e YouTube), cada um com sua
+    fila e seu ID. Sem argumento, cai no canal do TikTok — o destino que já
+    existia e que continua sendo o principal.
+    """
+
+    def __init__(self, channel_id: str | None = None):
         self._token = settings.env.buffer_access_token
-        self._channel_id = settings.env.buffer_profile_id
+        self._channel_id = channel_id or settings.env.buffer_profile_id
         self._org_id: str | None = settings.env.buffer_org_id
 
     def _headers(self) -> dict:
@@ -67,32 +75,53 @@ class BufferClient:
             posts.append({"id": node["id"], "due_at": ts})
         return posts
 
-    async def create_post(self, video_url: str, caption: str, scheduled_at: datetime) -> dict:
+    async def create_post(
+        self,
+        video_url: str,
+        caption: str,
+        scheduled_at: datetime,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Agenda o vídeo no canal deste cliente.
+
+        ``metadata`` é o bloco por rede social do Buffer (``PostInputMetaData``)
+        — para o YouTube ele carrega o título, que a API exige na criação. A
+        cláusula é **montada só quando há metadata** em vez de mandar `null`:
+        o caminho do TikTok publica em produção hoje sem esse argumento, e
+        servidor GraphQL não é obrigado a tratar `null` explícito como ausente.
+        """
+        variables: dict = {
+            "channelId": self._channel_id,
+            "text": caption,
+            "dueAt": scheduled_at.isoformat(),
+            "videoUrl": video_url,
+        }
+        signature = "$channelId: ChannelId!, $text: String!, $dueAt: DateTime!, $videoUrl: String!"
+        metadata_field = ""
+        if metadata:
+            variables["metadata"] = metadata
+            signature += ", $metadata: PostInputMetaData"
+            metadata_field = "metadata: $metadata,"
+
         data = await self._graphql(
-            """
-            mutation CreatePost(
-                $channelId: ChannelId!, $text: String!, $dueAt: DateTime!, $videoUrl: String!
-            ) {
-                createPost(input: {
+            f"""
+            mutation CreatePost({signature}) {{
+                createPost(input: {{
                     channelId: $channelId,
                     text: $text,
                     schedulingType: automatic,
                     mode: customScheduled,
                     dueAt: $dueAt,
-                    assets: { video: { url: $videoUrl } }
-                }) {
+                    {metadata_field}
+                    assets: {{ video: {{ url: $videoUrl }} }}
+                }}) {{
                     __typename
-                    ... on PostActionSuccess { post { id dueAt } }
-                    ... on MutationError { message }
-                }
-            }
+                    ... on PostActionSuccess {{ post {{ id dueAt }} }}
+                    ... on MutationError {{ message }}
+                }}
+            }}
             """,
-            {
-                "channelId": self._channel_id,
-                "text": caption,
-                "dueAt": scheduled_at.isoformat(),
-                "videoUrl": video_url,
-            },
+            variables,
         )
         errors = data.get("errors")
         if errors:
