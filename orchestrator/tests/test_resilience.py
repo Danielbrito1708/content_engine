@@ -67,6 +67,38 @@ async def test_queue_full_parks_the_run_instead_of_failing_it(session):
 
 
 @respx.mock
+async def test_queue_full_discovered_at_creation_also_parks_the_run(session):
+    """O teto que só aparece na recusa do Buffer é a mesma pausa, não uma falha.
+
+    O poster passou a traduzir essa recusa no mesmo `429`, com a mensagem crua
+    em `rejected_by_buffer`. Antes ela chegava aqui como 500, o run virava
+    `failed` e a varredura — que só olha `scheduling` — nunca mais o encostava.
+    """
+    run = await _make_run(session)
+    await _make_part(session, run.id, video_key="outputs/abc.mp4")
+    respx.post("http://tiktok_poster:8000/schedule").mock(
+        return_value=Response(
+            429,
+            json={
+                "detail": {
+                    "error": "buffer_queue_full",
+                    "message": "cheia",
+                    "pending_count": 9,
+                    "rejected_by_buffer": "You have reached the limit of 10 posts",
+                }
+            },
+        )
+    )
+
+    scheduled = await _schedule(session, run)
+
+    await session.refresh(run)
+    assert scheduled is False
+    assert run.status == PipelineStatus.scheduling
+    assert run.error is None
+
+
+@respx.mock
 async def test_parked_run_counts_as_active_capacity(session):
     """``scheduling`` is one of the states the scout reads as occupied — that is
     the backpressure link: ingestion stops on its own while Buffer is full."""

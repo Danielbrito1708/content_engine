@@ -1,14 +1,28 @@
 # Every service carries these. The stack is meant to run unattended on one
 # machine, and without them two things happen on their own: a container that
 # crashes (or a host that reboots) stays down until somebody notices, and the
-# json-file log grows without bound until it takes the disk with it.
+# log grows without bound until it takes the disk with it.
+#
+# ⚠️ O driver é `journald`, e não o `json-file` de antes, por um motivo medido:
+# o log do `json-file` vive **dentro do container** e some quando ele é
+# recriado. Em 15/08/2026 dois runs falharam com 500 do `tiktok_poster`, e o
+# rebuild feito para investigar apagou exatamente o traceback que explicaria a
+# falha. Log que não sobrevive ao deploy não serve para diagnosticar o que
+# motivou o deploy. No journal ele sobrevive ao recreate e ao reboot (a máquina
+# tem `/var/log/journal`), e a retenção passa a ser a do journald
+# (`SystemMaxUse`, default de 10% do disco) em vez do `max-size`/`max-file`.
+#
+#   journalctl CONTAINER_NAME=content_engine-tiktok_poster-1 --since "1 hour ago"
+#
+# ⚠️ **Só funciona em host Linux com systemd.** É o servidor, que é o ambiente
+# de produção. Num Docker Desktop (Windows/Mac) o `up` recusa este driver: lá,
+# sobrepor com `json-file` num `docker-compose.override.yml` local.
 x-runtime: &runtime
   restart: unless-stopped
   logging:
-    driver: json-file
+    driver: journald
     options:
-      max-size: "10m"
-      max-file: "3"
+      tag: "{{.Name}}"
 
 services:
   # ── Infrastructure ──────────────────────────────────────────────

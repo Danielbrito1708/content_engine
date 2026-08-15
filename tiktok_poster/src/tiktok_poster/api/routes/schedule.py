@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from structlog import get_logger
 
 from src.core import settings
-from src.tiktok_poster.buffer.client import BufferClient
+from src.tiktok_poster.buffer.client import BufferClient, BufferRejected
 from src.tiktok_poster.buffer.scheduler import continuation_slot, next_available_slot
 from src.tiktok_poster.hashtags.selector import compose_caption, select_hashtags
 from src.tiktok_poster.schemas.schedule import ScheduleRequest, ScheduleResponse
@@ -25,6 +25,47 @@ def _load_hashtag_config() -> dict:
 
 def _split_csv(raw: str) -> list[str]:
     return [t.strip() for t in str(raw).split(",") if t.strip()]
+
+
+#: Marcadores de teto na mensagem de recusa do Buffer. A API não devolve código
+#: de erro para isso — só texto —, então a lista é heurística e proposital:
+#: errar para o lado de "fila cheia" custa uma espera, errar para o outro lado
+#: custa o run inteiro.
+_QUEUE_LIMIT_MARKERS = ("limit", "queue is full", "too many", "maximum", "plan")
+
+
+def _looks_like_queue_limit(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _QUEUE_LIMIT_MARKERS)
+
+
+def _queue_full(pending_count: int | None, queue_limit: int, reason: str | None = None) -> HTTPException:
+    """O `429` que o orchestrador lê como backpressure, num lugar só."""
+    return HTTPException(
+        status_code=429,
+        detail={
+            "error": "buffer_queue_full",
+            "message": f"Buffer queue has reached the {queue_limit}-post limit. Retry later.",
+            "pending_count": pending_count,
+            # Presente só quando o teto veio da recusa do Buffer, não da
+            # contagem local: é a diferença entre "sabíamos antes de tentar" e
+            # "descobrimos ao tentar", e é o que se lê no log do orchestrador.
+            "rejected_by_buffer": reason,
+        },
+    )
+
+
+async def _pending_count(buffer: BufferClient) -> int | None:
+    """Quantos posts pendentes o Buffer diz ter **agora**, ou `None` se não deu.
+
+    Roda no caminho de erro, para decidir se a recusa foi teto de fila. Não pode
+    levantar: a exceção original é que interessa, e uma segunda falha aqui não
+    pode substituí-la.
+    """
+    try:
+        return len(await buffer.get_pending_posts())
+    except Exception:  # noqa: BLE001 — segunda chance, não segunda falha
+        return None
 
 
 def _youtube_channel_id() -> str:
@@ -133,14 +174,7 @@ async def schedule(body: ScheduleRequest) -> ScheduleResponse:
     else:
         slot = next_available_slot(pending, posts_per_day, preferred_times, queue_limit)
     if slot is None:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "buffer_queue_full",
-                "message": f"Buffer queue has reached the {queue_limit}-post limit. Retry later.",
-                "pending_count": len(pending),
-            },
-        )
+        raise _queue_full(len(pending), queue_limit)
 
     hashtag_data = _load_hashtag_config()
     pool: list[str] = hashtag_data.get("pool", [])
@@ -154,7 +188,29 @@ async def schedule(body: ScheduleRequest) -> ScheduleResponse:
     bucket = cfg.storage.bucket
     video_url = await generate_presigned_url(bucket, body.video_key, ttl)
 
-    data = await buffer.create_post(video_url, caption, slot)
+    # A pré-checagem acima já barrou a fila cheia que **dava para saber**. Esta
+    # cláusula é para o teto que só aparece na recusa: a contagem local filtra
+    # `status: [scheduled]` de um canal, e o teto do Buffer não é obrigado a
+    # contar do mesmo jeito. Sem isto, esse caso vira 500, o orchestrador marca
+    # o run `failed` e a varredura de retry — que só olha `scheduling` — nunca
+    # mais o encosta: um vídeo pronto, perdido porque a fila estava cheia num
+    # minuto. Aconteceu com dois runs em 15/08/2026.
+    try:
+        data = await buffer.create_post(video_url, caption, slot)
+    except BufferRejected as exc:
+        pending_now = await _pending_count(buffer)
+        at_limit = pending_now is not None and pending_now >= queue_limit
+        log.warning(
+            "buffer rejected create_post",
+            series_id=body.series_id,
+            part=body.part_number,
+            reason=exc.message,
+            pending_now=pending_now,
+            queue_limit=queue_limit,
+        )
+        if at_limit or _looks_like_queue_limit(exc.message):
+            raise _queue_full(pending_now, queue_limit, reason=exc.message) from exc
+        raise
 
     update_id: str = str(data.get("updates", [{}])[0].get("id", ""))
 

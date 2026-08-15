@@ -209,6 +209,24 @@ ssh server@192.168.0.106 "cd ~/content_engine && git pull && docker compose up -
 
 ⚠️ O `--build` não é opcional — ver o aviso sobre `up -d` sem `--build` no `CLAUDE.md`.
 
+### Os logs ficam no journal, não dentro do container
+
+Desde 15/08/2026 o compose usa o driver `journald`. O motivo foi medido: o `json-file` guarda o log **dentro do container**, e `up -d --build` recria o container e apaga tudo. Dois runs falharam naquele dia com 500 do `tiktok_poster`, e o rebuild feito para investigar destruiu justamente o traceback que explicaria a falha — log que não sobrevive ao deploy não serve para diagnosticar o que motivou o deploy.
+
+```bash
+# Um serviço, com o log de antes do último rebuild
+journalctl CONTAINER_NAME=content_engine-tiktok_poster-1 --since "2 hours ago" --no-pager
+
+# A stack inteira, seguindo ao vivo
+journalctl -f CONTAINER_NAME=content_engine-orchestrator-1
+```
+
+`docker compose logs` continua funcionando, mas só mostra o container atual. Para olhar antes de um rebuild, é o `journalctl`.
+
+O journal desta máquina é **persistente** (`/var/log/journal` existe), então também sobrevive a reboot. A retenção passa a ser a do journald (`SystemMaxUse`, default de 10% do disco — hoje 16 MB usados de 208 GB), no lugar do `max-size`/`max-file` que o `json-file` tinha.
+
+⚠️ **O driver só existe em host Linux com systemd.** Num Docker Desktop (a máquina Windows) o `up` recusa; lá, sobrepor com `json-file` num `docker-compose.override.yml` local.
+
 ### O que falta na máquina
 
 - **Reserva de DHCP** no roteador, amarrando `84:7b:eb:ff:77:8d` ao `.106`. Ficou mais

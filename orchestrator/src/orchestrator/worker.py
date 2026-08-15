@@ -441,6 +441,7 @@ async def _schedule(session, run: PipelineRun) -> bool:
                 run_id=str(run.id),
                 part=part.part_number,
                 pending=exc.pending_count,
+                rejected_by_buffer=exc.rejected_by_buffer,
             )
             notify(
                 "Fila do Buffer cheia — run esperando vaga",
@@ -448,6 +449,10 @@ async def _schedule(session, run: PipelineRun) -> bool:
                 run=short_id(run.id),
                 parte=part.part_number,
                 na_fila=exc.pending_count,
+                # Só quando o teto veio da recusa do Buffer: nesse caminho a
+                # contagem local não vê o problema, e sem a mensagem o aviso
+                # ficaria idêntico ao da fila cheia comum.
+                recusa=exc.rejected_by_buffer,
             )
             return False
 

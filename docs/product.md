@@ -446,6 +446,10 @@ Agora a história fica **esperando vaga**, com os vídeos prontos guardados. De 
 
 Isso também resolveu um desequilíbrio silencioso: a busca de roteiros trazia até dois por hora, enquanto a publicação dá conta de três por dia. Como uma história esperando vaga conta como trabalho em andamento, a busca agora se segura sozinha enquanto a fila está cheia, em vez de produzir vídeos que morreriam na última etapa.
 
+**Faltava um caso, e ele apareceu na prática.** O sistema conferia a fila antes de tentar publicar, mas nem sempre a conta dele e a do serviço de agendamento batem — e às vezes a recusa por fila cheia só vem na hora de criar o post. Nesse caminho a história voltava a ser marcada como falha, do jeito antigo, e dessa vez sem volta: nem a tentativa automática a resgatava. Em 15 de agosto de 2026 duas histórias terminaram assim, com o vídeo pronto e guardado, sem nunca serem publicadas.
+
+Agora tanto faz onde a fila cheia é descoberta: nos dois casos a história espera vaga e é retomada sozinha. Uma recusa que **não** seja fila cheia continua sendo tratada como erro de verdade — o que espera para sempre também nunca é publicado, e um problema real precisa aparecer em vez de virar espera silenciosa.
+
 ## Nada mais fica preso depois de um reinício
 
 Se a máquina reiniciasse no meio de uma produção, a história ficava **presa para sempre** no estado "em andamento". Ninguém percebia — e como o sistema conta as histórias em andamento para decidir se busca mais roteiro, bastavam cinco presas para a busca parar de vez, em silêncio.

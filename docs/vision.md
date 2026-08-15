@@ -93,6 +93,12 @@ Isso fecha o elo de backpressure que faltava. O scout conta `scheduling` como ca
 
 `_schedule()` é idempotente: parte com `scheduled_at` preenchido é pulada, então re-oferecer um run nunca republica o que já tem vaga. `retry_pending_schedules()`, no `maintenance_loop`, drena os runs parados a cada `[pipeline] retry_interval_seconds` (900s).
 
+**O teto do Buffer também aparece tarde demais para a contagem enxergar.** O poster pergunta quantos posts há na fila antes de tentar, mas essa pergunta filtra `status: [scheduled]` de um canal, e o teto do Buffer não é obrigado a contar do mesmo jeito. Quando a recusa vem só na criação do post, o desfecho é o mesmo — não há vaga —, e por isso ela é traduzida no **mesmo `429`**, com a mensagem crua do Buffer em `detail.rejected_by_buffer`.
+
+A regra que separa os dois casos: vira espera se a mensagem citar teto **ou** se uma segunda contagem, feita já no caminho de erro, mostrar a fila no limite. Qualquer outra recusa continua sendo erro de verdade. A assimetria é deliberada e vem do custo de cada engano: tratar um erro real como espera cria um run reoferecido a cada 15 minutos para sempre, que é ruim; tratar uma espera como erro **perde o vídeo**, porque `failed` é definitivo e a varredura de retry só olha `scheduling`. Errar para o lado da espera custa tempo; para o outro lado, custa o trabalho inteiro.
+
+Não é hipótese: em 15/08/2026 dois runs morreram exatamente assim, com o vídeo renderizado no bucket e nenhum caminho automático de volta.
+
 ### Recuperação de runs órfãos no boot
 
 O pipeline roda em `BackgroundTasks` do FastAPI, que morre com o processo. Um run interrompido no meio ficava `processing` para sempre, e como o scout lê esse estado como capacidade ocupada, **cinco runs órfãos paravam a ingestão em definitivo** — em silêncio.

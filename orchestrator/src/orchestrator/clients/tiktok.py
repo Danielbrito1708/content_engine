@@ -15,8 +15,13 @@ class BufferQueueFull(Exception):
     queue happened to be full at that minute.
     """
 
-    def __init__(self, pending_count: int | None = None):
+    def __init__(self, pending_count: int | None = None, rejected_by_buffer: str | None = None):
         self.pending_count = pending_count
+        #: Mensagem da recusa, quando o teto só apareceu ao tentar criar o post
+        #: em vez de na contagem do poster. `None` no caso comum. Separa "a fila
+        #: já estava cheia" de "o Buffer disse que estava" — dois caminhos com o
+        #: mesmo desfecho e diagnósticos diferentes.
+        self.rejected_by_buffer = rejected_by_buffer
         super().__init__(f"buffer queue full (pending={pending_count})")
 
 
@@ -68,15 +73,18 @@ class TikTokClient:
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
-                raise BufferQueueFull(_pending_count(exc.response)) from exc
+                pending, reason = _queue_full_detail(exc.response)
+                raise BufferQueueFull(pending, reason) from exc
             raise
         return resp.json()
 
 
-def _pending_count(response: httpx.Response) -> int | None:
-    """Best-effort read of the poster's ``pending_count``; it is only a log detail."""
+def _queue_full_detail(response: httpx.Response) -> tuple[int | None, str | None]:
+    """Best-effort read do `detail` do poster; é só detalhe de log."""
     try:
         detail = response.json().get("detail")
     except Exception:  # noqa: BLE001 — a malformed body must not mask the queue-full signal
-        return None
-    return detail.get("pending_count") if isinstance(detail, dict) else None
+        return None, None
+    if not isinstance(detail, dict):
+        return None, None
+    return detail.get("pending_count"), detail.get("rejected_by_buffer")

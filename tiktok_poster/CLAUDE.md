@@ -8,7 +8,7 @@ Serviço de agendamento e publicação de vídeos via Buffer. Recebe `POST /sche
 
 - `api/routes/schedule.py` — endpoint principal; `_schedule_youtube()` é o segundo destino
 - `api/routes/health.py` — `GET /health`, verifica conexão com Buffer
-- `buffer/client.py` — `BufferClient(channel_id=None)`: `get_pending_posts()`, `create_post()`, `verify_connection()`
+- `buffer/client.py` — `BufferClient(channel_id=None)`: `get_pending_posts()`, `create_post()`, `verify_connection()`; exceção `BufferRejected`
 - `buffer/scheduler.py` — `next_available_slot()`: calcula próximo horário livre respeitando limite de fila
 - `storage/client.py` — `generate_presigned_url()`: gera URL pré-assinada do MinIO/R2 para o Buffer baixar o vídeo
 - `hashtags/selector.py` — `select_hashtags()` + `compose_caption()`
@@ -38,7 +38,13 @@ Serviço de agendamento e publicação de vídeos via Buffer. Recebe `POST /sche
 - `youtube_error` (str | None) — por que não saiu no YouTube
 - `youtube_enabled` (bool) — se o destino estava ligado
 
-Erros: `429` com `{ error: "buffer_queue_full", pending_count }` se a fila do Buffer atingir o limite configurado.
+Erros: `429` com `{ error: "buffer_queue_full", pending_count, rejected_by_buffer }` se a fila do Buffer atingir o limite configurado.
+
+⚠️ **O `429` cobre dois caminhos, e o segundo custou dois runs.** O primeiro é a pré-checagem: `next_available_slot` não acha vaga e nada é tentado. O segundo é o teto que **só aparece na recusa** do `createPost` — a contagem local filtra `status: [scheduled]` de um canal, e o teto do Buffer não é obrigado a contar do mesmo jeito. Esse caso levantava `RuntimeError` → 500, e um 500 faz o orchestrador marcar o run `failed` **para sempre**, fora do alcance da varredura de retry, que só olha `scheduling`. Aconteceu com dois runs em 15/08/2026, com o vídeo já renderizado.
+
+Agora `create_post` levanta `BufferRejected` (tipo próprio, filho de `RuntimeError`) e a rota decide: vira `429` se a mensagem citar teto (`_looks_like_queue_limit`) **ou** se uma segunda contagem, feita no caminho de erro, mostrar a fila no limite. A mensagem crua sobe em `rejected_by_buffer` — é o que distingue os dois caminhos no log do orchestrador.
+
+**Recusa que não é teto continua sendo 500, de propósito.** Traduzir *toda* recusa em backpressure trocaria um erro visível por um loop silencioso: um run em `scheduling` é reoferecido a cada 15 minutos para sempre. A heurística erra para o lado da espera, que custa tempo, e não para o lado da perda, que custa o vídeo.
 
 ### Scheduler de slots (`src/tiktok_poster/buffer/scheduler.py`)
 
@@ -123,7 +129,7 @@ O bucket deve ser o mesmo configurado nos demais serviços (`blender-jobs`).
 
 ## Testes
 
-60 testes em 4 arquivos: `test_hashtags.py`, `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim e o rótulo de parte) e `test_youtube.py` (26 — mapa de categorias, título com rótulo protegido, metadata, os dois destinos no mesmo slot, a mutation com e sem `metadata`, e cada caminho de degradação). Buffer e MinIO são sempre mockados.
+65 testes em 5 arquivos: `test_queue_backpressure.py` (5 — a recusa do Buffer que é teto vira pausa, a que não é continua erro, e a recontagem que falha não mascara a recusa), `test_hashtags.py`, `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim e o rótulo de parte) e `test_youtube.py` (26 — mapa de categorias, título com rótulo protegido, metadata, os dois destinos no mesmo slot, a mutation com e sem `metadata`, e cada caminho de degradação). Buffer e MinIO são sempre mockados.
 
 ⚠️ O destino do YouTube é ligado nos testes pelo fixture `youtube_on`, que troca `_youtube_channel_id`. A função existe para ser essa costura: `settings.env` é um modelo congelado e não aceita `monkeypatch.setattr`.
 

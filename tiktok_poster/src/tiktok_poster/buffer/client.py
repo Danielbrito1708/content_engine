@@ -7,6 +7,20 @@ from src.core import settings
 _BASE = "https://api.buffer.com"
 
 
+class BufferRejected(RuntimeError):
+    """O Buffer recusou a criação do post, e disse por quê.
+
+    Tipo próprio — e não o `RuntimeError` de antes — porque quem chama precisa
+    distinguir "o Buffer disse não" de qualquer outra exceção do caminho. Só
+    esta pode ser fila cheia disfarçada, e fila cheia é pausa, não falha.
+    Herda de `RuntimeError` para não quebrar quem só captura o tipo antigo.
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(f"Buffer createPost rejected: {message}")
+
+
 class BufferClient:
     """Cliente de **um** canal do Buffer.
 
@@ -125,10 +139,10 @@ class BufferClient:
         )
         errors = data.get("errors")
         if errors:
-            raise RuntimeError(f"Buffer createPost failed: {errors[0].get('message')}")
+            raise BufferRejected(str(errors[0].get("message")))
         result = data.get("data", {}).get("createPost") or {}
         if result.get("__typename") == "MutationError" or result.get("message"):
-            raise RuntimeError(f"Buffer createPost rejected: {result.get('message')}")
+            raise BufferRejected(str(result.get("message")))
         post_id = result.get("post", {}).get("id", "")
         if not post_id:
             raise RuntimeError(f"Buffer createPost returned no post id: {data}")
