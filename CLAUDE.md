@@ -146,14 +146,20 @@ em ~12min42s por parte. Ver `docs/servidor.md` → "O que roda na máquina".
 
 ### Passos pendentes de deploy (YouTube, 15/08/2026)
 
-O código está pronto e **desligado por padrão** — sem os passos abaixo a stack publica só
-no TikTok, exatamente como antes, sem erro e sem aviso.
+✅ **O destino está ligado em produção desde 15/08/2026** — passos 1 a 3 aplicados no
+servidor. Sobra o passo 4, que só o primeiro post responde. Em qualquer outro ambiente os
+três primeiros continuam valendo, e sem eles a stack publica só no TikTok, exatamente como
+antes, sem erro e sem aviso.
 
-1. Conectar o canal do YouTube na conta do Buffer (`vozes.do.reddit7`) e pegar o ID do canal.
-2. `BUFFER_YOUTUBE_CHANNEL_ID=<id>` no `.env` do servidor.
-3. Subir `orchestrator` e `tiktok_poster` com `--build` — a **migration `006`** roda no boot
-   pelo `CMD` do Dockerfile; sem ela todo run morre no refino com `UndefinedColumn`.
-4. Conferir no primeiro post se o Buffer aceita vídeo **acima de 3 minutos** no canal do
+1. ✅ Canal conectado na conta do Buffer (`vozes.do.reddit7`) — `6a80966db2d9d5774382d6d4`,
+   confirmado pela API do Buffer **com o token do servidor**. O `.env` da máquina Windows
+   está numa conta antiga do Buffer e responde `FORBIDDEN` para esse ID: verificação de
+   canal só vale rodada de onde o token é o dono.
+2. ✅ `BUFFER_YOUTUBE_CHANNEL_ID` no `.env` do servidor.
+3. ✅ `orchestrator` e `tiktok_poster` no ar com `--build`; a **migration `006`** rodou no
+   boot pelo `CMD` do Dockerfile (`Running upgrade 005 -> 006`). Sem ela todo run morre no
+   refino com `UndefinedColumn`.
+4. ⏳ Conferir no primeiro post se o Buffer aceita vídeo **acima de 3 minutos** no canal do
    YouTube. É o único ponto não verificável sem publicar: o canal é do tipo Shorts e a
    política de divisão permite até 30 minutos de fala.
 
