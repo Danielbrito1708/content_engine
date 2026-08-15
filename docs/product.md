@@ -450,6 +450,14 @@ Isso também resolveu um desequilíbrio silencioso: a busca de roteiros trazia a
 
 Agora tanto faz onde a fila cheia é descoberta: nos dois casos a história espera vaga e é retomada sozinha. Uma recusa que **não** seja fila cheia continua sendo tratada como erro de verdade — o que espera para sempre também nunca é publicado, e um problema real precisa aparecer em vez de virar espera silenciosa.
 
+## O serviço de agendamento tem uma cota diária
+
+O plano do serviço de agendamento permite **250 pedidos por dia**. Passou disso, ele recusa tudo até virar a janela — o que pode levar horas. Era isso que estava acontecendo em 15 de agosto de 2026, e o sistema tratava a recusa como defeito: a história era marcada como falha e o vídeo pronto ficava para trás.
+
+Agora ela **espera**, como já esperava quando a fila estava cheia, e o aviso no WhatsApp diz qual dos dois é o caso e em quanto tempo libera ("8h33"). São problemas diferentes: fila cheia se resolve quando um vídeo publica, cota se resolve com o tempo passando — e saber qual é o seu evita procurar no lugar errado.
+
+Há um efeito colateral que vale conhecer: **esperar também consome cota**. Cada história parada pergunta de tempos em tempos se já pode publicar, e cada pergunta conta. Uma história esperando o dia inteiro chega a consumir quase a cota do dia só perguntando.
+
 ## Nada mais fica preso depois de um reinício
 
 Se a máquina reiniciasse no meio de uma produção, a história ficava **presa para sempre** no estado "em andamento". Ninguém percebia — e como o sistema conta as histórias em andamento para decidir se busca mais roteiro, bastavam cinco presas para a busca parar de vez, em silêncio.

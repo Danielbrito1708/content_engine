@@ -437,14 +437,22 @@ async def _schedule(session, run: PipelineRun) -> bool:
             # own while the queue is full, instead of feeding it renders that die
             # at the very last step after everything has already been paid for.
             log.info(
-                "buffer queue full, run waiting for a slot",
+                "buffer unavailable, run waiting",
                 run_id=str(run.id),
                 part=part.part_number,
+                error=exc.error,
                 pending=exc.pending_count,
                 rejected_by_buffer=exc.rejected_by_buffer,
+                retry_after=exc.retry_after,
             )
+            # Cota estourada e fila cheia param o run do mesmo jeito, mas se
+            # resolvem em lugares opostos: uma espera a janela virar, a outra
+            # espera um post publicar. Um aviso só para as duas mandaria olhar
+            # o lugar errado na metade das vezes.
             notify(
-                "Fila do Buffer cheia — run esperando vaga",
+                "Cota da API do Buffer estourada — run esperando"
+                if exc.is_rate_limit
+                else "Fila do Buffer cheia — run esperando vaga",
                 icon="⏸️",
                 run=short_id(run.id),
                 parte=part.part_number,
@@ -453,6 +461,7 @@ async def _schedule(session, run: PipelineRun) -> bool:
                 # contagem local não vê o problema, e sem a mensagem o aviso
                 # ficaria idêntico ao da fila cheia comum.
                 recusa=exc.rejected_by_buffer,
+                libera_em=_humanize_seconds(exc.retry_after),
             )
             return False
 
@@ -516,6 +525,18 @@ async def _schedule(session, run: PipelineRun) -> bool:
     # todos os `/health` continuam respondendo 200.
     await ping("produced")
     return True
+
+
+def _humanize_seconds(seconds: int | None) -> str | None:
+    """``30837`` → ``"8h34"``. `None` some do aviso em vez de virar campo vazio.
+
+    Segundos crus não dizem nada num alerta de celular: a diferença entre
+    esperar meia hora e esperar meio dia é a diferença entre esperar e ir olhar.
+    """
+    if not seconds or seconds < 0:
+        return None
+    minutes, hours = (seconds // 60) % 60, seconds // 3600
+    return f"{hours}h{minutes:02d}" if hours else f"{minutes}min"
 
 
 def _when(moment: datetime | None) -> str | None:

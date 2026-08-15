@@ -44,6 +44,23 @@ Erros: `429` com `{ error: "buffer_queue_full", pending_count, rejected_by_buffe
 
 Agora `create_post` levanta `BufferRejected` (tipo próprio, filho de `RuntimeError`) e a rota decide: vira `429` se a mensagem citar teto (`_looks_like_queue_limit`) **ou** se uma segunda contagem, feita no caminho de erro, mostrar a fila no limite. A mensagem crua sobe em `rejected_by_buffer` — é o que distingue os dois caminhos no log do orchestrador.
 
+### A cota da API do Buffer (`BufferRateLimited`)
+
+⚠️ **O plano tem 250 chamadas por dia** (e 100 a cada 15 min). Os headers da resposta dizem o estado: `ratelimit: "250-in-1day"; r=0; t=30837` e `retry-after`. Estourado, **toda** chamada volta `429` até a janela virar — no caso do teto diário, horas depois.
+
+`_graphql` traduz esse `429` em `BufferRateLimited` **antes** do `raise_for_status`, e a rota o devolve como `429 { error: "buffer_rate_limited", retry_after }`. Sem isso ele subia como `HTTPStatusError` → 500 → run `failed` para sempre. É a explicação mais provável dos dois runs perdidos em 15/08/2026: a cota do dia tinha zerado.
+
+**Quanto custa cada coisa**, para dimensionar contra as 250:
+
+| Operação | Chamadas |
+|---|---|
+| `POST /schedule` (com YouTube) | 3 — fila + post no TikTok + post no YouTube |
+| `POST /schedule` **sem** `BUFFER_ORG_ID` | 4 — o `_get_org_id` cobra uma a mais **por request** |
+| `GET /health` | 1 — `verify_connection` fala com a API a cada chamada |
+| Varredura de retry do orchestrador, por run parado | 1–2 a cada 15 min = **96–192 por dia** |
+
+⚠️ **A última linha é a que morde**: um único run esperando vaga consome quase a cota diária inteira só tentando de novo. `BUFFER_ORG_ID` preenchido corta uma chamada de cada request, e é a economia mais barata que existe aqui.
+
 **Recusa que não é teto continua sendo 500, de propósito.** Traduzir *toda* recusa em backpressure trocaria um erro visível por um loop silencioso: um run em `scheduling` é reoferecido a cada 15 minutos para sempre. A heurística erra para o lado da espera, que custa tempo, e não para o lado da perda, que custa o vídeo.
 
 ### Scheduler de slots (`src/tiktok_poster/buffer/scheduler.py`)
@@ -129,7 +146,7 @@ O bucket deve ser o mesmo configurado nos demais serviços (`blender-jobs`).
 
 ## Testes
 
-65 testes em 5 arquivos: `test_queue_backpressure.py` (5 — a recusa do Buffer que é teto vira pausa, a que não é continua erro, e a recontagem que falha não mascara a recusa), `test_hashtags.py`, `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim e o rótulo de parte) e `test_youtube.py` (26 — mapa de categorias, título com rótulo protegido, metadata, os dois destinos no mesmo slot, a mutation com e sem `metadata`, e cada caminho de degradação). Buffer e MinIO são sempre mockados.
+69 testes em 5 arquivos: `test_queue_backpressure.py` (9 — a recusa do Buffer que é teto vira pausa, a que não é continua erro, a recontagem que falha não mascara a recusa, e a cota estourada virando espera na contagem e na criação), `test_hashtags.py`, `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim e o rótulo de parte) e `test_youtube.py` (26 — mapa de categorias, título com rótulo protegido, metadata, os dois destinos no mesmo slot, a mutation com e sem `metadata`, e cada caminho de degradação). Buffer e MinIO são sempre mockados.
 
 ⚠️ O destino do YouTube é ligado nos testes pelo fixture `youtube_on`, que troca `_youtube_channel_id`. A função existe para ser essa costura: `settings.env` é um modelo congelado e não aceita `monkeypatch.setattr`.
 

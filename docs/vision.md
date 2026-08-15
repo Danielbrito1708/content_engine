@@ -99,6 +99,14 @@ A regra que separa os dois casos: vira espera se a mensagem citar teto **ou** se
 
 Não é hipótese: em 15/08/2026 dois runs morreram exatamente assim, com o vídeo renderizado no bucket e nenhum caminho automático de volta.
 
+### A cota da API do Buffer é um recurso escasso, e a espera consome ela
+
+O plano dá **250 chamadas por dia** (e 100 a cada 15 minutos). Estourado o teto, a API responde `429` a tudo — e isso não é fila cheia: é a mesma chamada que passaria daqui a algumas horas. Por isso vira o mesmo `429 buffer_rate_limited` para o orchestrador, que já lê `429` como espera. Antes subia como erro HTTP genérico e virava 500, ou seja, run perdido por uma condição que se resolve sozinha.
+
+O que torna isso estrutural, e não um detalhe de plano: **esperar custa cota**. Um run parado é reoferecido a cada 15 minutos, e cada tentativa gasta 1 a 2 chamadas — 96 a 192 por dia, por run. Um único run esperando vaga consome quase a cota inteira só perguntando se já pode. O backpressure, que existe para não desperdiçar trabalho, gasta o recurso de que precisa para sair da espera.
+
+As três saídas, da mais barata para a mais cara: preencher `BUFFER_ORG_ID` (corta uma chamada de **todo** request, porque sem ele o cliente descobre a organização toda vez); espaçar `[pipeline] retry_interval_seconds`, hoje em 900s; e respeitar o `retry_after` que a API manda, pulando as varreduras até a janela reabrir — a única que resolve de verdade, porque não gasta nada enquanto não há chance de sucesso.
+
 ### Recuperação de runs órfãos no boot
 
 O pipeline roda em `BackgroundTasks` do FastAPI, que morre com o processo. Um run interrompido no meio ficava `processing` para sempre, e como o scout lê esse estado como capacidade ocupada, **cinco runs órfãos paravam a ingestão em definitivo** — em silêncio.

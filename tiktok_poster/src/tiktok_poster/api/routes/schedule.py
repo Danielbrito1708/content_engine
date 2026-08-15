@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from structlog import get_logger
 
 from src.core import settings
-from src.tiktok_poster.buffer.client import BufferClient, BufferRejected
+from src.tiktok_poster.buffer.client import BufferClient, BufferRateLimited, BufferRejected
 from src.tiktok_poster.buffer.scheduler import continuation_slot, next_available_slot
 from src.tiktok_poster.hashtags.selector import compose_caption, select_hashtags
 from src.tiktok_poster.schemas.schedule import ScheduleRequest, ScheduleResponse
@@ -37,6 +37,24 @@ _QUEUE_LIMIT_MARKERS = ("limit", "queue is full", "too many", "maximum", "plan")
 def _looks_like_queue_limit(message: str) -> bool:
     lowered = message.lower()
     return any(marker in lowered for marker in _QUEUE_LIMIT_MARKERS)
+
+
+def _rate_limited(exc: BufferRateLimited) -> HTTPException:
+    """Cota da API estourada — mesmo `429` da fila cheia, motivo diferente.
+
+    O status é o mesmo de propósito: o orchestrador já lê `429` como "não é
+    falha, o run espera e é reoferecido". O que muda é o `error`, para o aviso
+    dizer a verdade — fila cheia se resolve publicando, cota se resolve
+    esperando a janela virar, e confundir as duas manda procurar no lugar errado.
+    """
+    return HTTPException(
+        status_code=429,
+        detail={
+            "error": "buffer_rate_limited",
+            "message": str(exc),
+            "retry_after": exc.retry_after,
+        },
+    )
 
 
 def _queue_full(pending_count: int | None, queue_limit: int, reason: str | None = None) -> HTTPException:
@@ -168,7 +186,12 @@ async def schedule(body: ScheduleRequest) -> ScheduleResponse:
     # O slot sai da fila do TikTok e vale para os dois destinos: é o TikTok que
     # dita o ritmo de publicação, e a mesma história em dois lugares no mesmo
     # horário é uma decisão de ritmo só.
-    pending = await buffer.get_pending_posts()
+    try:
+        pending = await buffer.get_pending_posts()
+    except BufferRateLimited as exc:
+        log.warning("buffer rate limited", series_id=body.series_id, part=body.part_number,
+                    retry_after=exc.retry_after)
+        raise _rate_limited(exc) from exc
     if body.follows_at is not None:
         slot = continuation_slot(body.follows_at, gap_minutes, pending, queue_limit)
     else:
@@ -197,6 +220,10 @@ async def schedule(body: ScheduleRequest) -> ScheduleResponse:
     # minuto. Aconteceu com dois runs em 15/08/2026.
     try:
         data = await buffer.create_post(video_url, caption, slot)
+    except BufferRateLimited as exc:
+        log.warning("buffer rate limited on create", series_id=body.series_id,
+                    part=body.part_number, retry_after=exc.retry_after)
+        raise _rate_limited(exc) from exc
     except BufferRejected as exc:
         pending_now = await _pending_count(buffer)
         at_limit = pending_now is not None and pending_now >= queue_limit

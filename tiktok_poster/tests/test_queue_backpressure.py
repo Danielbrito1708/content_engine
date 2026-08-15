@@ -11,9 +11,11 @@ O que estes testes fixam é a fronteira: recusa que é teto vira pausa, recusa q
 """
 
 import pytest
+import respx
+from httpx import Response
 from unittest.mock import AsyncMock, patch
 
-from src.tiktok_poster.buffer.client import BufferRejected
+from src.tiktok_poster.buffer.client import BufferClient, BufferRateLimited, BufferRejected
 from tests.conftest import BUFFER_CREATE_RESPONSE, SAMPLE_REQUEST
 
 #: Fila abaixo do teto (10): a pré-checagem passa e o post chega a ser tentado.
@@ -107,6 +109,86 @@ async def test_failed_recount_does_not_mask_the_rejection(client):
         )
         with pytest.raises(BufferRejected):
             await client.post("/schedule", json=SAMPLE_REQUEST)
+
+
+async def test_rate_limit_on_counting_becomes_backpressure(client):
+    """Cota estourada na **primeira** chamada — nem chega a tentar publicar.
+
+    O teto diário do plano é 250 chamadas, e um agendamento custa ~4. Quando ele
+    estoura, o `429` da API subia como `HTTPStatusError` → 500 → run `failed`.
+    """
+    with (
+        patch("src.tiktok_poster.api.routes.schedule.BufferClient") as mock_buf,
+        patch("src.tiktok_poster.api.routes.schedule.generate_presigned_url",
+              new_callable=AsyncMock, return_value="https://r2.example.com/video.mp4"),
+    ):
+        mock_buf.return_value.get_pending_posts = AsyncMock(
+            side_effect=BufferRateLimited(30837, '"250-in-1day"; r=0')
+        )
+        resp = await client.post("/schedule", json=SAMPLE_REQUEST)
+
+    assert resp.status_code == 429
+    detail = resp.json()["detail"]
+    assert detail["error"] == "buffer_rate_limited"
+    assert detail["retry_after"] == 30837
+
+
+async def test_rate_limit_on_creating_becomes_backpressure(client):
+    """Cota estourada **entre** a contagem e a criação: mesma espera."""
+    with (
+        patch("src.tiktok_poster.api.routes.schedule.BufferClient") as mock_buf,
+        patch("src.tiktok_poster.api.routes.schedule.generate_presigned_url",
+              new_callable=AsyncMock, return_value="https://r2.example.com/video.mp4"),
+    ):
+        _mock_buffer(
+            mock_buf,
+            pending=[ROOMY_QUEUE],
+            create=BufferRateLimited(90, '"100-in-15min"; r=0'),
+        )
+        resp = await client.post("/schedule", json=SAMPLE_REQUEST)
+
+    assert resp.status_code == 429
+    assert resp.json()["detail"]["error"] == "buffer_rate_limited"
+
+
+def test_rate_limit_is_read_from_the_response_headers():
+    """`retry-after` e os tetos saem dos headers da resposta, não de adivinhação."""
+    from src.tiktok_poster.buffer.client import _rate_limit_detail, _retry_after
+
+    resp = Response(429, headers=[
+        ("retry-after", "30837"),
+        ("ratelimit", '"100-in-15min"; r=87; t=477'),
+        ("ratelimit", '"250-in-1day"; r=0; t=30837'),
+    ])
+    assert _retry_after(resp) == 30837
+    detail = _rate_limit_detail(resp)
+    assert "250-in-1day" in detail and "100-in-15min" in detail
+    # Header ausente ou em formato de data não pode derrubar o caminho de erro.
+    assert _retry_after(Response(429)) is None
+    assert _retry_after(Response(429, headers={"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"})) is None
+
+
+@respx.mock
+async def test_client_turns_the_apis_429_into_the_rate_limit_type():
+    """A costura que faltava: `429` da API vira tipo próprio, não `HTTPStatusError`.
+
+    Era aqui que o `raise_for_status` transformava cota estourada em 500. Os
+    testes acima mockam o cliente; este exercita o cliente de verdade contra uma
+    resposta de verdade.
+    """
+    respx.post("https://api.buffer.com").mock(
+        return_value=Response(
+            429,
+            headers=[("retry-after", "30837"), ("ratelimit", '"250-in-1day"; r=0; t=30837')],
+            json={"errors": [{"message": "Too many requests from this client."}]},
+        )
+    )
+
+    with pytest.raises(BufferRateLimited) as caught:
+        await BufferClient(channel_id="ch_1").get_pending_posts()
+
+    assert caught.value.retry_after == 30837
+    assert "250-in-1day" in str(caught.value)
 
 
 async def test_happy_path_queries_the_queue_once(client):

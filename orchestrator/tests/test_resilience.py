@@ -99,6 +99,46 @@ async def test_queue_full_discovered_at_creation_also_parks_the_run(session):
 
 
 @respx.mock
+async def test_rate_limited_run_parks_and_keeps_the_reason(session):
+    """Cota da API estourada é espera, e a exceção diz **qual** espera é.
+
+    Fila cheia abre publicando; cota abre na virada da janela. O `error` e o
+    `retry_after` chegam até o aviso porque mandam procurar em lugares opostos.
+    """
+    run = await _make_run(session)
+    await _make_part(session, run.id, video_key="outputs/abc.mp4")
+    respx.post("http://tiktok_poster:8000/schedule").mock(
+        return_value=Response(
+            429,
+            json={
+                "detail": {
+                    "error": "buffer_rate_limited",
+                    "message": "buffer rate limit",
+                    "retry_after": 30837,
+                }
+            },
+        )
+    )
+
+    scheduled = await _schedule(session, run)
+
+    await session.refresh(run)
+    assert scheduled is False
+    assert run.status == PipelineStatus.scheduling
+    assert run.error is None
+
+
+def test_humanized_wait_says_hours_not_seconds():
+    """`30837` num alerta de celular não diz nada; `8h33` diz para não esperar."""
+    from src.orchestrator.worker import _humanize_seconds
+
+    assert _humanize_seconds(30837) == "8h33"
+    assert _humanize_seconds(900) == "15min"
+    assert _humanize_seconds(None) is None
+    assert _humanize_seconds(0) is None
+
+
+@respx.mock
 async def test_parked_run_counts_as_active_capacity(session):
     """``scheduling`` is one of the states the scout reads as occupied — that is
     the backpressure link: ingestion stops on its own while Buffer is full."""

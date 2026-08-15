@@ -7,6 +7,19 @@ from src.core import settings
 _BASE = "https://api.buffer.com"
 
 
+def _retry_after(resp: httpx.Response) -> int | None:
+    raw = resp.headers.get("retry-after")
+    try:
+        return int(raw) if raw is not None else None
+    except ValueError:  # data HTTP em vez de segundos; o valor é só informativo
+        return None
+
+
+def _rate_limit_detail(resp: httpx.Response) -> str:
+    """Os tetos como a API os relata, para o log dizer **qual** deles estourou."""
+    return "; ".join(resp.headers.get_list("ratelimit")) or resp.headers.get("ratelimit", "")
+
+
 class BufferRejected(RuntimeError):
     """O Buffer recusou a criação do post, e disse por quê.
 
@@ -19,6 +32,21 @@ class BufferRejected(RuntimeError):
     def __init__(self, message: str):
         self.message = message
         super().__init__(f"Buffer createPost rejected: {message}")
+
+
+class BufferRateLimited(RuntimeError):
+    """A API do Buffer recusou por cota, não por conteúdo.
+
+    Cota é espera, nunca falha: a mesma chamada passa depois. O plano tem dois
+    tetos — 100 a cada 15 min e **250 por dia** —, e o diário é o que aperta:
+    um agendamento custa ~4 chamadas, e a varredura de retry roda a cada 15 min.
+    """
+
+    def __init__(self, retry_after: int | None = None, detail: str = ""):
+        #: Segundos até a janela reabrir, do header `retry-after`. Pode ser
+        #: horas quando o teto estourado é o diário.
+        self.retry_after = retry_after
+        super().__init__(f"buffer rate limit (retry_after={retry_after}s) {detail}".strip())
 
 
 class BufferClient:
@@ -48,6 +76,13 @@ class BufferClient:
                 headers=self._headers(),
                 json={"query": query, "variables": variables or {}},
             )
+            # O 429 da API sai daqui como tipo próprio, antes do
+            # `raise_for_status`. Como `HTTPStatusError` genérico ele virava 500
+            # na rota, e 500 faz o orchestrador marcar o run `failed` para
+            # sempre — cota estourada matava trabalho pronto por uma condição
+            # que se resolve sozinha na virada da janela.
+            if resp.status_code == 429:
+                raise BufferRateLimited(_retry_after(resp), _rate_limit_detail(resp))
             resp.raise_for_status()
         return resp.json()
 

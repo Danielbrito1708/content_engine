@@ -7,22 +7,41 @@ from src.orchestrator.clients.http import request
 
 
 class BufferQueueFull(Exception):
-    """The poster has no slot: Buffer's queue is at its limit.
+    """O poster não tem como agendar agora, e isso passa sozinho.
 
     Deliberately not a failure. Nothing is wrong with the run — its videos are
     rendered and waiting — so the worker leaves it in ``scheduling`` and retries
     later instead of burning an hour of LLM, speech and render work because the
     queue happened to be full at that minute.
+
+    **Cobre duas esperas diferentes**, e é o `error` que as separa:
+    `buffer_queue_full` (a fila do canal está no teto — abre publicando) e
+    `buffer_rate_limited` (a cota da API do Buffer estourou — abre na virada da
+    janela). O desfecho aqui é o mesmo, mas mandam procurar em lugares opostos.
     """
 
-    def __init__(self, pending_count: int | None = None, rejected_by_buffer: str | None = None):
+    def __init__(
+        self,
+        pending_count: int | None = None,
+        rejected_by_buffer: str | None = None,
+        error: str = "buffer_queue_full",
+        retry_after: int | None = None,
+    ):
         self.pending_count = pending_count
         #: Mensagem da recusa, quando o teto só apareceu ao tentar criar o post
         #: em vez de na contagem do poster. `None` no caso comum. Separa "a fila
         #: já estava cheia" de "o Buffer disse que estava" — dois caminhos com o
         #: mesmo desfecho e diagnósticos diferentes.
         self.rejected_by_buffer = rejected_by_buffer
-        super().__init__(f"buffer queue full (pending={pending_count})")
+        self.error = error
+        #: Segundos até a cota reabrir. Só no `buffer_rate_limited`, e pode ser
+        #: horas: o teto diário do plano é 250 chamadas.
+        self.retry_after = retry_after
+        super().__init__(f"{error} (pending={pending_count}, retry_after={retry_after})")
+
+    @property
+    def is_rate_limit(self) -> bool:
+        return self.error == "buffer_rate_limited"
 
 
 class TikTokClient:
@@ -73,18 +92,26 @@ class TikTokClient:
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
-                pending, reason = _queue_full_detail(exc.response)
-                raise BufferQueueFull(pending, reason) from exc
+                raise _queue_full_from(exc.response) from exc
             raise
         return resp.json()
 
 
-def _queue_full_detail(response: httpx.Response) -> tuple[int | None, str | None]:
-    """Best-effort read do `detail` do poster; é só detalhe de log."""
+def _queue_full_from(response: httpx.Response) -> BufferQueueFull:
+    """Monta a exceção a partir do `detail` do poster; leitura best-effort.
+
+    Um corpo malformado não pode mascarar o sinal: o que importa é o `429`, e
+    todo o resto é detalhe de log.
+    """
     try:
         detail = response.json().get("detail")
     except Exception:  # noqa: BLE001 — a malformed body must not mask the queue-full signal
-        return None, None
+        detail = None
     if not isinstance(detail, dict):
-        return None, None
-    return detail.get("pending_count"), detail.get("rejected_by_buffer")
+        return BufferQueueFull()
+    return BufferQueueFull(
+        pending_count=detail.get("pending_count"),
+        rejected_by_buffer=detail.get("rejected_by_buffer"),
+        error=detail.get("error") or "buffer_queue_full",
+        retry_after=detail.get("retry_after"),
+    )
