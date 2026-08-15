@@ -102,6 +102,42 @@ async def test_retry_pass_drains_a_parked_run_once_the_queue_opens(session):
 
 
 @respx.mock
+async def test_a_failing_run_does_not_abort_the_rest_of_the_sweep(session):
+    """Regressão: um run que falha não pode levar junto os que vêm depois.
+
+    O tratamento de erro faz `rollback`, e o rollback expira todos os objetos da
+    sessão. Enquanto a varredura segurava os runs como instâncias ORM, a
+    iteração seguinte tocava um objeto expirado e morria com
+    `greenlet_spawn has not been called` — recarga síncrona dentro do contexto
+    async. Na prática, a primeira falha cancelava todos os pendentes e o log
+    culpava um erro sem relação com a causa.
+    """
+    run_a = await _make_run(session, status=PipelineStatus.scheduling)
+    await _make_part(session, run_a.id, video_key="outputs/a.mp4")
+    run_b = await _make_run(session, status=PipelineStatus.scheduling)
+    await _make_part(session, run_b.id, video_key="outputs/b.mp4")
+
+    # 400 e não 500: 4xx nunca é repetido pelo cliente, então a falha chega ao
+    # laço na primeira tentativa e o teste não paga o backoff.
+    respx.post("http://tiktok_poster:8000/schedule").mock(
+        side_effect=[
+            Response(400, json={"detail": "canal inválido"}),
+            Response(200, json={"scheduled_at": "2026-06-01T08:00:00Z",
+                                "buffer_update_id": "buf_b"}),
+        ]
+    )
+
+    drained = await retry_pending_schedules()
+
+    await session.refresh(run_a)
+    await session.refresh(run_b)
+    statuses = [run_a.status, run_b.status]
+    assert drained == 1, "o segundo run tem de ser agendado apesar da falha do primeiro"
+    assert statuses.count(PipelineStatus.scheduled) == 1
+    assert statuses.count(PipelineStatus.scheduling) == 1
+
+
+@respx.mock
 async def test_schedule_never_reposts_a_part_that_is_already_booked(session):
     """The retry pass calls this repeatedly; a part with a slot must not be
     offered twice, or the same video is published twice."""

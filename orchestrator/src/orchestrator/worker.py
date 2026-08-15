@@ -560,20 +560,31 @@ async def retry_pending_schedules() -> int:
     drained = 0
 
     async with AsyncSessionLocal() as session:
+        #: Só os ids, e cada run é buscado dentro do laço. O `rollback` do
+        #: tratamento de erro expira **todos** os objetos da sessão, não só o
+        #: que falhou: segurar os runs seguintes como instâncias ORM fazia a
+        #: iteração seguinte tocar um objeto expirado, o SQLAlchemy tentar
+        #: recarregá-lo de forma síncrona dentro do contexto async, e a
+        #: varredura inteira morrer com `greenlet_spawn has not been called` —
+        #: erro que não tem relação nenhuma com a falha original. Um run que
+        #: falha não pode levar junto os que ainda nem foram tentados.
         result = await session.execute(
-            select(PipelineRun).where(PipelineRun.status == PipelineStatus.scheduling)
+            select(PipelineRun.id).where(PipelineRun.status == PipelineStatus.scheduling)
         )
-        for run in list(result.scalars().all()):
+        for run_id in list(result.scalars().all()):
+            run = await session.get(PipelineRun, run_id)
+            if run is None:  # apagado entre a listagem e agora
+                continue
             try:
                 if await _schedule(session, run):
                     drained += 1
             except Exception as exc:  # noqa: BLE001 — one stuck run must not end the sweep
-                log.error("retry schedule failed", run_id=str(run.id), error=str(exc))
+                log.error("retry schedule failed", run_id=str(run_id), error=str(exc))
                 notify(
                     "Retomada de agendamento falhou",
                     level="error",
                     icon="❌",
-                    run=short_id(run.id),
+                    run=short_id(run_id),
                     erro=str(exc)[:200],
                 )
                 await session.rollback()
