@@ -332,6 +332,13 @@ máquina consegue reportar a própria morte.
 Uptime Kuma (~100–150 MB) monitorando os seis endpoints `/health`. Dá granularidade: qual
 serviço, desde quando, histórico de resposta.
 
+⚠️ **Não aponte o monitor para o `/health` do `tiktok_poster` no intervalo padrão.** Aquele
+endpoint verifica a conexão com o Buffer de verdade, e **cada chamada gasta uma unidade de
+uma cota de 250 por dia**. Um check por minuto são 1440 por dia: o monitoramento sozinho
+derrubaria a publicação, e o sintoma apareceria como run falhando na última etapa, longe da
+causa. Ou intervalo de 30 min para esse serviço, ou um endpoint de saúde que não fale com a
+API externa. Ver `vision.md` → "A cota da API do Buffer é um recurso escasso".
+
 **Sem hipervisor, "separado" muda de significado.** O plano original o punha num LXC
 próprio; aqui o equivalente é um `docker compose` **próprio**, fora do projeto do
 content_engine — mesma máquina, mas ciclo de vida independente, então um `compose down`

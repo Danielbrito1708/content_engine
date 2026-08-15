@@ -456,7 +456,9 @@ O plano do serviço de agendamento permite **250 pedidos por dia**. Passou disso
 
 Agora ela **espera**, como já esperava quando a fila estava cheia, e o aviso no WhatsApp diz qual dos dois é o caso e em quanto tempo libera ("8h33"). São problemas diferentes: fila cheia se resolve quando um vídeo publica, cota se resolve com o tempo passando — e saber qual é o seu evita procurar no lugar errado.
 
-Há um efeito colateral que vale conhecer: **esperar também consome cota**. Cada história parada pergunta de tempos em tempos se já pode publicar, e cada pergunta conta. Uma história esperando o dia inteiro chega a consumir quase a cota do dia só perguntando.
+Há um efeito colateral que vale conhecer: **esperar também consome cota**. Cada história parada pergunta de tempos em tempos se já pode publicar, e cada pergunta conta. Perguntando de 15 em 15 minutos, uma história esperando o dia inteiro consumia quase a cota do dia sozinha — o sistema gastava, esperando, o que precisava para deixar de esperar.
+
+A pergunta passou a ser de hora em hora, que é o ritmo de quem espera: a fila abre três vezes por dia, então nada se atrasa mais que uma hora e o gasto cai para um quarto. Junto com isso, uma configuração que faltava (`BUFFER_ORG_ID`) tirou uma consulta extra de **cada** pedido ao serviço de agendamento.
 
 ## Nada mais fica preso depois de um reinício
 

@@ -91,7 +91,7 @@ Quando o `tiktok_poster` responde `429 buffer_queue_full`, o run **permanece** e
 
 Isso fecha o elo de backpressure que faltava. O scout conta `scheduling` como capacidade ocupada, então a ingestão se segura sozinha enquanto a fila do Buffer está cheia. Sem isso as taxas não fechavam: o scout ingere até 2 runs/hora (48/dia) e o Buffer publica 3 posts/dia — a diferença virava run falho depois do render.
 
-`_schedule()` é idempotente: parte com `scheduled_at` preenchido é pulada, então re-oferecer um run nunca republica o que já tem vaga. `retry_pending_schedules()`, no `maintenance_loop`, drena os runs parados a cada `[pipeline] retry_interval_seconds` (900s).
+`_schedule()` é idempotente: parte com `scheduled_at` preenchido é pulada, então re-oferecer um run nunca republica o que já tem vaga. `retry_pending_schedules()`, no `maintenance_loop`, drena os runs parados a cada `[pipeline] retry_interval_seconds` (3600s desde 15/08/2026 — ver a cota logo abaixo).
 
 **O teto do Buffer também aparece tarde demais para a contagem enxergar.** O poster pergunta quantos posts há na fila antes de tentar, mas essa pergunta filtra `status: [scheduled]` de um canal, e o teto do Buffer não é obrigado a contar do mesmo jeito. Quando a recusa vem só na criação do post, o desfecho é o mesmo — não há vaga —, e por isso ela é traduzida no **mesmo `429`**, com a mensagem crua do Buffer em `detail.rejected_by_buffer`.
 
@@ -103,9 +103,16 @@ Não é hipótese: em 15/08/2026 dois runs morreram exatamente assim, com o víd
 
 O plano dá **250 chamadas por dia** (e 100 a cada 15 minutos). Estourado o teto, a API responde `429` a tudo — e isso não é fila cheia: é a mesma chamada que passaria daqui a algumas horas. Por isso vira o mesmo `429 buffer_rate_limited` para o orchestrador, que já lê `429` como espera. Antes subia como erro HTTP genérico e virava 500, ou seja, run perdido por uma condição que se resolve sozinha.
 
-O que torna isso estrutural, e não um detalhe de plano: **esperar custa cota**. Um run parado é reoferecido a cada 15 minutos, e cada tentativa gasta 1 a 2 chamadas — 96 a 192 por dia, por run. Um único run esperando vaga consome quase a cota inteira só perguntando se já pode. O backpressure, que existe para não desperdiçar trabalho, gasta o recurso de que precisa para sair da espera.
+O que torna isso estrutural, e não um detalhe de plano: **esperar custa cota**. Um run parado é reoferecido de tempos em tempos, e cada tentativa gasta chamada. A 900s eram 96 por dia por run, ou 192 sem `BUFFER_ORG_ID` — quase a cota inteira gasta por um único run perguntando se já pode. O backpressure, que existe para não desperdiçar trabalho, gastava o recurso de que precisa para sair da espera.
 
-As três saídas, da mais barata para a mais cara: preencher `BUFFER_ORG_ID` (corta uma chamada de **todo** request, porque sem ele o cliente descobre a organização toda vez); espaçar `[pipeline] retry_interval_seconds`, hoje em 900s; e respeitar o `retry_after` que a API manda, pulando as varreduras até a janela reabrir — a única que resolve de verdade, porque não gasta nada enquanto não há chance de sucesso.
+Duas medidas aplicadas em 15/08/2026, as duas baratas:
+
+- **`BUFFER_ORG_ID` preenchido no `.env`.** Sem ele o cliente descobre a organização a cada request — uma chamada a mais em *todo* request, inclusive nas varreduras que não vão a lugar nenhum.
+- **`[pipeline] retry_interval_seconds` de 900 para 3600.** A varredura passa a andar no ritmo do que ela espera: a fila abre 3 vezes por dia, então de hora em hora nunca se atrasa mais de uma hora e custa 24 chamadas por run parado.
+
+Fica em aberto a que resolve de verdade: **respeitar o `retry_after`** que a API já manda na resposta, pulando as varreduras enquanto a janela está fechada. É a única que não gasta nada quando não há chance nenhuma de sucesso — hoje o `retry_after` chega até o aviso no WhatsApp, mas não muda a cadência da varredura.
+
+⚠️ **`GET /health` do poster também custa uma chamada**, porque verifica a conexão com o Buffer de verdade. Um monitor externo batendo a cada 60s são 1440 chamadas por dia contra um teto de 250 — o monitoramento derrubaria a publicação. Ver `deploy.md` → "Monitoramento" antes de apontar o Uptime Kuma para ele.
 
 ### Recuperação de runs órfãos no boot
 
