@@ -52,6 +52,14 @@ class SeenItem(Base):
     #: the same claim as a low score.
     has_hook: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     story_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Outrage potential, 0–10, and whether the model found someone plainly in the
+    #: wrong. Indignation is what the channel selects for, so these are what the
+    #: ordering actually runs on — kept raw next to ``story_score`` so the weight
+    #: between the two can be re-derived against rows that were already published.
+    #: ``NULL`` on every row written before migration 005, and on any row judged by
+    #: a model that did not answer the field.
+    outrage_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    has_villain: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     #: ``weak_storytelling`` / ``no_hook`` / ``strong`` — derived from
     #: ``story_score`` against a configurable threshold, stored so the audit trail
     #: reads without re-deriving it and so the label can be forwarded downstream.

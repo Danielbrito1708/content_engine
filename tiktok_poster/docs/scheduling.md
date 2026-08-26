@@ -13,8 +13,8 @@ Documentação do algoritmo de agendamento de slots no Buffer, composição de c
 | Parâmetro | Tipo | Origem |
 |---|---|---|
 | `pending_posts` | `list[dict]` | `BufferClient.get_pending_posts()` — posts com `due_at` em Unix timestamp |
-| `posts_per_day` | `int` | `config.ini [posting] posts_per_day` (padrão: 2) |
-| `preferred_times` | `list[str]` | `config.ini [posting] preferred_times` (padrão: `["08:00", "20:00"]`) em UTC |
+| `posts_per_day` | `int` | `config.ini [posting] posts_per_day` (hoje: 3) |
+| `preferred_times` | `list[str]` | `config.ini [posting] preferred_times` (hoje: `["14:00", "18:00", "22:00"]`) em UTC |
 | `queue_limit` | `int` | `config.ini [posting] buffer_queue_limit` (padrão: 10) |
 
 ### Lógica passo a passo
@@ -25,9 +25,32 @@ Documentação do algoritmo de agendamento de slots no Buffer, composição de c
 4. **Candidato válido:** um slot é aceito se estiver no futuro E o horário não estiver ocupado naquele dia.
 5. **Retorno:** o primeiro candidato válido encontrado como `datetime UTC`.
 
+### A janela é em horário do Brasil, o arquivo é em UTC
+
+Os horários são gravados em UTC porque é assim que o Buffer os recebe, mas a decisão é
+sobre quando o público brasileiro está acordado: **a janela de publicação é 11h–20h em
+Brasília** (UTC-3, sem horário de verão desde 2019).
+
+| `preferred_times` (UTC) | Horário de Brasília |
+|---|---|
+| `14:00` | 11:00 |
+| `18:00` | 15:00 |
+| `22:00` | 19:00 |
+
+**O último slot para às 19:00 BRT de propósito.** Uma parte 2 não disputa os
+`preferred_times`: ela pendura `series_gap_minutes` (30) depois da parte 1. Um último slot
+às 20:00 empurraria a continuação para 20:30, fora da janela — a folga de uma hora é o que
+mantém a série inteira dentro dela.
+
+Mexer nesses horários sem converter não gera erro nenhum: o vídeo só sai de madrugada. Por
+isso `tests/test_posting_window.py` lê o `config.ini` e falha se um slot sair da janela, se
+houver menos horários que `posts_per_day`, ou se a continuação do último slot passar das
+20h.
+
 ### Exemplo numérico
 
-Configuração padrão: `posts_per_day=2`, `preferred_times=["08:00", "20:00"]`, `queue_limit=10`.
+O exemplo abaixo usa `posts_per_day=2`, `preferred_times=["08:00", "20:00"]`, `queue_limit=10`
+— valores só de ilustração da varredura, não os de produção.
 
 **Cenário:** hoje é quinta-feira 07/05/2026 às 15:00 UTC. Posts pendentes:
 ```

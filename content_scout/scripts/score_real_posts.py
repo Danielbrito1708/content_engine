@@ -23,6 +23,11 @@ import httpx
 from src.content_scout.sources.reddit import RedditSource
 
 
+def _outrage(row: dict, args) -> int:
+    """Revolta não julgada vale o ponto neutro, como no ciclo."""
+    return row["outrage"] if row["outrage"] is not None else args.outrage_neutral
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--subreddits", default="desabafos,relacionamentos")
@@ -36,6 +41,18 @@ async def main() -> None:
     )
     parser.add_argument("--endpoint", default="http://localhost:8010/story-quality")
     parser.add_argument("--out", default="scored.json")
+    parser.add_argument(
+        "--outrage-weight",
+        type=int,
+        default=2,
+        help="peso da revolta na ordenação, igual ao [scout] outrage_weight",
+    )
+    parser.add_argument(
+        "--outrage-neutral",
+        type=int,
+        default=6,
+        help="nota de revolta atribuída a quem o modelo não pontuou",
+    )
     args = parser.parse_args()
 
     source = RedditSource(
@@ -71,6 +88,8 @@ async def main() -> None:
             {
                 "score": verdict["score"],
                 "hook": verdict["hook"],
+                "outrage": verdict.get("outrage"),
+                "villain": verdict.get("villain", False),
                 "hook_line": verdict.get("hook_line"),
                 "reason": verdict.get("reason"),
                 "origin": candidate.origin,
@@ -81,7 +100,9 @@ async def main() -> None:
             }
         )
 
-    out.sort(key=lambda r: -r["score"])
+    # Mesma chave que o ciclo usa para escolher — ver `rank_by_story`. Ordenar
+    # por `score` aqui mostraria uma fila diferente da que produz vídeo.
+    out.sort(key=lambda r: -(args.outrage_weight * _outrage(r, args) + r["score"]))
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(out, fh, ensure_ascii=False, indent=2)
 
@@ -91,10 +112,16 @@ async def main() -> None:
         file=sys.stderr,
     )
     print(f"hook=true: {sum(1 for r in out if r['hook'])}/{len(out)}", file=sys.stderr)
+    print(
+        f"revolta: {dict(sorted(Counter(r['outrage'] for r in out).items(), key=lambda kv: (kv[0] is None, kv[0])))}",
+        file=sys.stderr,
+    )
+    print(f"villain=true: {sum(1 for r in out if r['villain'])}/{len(out)}", file=sys.stderr)
     for row in out:
+        outrage = "--" if row["outrage"] is None else f"{row['outrage']:2d}"
         print(
-            f"  {row['score']:2d}  hook={str(row['hook']):5s}  "
-            f"{row['origin']:20s} {row['title'][:60]}",
+            f"  {row['score']:2d}  revolta={outrage}  vilao={str(row['villain']):5s}  "
+            f"hook={str(row['hook']):5s}  {row['origin']:20s} {row['title'][:60]}",
             file=sys.stderr,
         )
 

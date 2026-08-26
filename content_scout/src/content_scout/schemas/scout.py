@@ -19,6 +19,10 @@ class ScoutRunResponse(BaseModel):
     comments_fetched: int
     story_scored: int
     weak_storytelling: int
+    #: Judged candidates under ``min_outrage_score``, and those with a clear
+    #: villain. Counters only — neither one rejects anything.
+    low_outrage: int = 0
+    with_villain: int = 0
     story_quality_unavailable: bool
     #: Origin whose all-time archive was paged this cycle, ``None`` when none was
     #: due. A sweep costs one rate-limit window, so at most one runs per cycle.
@@ -60,6 +64,10 @@ class SeenItemResponse(BaseModel):
     #: an ``llm_service`` outage). Not the same as a weak story.
     has_hook: bool | None
     story_score: int | None
+    #: Outrage potential and villain flag. ``None`` = not judged, which includes
+    #: every row older than migration 005.
+    outrage_score: int | None = None
+    has_villain: bool | None = None
     #: ``weak_storytelling`` / ``no_hook`` / ``strong``. Filter on this to see what
     #: the model is rejecting before moving ``min_story_score``.
     story_tag: str | None

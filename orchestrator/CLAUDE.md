@@ -202,10 +202,14 @@ Avisa no WhatsApp o que o pipeline está fazendo, evento a evento. Arquivo **id�
 - `notify(text, *, level="info", icon="•", **fields) -> None` — **síncrono**, só enfileira. Nunca levanta, nunca bloqueia.
 - `ping(check, *, fail=False)` — dead-man's switch; destino em `HEALTHCHECK_{CHECK}_URL`, ausente = no-op.
 - `sender_loop()` — drena a fila; sobe no `lifespan`, **antes** da reconciliação (é ela que produz o primeiro aviso do boot).
-- `format_message(text, *, icon, **fields)` e `short_id(uuid)` — puros.
+- `format_message(text, *, icon, **fields)`, `short_id(uuid)`, `callmebot_accepted(body)` e `strip_html(body)` — puros.
 - `reset()` — descarta a fila; só para testes.
 
 ⚠️ **`notify()` é síncrono de propósito.** Sem `await` no ponto de chamada, um enganche não vira ponto de suspensão no meio de uma transação, e ninguém espera pela rede dentro do pipeline. Um envio leva ~1s e um run emite ~14 eventos.
+
+⚠️ **O CallMeBot responde `200` mesmo recusando** (cota esgotada, apikey inválida): o motivo vem só no corpo. `_deliver` lê o corpo e loga `notify_rejected` com o motivo — sem isso a recusa passa como entrega, que é como o monitoramento morreu em silêncio por dias em 16/08/2026. A checagem é pelo marcador de sucesso (`callmebot_accepted`), não por lista de erros conhecidos, para que um modo de recusa novo também vire aviso. Continua sendo `log.warning`, nunca `notify()` — avisar pelo canal que falhou seria circular.
+
+⚠️ **`[monitoring] webhook_format`** decide o corpo do POST: `json` manda `{"text": ...}`, `text` manda a mensagem crua (o ntfy mostra o corpo como veio; em `json` o celular receberia o literal com chaves e aspas). **O default do código é `json`** — só o `config.ini` está em `text`.
 
 ⚠️ **Sem destino configurado, é no-op** — nem enfileira. Fila que ninguém drena encheria em dev e na suíte. `_enabled()` exige `CALLMEBOT_PHONE`+`CALLMEBOT_APIKEY` **ou** `NOTIFY_WEBHOOK_URL`.
 
@@ -238,7 +242,7 @@ Avisa no WhatsApp o que o pipeline está fazendo, evento a evento. Arquivo **id�
 
 **Config** em `config.ini [monitoring]`: `enabled`, `level` (`debug` por default — tudo), `min_interval_seconds` (3; o CallMeBot recusa rajadas e um run é uma rajada). **Credenciais só por env var** — ver `.env.example`.
 
-- Testes: `tests/test_notify.py` (32 — formatação, níveis, fila cheia, a garantia de nunca levantar, entrega nos dois destinos, retry, os pings, o `sender_loop`, e os enganches: estágio da falha, `produced` no sucesso e a ausência dele com o Buffer cheio).
+- Testes: `tests/test_notify.py` (40 — formatação, níveis, fila cheia, a garantia de nunca levantar, entrega nos dois destinos, retry, os pings, o `sender_loop`, os dois formatos de corpo do webhook, a recusa com `200`, e os enganches: estágio da falha, `produced` no sucesso e a ausência dele com o Buffer cheio).
 - ⚠️ O fixture autouse `notify_off` (`conftest.py`) apaga as vars de destino: `bootstrap` chama `load_dotenv()`, então sem ele a suíte inteira dispararia WhatsApp de verdade.
 
 ### Storage (`src/orchestrator/storage/client.py`)

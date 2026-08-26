@@ -50,8 +50,8 @@ docker compose up tiktok_poster
 
 ```ini
 [posting]
-posts_per_day = 2          # máximo de posts por dia
-preferred_times = 08:00,20:00  # horários UTC preferidos
+posts_per_day = 3          # máximo de posts por dia
+preferred_times = 14:00,18:00,22:00  # horários UTC = 11h, 15h e 19h em Brasília
 presigned_url_ttl = 21600  # TTL da URL em segundos (6h)
 buffer_queue_limit = 10    # limite de posts na fila (Buffer free: 10)
 

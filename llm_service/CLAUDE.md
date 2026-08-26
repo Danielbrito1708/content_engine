@@ -119,6 +119,8 @@ O prompt pedia que **cada parte terminasse com um CTA** ("Comenta o que você fa
 
 `cta_per_part` **continua existindo como campo**: quem o consome é o `tiktok_poster` em `compose_caption()`, na legenda do post. São dois artefatos com o mesmo nome, e só um deles estava no lugar errado. O prompt agora diz isso explicitamente, e o exemplo de JSON no user prompt marca o campo como "só para a legenda".
 
+**O prompt também diz o que o CTA deve pedir.** Quando a história tem alguém claramente errado — que é o caso da maioria delas, por construção da seleção —, o CTA pede o **veredito** do espectador sobre essa pessoa ("ela tava errada de perdoar?"): tomar partido é o que faz alguém parar para escrever, e é o mesmo sinal pelo qual o `content_scout` escolheu a história. A regra proíbe xingamento e mandar odiar — a pergunta é o convite, a raiva é de quem responde. História sem vilão leva CTA normal, sobre o que se faria no lugar de quem viveu aquilo.
+
 O corte com cliffhanger não foi afetado — um corte no meio da tensão é parte da história.
 
 - Testes: `tests/test_refine.py` — dois testes de prompt, um garantindo que a regra do CTA no texto narrado não voltou, outro que o campo continua sendo pedido.
@@ -141,7 +143,7 @@ Erros: `502` se o LLM falhar ou devolver JSON sem veredito. O chamador precisa d
 `POST /story-quality` — avalia, **em lote**, se cada candidato tem gancho e se se conta bem. Chamado pelo `content_scout` uma vez por ciclo.
 
 **Request** (`StoryQualityRequest`): `items[]` com `index` (int), `opening` (str), `title` (str, opcional).
-**Response** (`StoryQualityResponse`): `results[]` com `index`, `hook` (bool), `score` (0–10), `hook_line` (str | null), `reason` (str | null).
+**Response** (`StoryQualityResponse`): `results[]` com `index`, `hook` (bool), `score` (0–10), `outrage` (0–10 | null), `villain` (bool), `hook_line` (str | null), `reason` (str | null).
 
 **Por que recebe lista e não uma história.** Ao contrário da moderação — que só roda nos 2–3 candidatos que vão ser publicados —, isto é sinal de **seleção**: precisa ver todos os candidatos do ciclo para poder ordená-los, e pontuar só a cabeça da lista seria circular. Uma chamada por candidato seriam ~30 por ciclo; uma chamada com as 30 aberturas são alguns milhares de tokens e sai mais barato que a moderação.
 
@@ -154,6 +156,19 @@ Erros: `502` se o LLM falhar ou devolver JSON sem veredito. O chamador precisa d
 ⚠️ **A pergunta ao fórum só desconta quando SUBSTITUI a história.** A versão anterior descontava por "pergunta direta ao fórum" sem qualificar, e isso passou a ser um autogol quando o corpus virou `r/EuSouOBabaca`: *todo* post de lá é literalmente "Sou babaca por…?". A pergunta que vem **depois** do conflito e pede um veredito sobre ele é estrutura de história e das boas — o que desconta é a pergunta que aparece no lugar da cena. Sem essa distinção o melhor corpus disponível tiraria nota baixa pelo motivo errado.
 
 **Modelo próprio.** `LLM_STORY_MODEL`, com fallback para `LLM_MODEL`. Não compartilha o modelo da moderação: julgar craft narrativo sobre um lote é mais difícil que um sim/não.
+
+### Revolta e vilão (`outrage` / `villain`, em `/story-quality`)
+
+O canal seleciona por **indignação**: a história que rende comentário é a que tem alguém claramente errado. O prompt pede dois campos a mais por candidato — `villain` (existe alguém indefensável?) e `outrage` (0–10, quanta revolta a história provoca) — e o `content_scout` ordena o ciclo por `outrage_weight × outrage + score`.
+
+**São eixos separados de `score`, de propósito.** Um relato mal escrito pode ser revoltante e uma história muito bem contada pode não ter vilão nenhum. O prompt diz isso explicitamente e manda responder os dois com sinceridade, porque quem decide o peso entre eles é quem chama — não o modelo.
+
+**O topo da escala tem público.** 8–10 é reservado para a revolta que atinge o público principal do canal, **mulheres de 18 a 35**: traição, sogra invasiva, marido ausente, amiga falsa, homem que descarta e volta. Revolta que só funciona para outro público pontua, mas não chega ao topo. Sem essa cláusula o modelo dá 9 para briga de trânsito, que é revolta de verdade e não é a do canal.
+
+⚠️ **`outrage` ausente é `null`, não `0`.** Zero é um julgamento ("não há com quem se indignar"); ausente é o modelo não ter respondido. O chamador ordena o ausente no ponto neutro, e um veredito sem `outrage` continua valendo pelo `score` — a degradação é por campo. Nota fora de 0–10 é clampada pelo mesmo validator de `score`.
+
+⚠️ **Não é decisão de segurança.** O prompt é explícito: julgar potencial de reação não é aprovar o que o vilão fez, e não é decidir se o assunto pode ir ao ar — isso continua sendo `POST /moderate`.
+
 
 ### Providers LLM (`src/llm_service/llm/`)
 
@@ -171,7 +186,7 @@ Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`). `ge
 
 ## Testes
 
-108 testes: `tests/test_refine.py` (11), `tests/test_moderate.py` (12), `tests/test_story.py` (17), `tests/test_split_policy.py` (8 — teto de 30 min e as cláusulas do prompt), `tests/test_narrator.py` (24 — o gênero de quem narra), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo), `tests/test_youtube_title.py` (18 — corte em 100 chars, fallback pelo gancho, a ordem dos validators e as cláusulas do prompt). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
+116 testes: `tests/test_refine.py` (11), `tests/test_moderate.py` (12), `tests/test_story.py` (28), `tests/test_split_policy.py` (8 — teto de 30 min e as cláusulas do prompt), `tests/test_narrator.py` (24 — o gênero de quem narra), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo), `tests/test_youtube_title.py` (18 — corte em 100 chars, fallback pelo gancho, a ordem dos validators e as cláusulas do prompt). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
 
 ```bash
 poetry run pytest

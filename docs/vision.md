@@ -188,9 +188,9 @@ Quando há mais de uma parte, elas saem **encadeadas**: a parte N é agendada `s
 
 ```
 _schedule (orchestrator)          POST /schedule (tiktok_poster)
-  parte 1 → follows_at ausente  → next_available_slot()   → 20:00
-  parte 2 → follows_at = 20:00  → continuation_slot()     → 20:30
-  parte 3 → follows_at = 20:30  → continuation_slot()     → 21:00
+  parte 1 → follows_at ausente  → next_available_slot()   → 22:00 UTC (19:00 BRT)
+  parte 2 → follows_at = 22:00  → continuation_slot()     → 22:30 UTC (19:30 BRT)
+  parte 3 → follows_at = 22:30  → continuation_slot()     → 23:00 UTC (20:00 BRT)
 ```
 
 **Por que a continuação ignora os horários preferidos.** `preferred_times` e `posts_per_day` existem para espaçar histórias independentes ao longo do dia. Uma história dividida não são N posts: é uma história continuada, e submetê-la a esse ritmo jogava a parte 2 para o dia seguinte — que era exatamente o comportamento anterior ("cada parte em um dia consecutivo"). Com o corte agora só acontecendo acima de 30 minutos, a divisão é rara e sempre significa "a história não acabou": 30 minutos é curto o bastante para o espectador ainda estar por perto.
@@ -636,14 +636,32 @@ Card e gancho são **independentes e degradáveis**: cada etapa vira `warning` e
 
 ## Agendamento (tiktok_poster)
 
-- Ritmo: 2 posts por dia.
-- Séries: partes são agendadas em dias consecutivos, mesmo horário.
+- Ritmo: 3 posts por dia, em `preferred_times`.
+- Séries: partes encadeadas com `series_gap_minutes` a partir da parte 1 — ver "Agendamento de séries".
 - O `tiktok_poster` é responsável por:
   - Escolher hashtags finais (com base na classificação + performance histórica)
   - Postar no horário agendado via TikTok API
   - Coletar métricas (views, likes, shares, watch time) após publicação
   - Armazenar métricas no próprio DB para informar decisões futuras de hashtag e horário
 - O orchestrador delega completamente — só recebe confirmação de `scheduled` e `posted`.
+
+### Janela de publicação: 11h–20h de Brasília
+
+`preferred_times` é gravado em **UTC**, porque é o que o Buffer recebe e o que `datetime.combine(..., tzinfo=timezone.utc)` produz em `next_available_slot`. Mas a decisão que esse campo carrega é editorial e está no fuso do público: os vídeos são em português e o público é brasileiro, então a janela é **11h–20h em Brasília** (UTC-3, sem horário de verão desde 2019).
+
+| `preferred_times` (UTC) | BRT |
+|---|---|
+| `14:00` | 11:00 |
+| `18:00` | 15:00 |
+| `22:00` | 19:00 |
+
+**O fuso é a armadilha.** Os horários anteriores (`00:00,12:00,20:00` UTC) eram 21:00, 09:00 e 17:00 em Brasília — dois deles fora de qualquer janela pretendida, um deles quase na virada do dia. Ninguém notou porque **não existe erro**: o run passa por todas as etapas, o Buffer aceita o post e o vídeo publica normalmente. A única evidência é o horário em que ele aparece.
+
+**Por que o último slot é 19:00 e não 20:00.** Uma continuação não disputa `preferred_times` (ver "Agendamento de séries"): ela pendura `series_gap_minutes` depois da parte anterior. Um último slot em 20:00 BRT jogaria a parte 2 para 20:30, fora da janela. A folga de uma hora no fim é o que estende a garantia da janela da parte 1 para a história inteira — cabem duas continuações antes de encostar nas 20h, e com o corte só acontecendo acima de 30 minutos de fala uma história de três partes é caso extremo.
+
+Deliberadamente **não há guarda de janela dentro de `continuation_slot`**. As duas saídas possíveis seriam piores que o problema: manter o horário fora da janela não guarda nada, e empurrar para a janela do dia seguinte parte a história ao meio — exatamente o comportamento que o encadeamento foi criado para eliminar. A janela é garantida onde ela é escolhida, que é a configuração.
+
+**A garantia é um teste, não um comentário.** `tiktok_poster/tests/test_posting_window.py` lê o `config.ini` publicado e falha se algum slot cair fora de 11h–20h BRT, se houver menos horários que `posts_per_day` (cota diária inalcançável), se dois horários forem iguais, ou se o último slot mais `series_gap_minutes` passar das 20h. É o único jeito de um erro sem sintoma virar um erro visível.
 
 ---
 
@@ -789,7 +807,7 @@ Isso mantém o ranking do Reddit como critério — continuamos pegando o melhor
 
 **Não há score composto** (posição × tamanho × recência). Sem upvotes reais, qualquer peso seria inventado. Quando `seen_items` acumular histórico de performance, dá para ranquear com base em evidência.
 
-Dentro de cada origem, a ordem deixou de ser só a posição no feed: o ranking interno é a nota de qualidade narrativa descrita abaixo, com a posição do feed como critério de desempate. O rodízio entre origens é anterior e independente — ele decide *de quem* é a vez, a nota decide *qual* história daquela origem.
+Dentro de cada origem, a ordem deixou de ser só a posição no feed: o ranking interno é a **nota de revolta somada à de qualidade narrativa** (ver as duas seções abaixo), com a posição do feed como critério de desempate. O rodízio entre origens é anterior e independente — ele decide *de quem* é a vez, a nota decide *qual* história daquela origem.
 
 ### Qualidade narrativa: gancho e storytelling
 
@@ -822,6 +840,47 @@ Daí um segundo sinal, independente do primeiro: `llm_service POST /story-qualit
 **A tag é derivada, não pedida ao modelo.** O modelo devolve nota; a linha entre fraco e forte é config (`min_story_score`, padrão 6 — a régua do prompt põe post comum de fórum em 4–6). Assim o corte se move contra dados reais via `GET /scout/seen?story_tag=weak_storytelling`, do mesmo jeito que `min_chars`/`max_chars` moram em config. `story_score` fica gravado cru, então mover o corte permite re-derivar as linhas antigas.
 
 **`story_tag IS NULL` ≠ fraco.** Nulo significa não avaliado: o candidato barrado pelos filtros baratos (a nota roda depois deles, e depois do backpressure — fila cheia não publica, então não deve pagar julgamento) e todo candidato de um ciclo em que o `llm_service` caiu. **Filtrado não implica nulo**: quem caiu no teto de tamanho foi julgado antes de cair, e tem as colunas preenchidas. Um candidato sem nota ordena **no próprio limiar**, não no fim da fila: manda-lo para o fim converteria uma falha de modelo em handicap permanente para uma história que ninguém julgou, e são justamente as sobras de cada ciclo que herdariam esse handicap.
+
+### Revolta: a emoção pela qual o canal seleciona
+
+A nota de storytelling responde se a história **se conta bem**. Ela não responde se a história dá vontade de **comentar**, e é o comentário que move o alcance. O que produz comentário, no gênero que o canal publica, é a indignação: alguém claramente errado fazendo algo indefensável com quem não merecia — o namorado que traiu e quer voltar, a sogra que sabota, a amiga que conta o segredo.
+
+Por isso o `POST /story-quality` passou a devolver dois campos a mais por candidato:
+
+| Campo | Pergunta |
+|---|---|
+| `villain` (bool) | Existe alguém cujo comportamento é claramente indefensável? |
+| `outrage` (0–10) | Quanta revolta essa história provoca em quem assiste? |
+
+**São eixos separados de `score`, pelo mesmo motivo que `hook` e `score` são separados entre si.** Um relato mal escrito pode ser revoltante; uma história muito bem contada pode não ter vilão nenhum. Colapsar tudo numa nota só apagaria qual dos dois está faltando — e é essa distinção que decide se a história é boa para este canal ou só boa.
+
+**O público está escrito no prompt.** O topo da escala (8–10) é reservado para a revolta que atinge o público principal: **mulheres de 18 a 35**. Revolta que só funciona para outro público — rixa entre desconhecidos, briga de trânsito — é revolta de verdade e pontua, mas não chega ao topo. Sem essa cláusula o modelo dá 9 para qualquer injustiça, e a nota deixa de separar o que converte do que apenas irrita.
+
+**Não é decisão de segurança.** O prompt separa explicitamente as duas coisas: julgar potencial de reação não é aprovar o comportamento do vilão nem decidir se o assunto pode ir ao ar. Quem decide isso continua sendo o `POST /moderate`, e nada nesta seção afrouxa aquele gate.
+
+#### A ordenação é uma soma com peso, não uma ordem de prioridade
+
+```
+chave = outrage_weight × outrage + story_score      (outrage_weight = 2)
+```
+
+Ordenar **só** por revolta poria uma história 10 de revolta e 3 de narrativa na frente de uma 9/9 — e uma história que ninguém termina de assistir não rende o comentário pelo qual a revolta foi escolhida em primeiro lugar. Com peso 2, dois pontos de revolta valem mais que quatro pontos de narrativa, e nada além disso. `outrage_weight = 0` reproduz exatamente a ordenação anterior, o que torna o botão auditável: existe um teste que fixa esse significado.
+
+#### `min_outrage_score` é rótulo e contador, nunca portão
+
+Mesma regra do `min_story_score`, pela mesma razão: num ciclo em que nada é revoltante, a melhor história disponível publica assim mesmo. Dia sem vídeo é pior que vídeo mais calmo, e o custo de errar para o lado do gate é uma fila vazia — que é o modo de falha mais caro que este pipeline tem. O corte serve para duas coisas: ordenar o candidato **não julgado** no ponto neutro, e contar `low_outrage` no relatório do ciclo, que é como a oferta passa a ser vigiada. `with_villain` conta o outro lado.
+
+#### `outrage IS NULL` não é zero
+
+Zero é um julgamento — "não há com quem se indignar". Nulo é o modelo não ter respondido o campo. Um veredito sem `outrage` **continua valendo pelo `score`**: a degradação é por campo, não por candidato, porque perder a nota inteira de uma história por causa de um campo ausente seria pagar caro por pouco. Toda linha anterior à **migration 005** também é nula, e pelo mesmo motivo do resto do histórico: `seen_items` não guarda o corpo, então nada pode ser re-julgado retroativamente.
+
+`seen_items.outrage_score` (indexada) e `seen_items.has_villain` ficam cruas ao lado de `story_score`, exatamente para que o peso entre os dois eixos possa ser re-derivado depois contra o que já foi publicado, em vez de discutido.
+
+#### O CTA da legenda passou a pedir o veredito
+
+A seleção coloca uma história com vilão na frente; a legenda é quem transforma isso em comentário. O prompt do `/refine` agora manda o `cta_per_part` pedir o **veredito do espectador sobre o vilão** ("ela tava errada de perdoar?") quando há um, em vez do convite genérico. Tomar partido é o que faz alguém parar para escrever — é o mesmo sinal pelo qual a história foi escolhida, agora explicitado onde ele é respondido.
+
+A regra proíbe xingamento e proíbe mandar odiar alguém: a pergunta é o convite, a raiva é de quem responde. História sem vilão continua levando CTA normal, sobre o que se faria no lugar de quem viveu aquilo.
 
 ### Filtros
 
@@ -999,10 +1058,31 @@ Credenciais vêm do **ambiente**, comportamento vem do `config.ini`. Chave de AP
 
 | Destino | Var | Papel |
 |---|---|---|
-| CallMeBot | `CALLMEBOT_PHONE` + `CALLMEBOT_APIKEY` | WhatsApp, grátis, sem infra |
-| Webhook | `NOTIFY_WEBHOOK_URL` | `POST {"text": ...}` — WAHA, ntfy, Discord |
+| Webhook | `NOTIFY_WEBHOOK_URL` | POST — ntfy, Discord, WAHA. **É o destino em produção desde 16/08/2026** |
+| CallMeBot | `CALLMEBOT_PHONE` + `CALLMEBOT_APIKEY` | WhatsApp, grátis. **Desligado em produção — cota esgotada** |
 
-Os dois podem estar ligados ao mesmo tempo, que é o caminho de migração para o WAHA sem apagar o CallMeBot antes de saber que o novo funciona. **Sem nenhum dos dois configurados, todo `notify()` é no-op** — não é só o envio que para, é o enfileiramento: uma fila que ninguém drena encheria em ambiente de desenvolvimento e na suíte de testes.
+Os dois podem estar ligados ao mesmo tempo, que é o caminho de migração para um destino novo sem apagar o antigo antes de saber que o novo funciona.
+
+#### O corpo do webhook: `[monitoring] webhook_format`
+
+`json` manda `{"text": ...}` (Slack e proxies que esperam isso); `text` manda a mensagem crua no corpo. O ntfy mostra o corpo como veio — em `json` o celular receberia o literal `{"text": "🎬 Vídeo renderizado..."}`, com chaves e aspas. **O default do código continua `json`**, e só o `config.ini` dos serviços está em `text`: mudar o default quebraria em silêncio qualquer destino já apontado para o formato antigo, que é a classe de falha que esta seção inteira existe para evitar.
+
+#### A recusa disfarçada de sucesso
+
+**O CallMeBot responde `200` mesmo quando não envia.** Cota esgotada, apikey inválida, número não autorizado — o status é sempre `200` e o motivo vem só no corpo:
+
+```
+<p>Message to: +55...<p style="color:red">You have <b>0</b> messages left.</p>
+<p style="color:red"><b>Message not sent</b>
+```
+
+Como `_deliver` só fazia `raise_for_status()`, toda recusa passava como entrega. Em 16/08/2026 a cota grátis zerou e **o monitoramento morreu em silêncio**: o log registrou `200 OK` por dias, para mensagens que nunca saíram, e a falha só foi descoberta porque nenhuma mensagem chegou ao celular.
+
+É a pior forma da falha, e não por acaso: o canal de aviso é o único componente cuja morte não pode ser anunciada por ele mesmo. Um canal que morre em silêncio é **pior** que canal nenhum, porque a ausência de mensagens passa a ser lida como "nada aconteceu" em vez de "não estou mais te avisando" — a mesma inversão que os dead-man's switches abaixo existem para desfazer.
+
+Agora `_deliver` lê o corpo e loga `notify_rejected` com o motivo. ⚠️ **A checagem é pelo marcador de sucesso (`queued`), não por uma lista de textos de erro conhecidos.** Uma lista de erros só pega o que já se viu: um modo de recusa novo não estaria nela e voltaria a passar batido — exatamente o buraco que custou esses dias. Checando o sucesso, o desconhecido cai no `else` e vira aviso. A troca é assumida: o risco vira um alarme falso no log se o CallMeBot mudar a palavra de sucesso, e alarme falso no log é muito mais barato que outro silêncio.
+
+⚠️ **Isto continua sendo um `log.warning`, não um `notify()`** — avisar pelo canal que acabou de falhar seria circular. Quem fecha essa volta é o dead-man's switch, de fora. **Sem nenhum dos dois configurados, todo `notify()` é no-op** — não é só o envio que para, é o enfileiramento: uma fila que ninguém drena encheria em ambiente de desenvolvimento e na suíte de testes.
 
 O `sender_loop` espaça os envios (`min_interval_seconds`, 3s). Não é educação com o servidor: o CallMeBot recusa rajadas, e rajada é exatamente o que um run produz — refino, gancho e card saem em segundos um do outro. Sem o espaço, quem se perde é a metade final de cada run.
 

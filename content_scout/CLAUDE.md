@@ -47,6 +47,8 @@ Varredura histórica: `[reddit] archive_interval_hours` (0 = desligada), `archiv
 
 Qualidade narrativa: `[scout] story_quality` (liga/desliga), `min_story_score` (corte da tag `weak_storytelling`, padrão 6), `story_excerpt_chars` (quanto de cada corpo vai no lote, padrão 700) e `story_timeout`.
 
+Revolta: `[scout] outrage_weight` (peso da revolta na ordenação, padrão 2) e `min_outrage_score` (piso da revolta — rótulo e contador, nunca portão; padrão 6).
+
 ## Features
 
 ### Fonte Reddit (`src/content_scout/sources/reddit.py`)
@@ -186,9 +188,29 @@ O ciclo para na primeira falha de moderação em vez de tentar os demais: se o s
 
 ⚠️ **`story_tag IS NULL` ≠ fraco.** Nulo = não avaliado — o que foi barrado pelos filtros baratos (a nota roda **depois** deles e **depois** do backpressure: fila cheia não publica, então não paga julgamento) e todo candidato de ciclo em que o `llm_service` caiu. **Filtrado não implica nulo:** quem foi recusado por `too_long` passou pela nota e tem as colunas preenchidas — é o ponto da rejeição tardia por tamanho.
 
-`rank_by_story(candidates, scores, neutral)` — ordena por nota, desc, **estável**: como `interleave_by_origin` preserva a ordem interna de cada grupo, um sort estável na lista plana vira "melhor abertura primeiro dentro de cada origem" sem tocar na justiça entre origens. Empate mantém a posição do feed. **Candidato sem nota ordena no próprio limiar**, não no fim — mandá-lo para o fim converteria falha de modelo em handicap permanente, e são as sobras de cada ciclo que herdariam isso.
+`rank_by_story(candidates, scores, neutral, outrage_neutral, outrage_weight)` — ordena por `outrage_weight × outrage + story_score`, desc, **estável**: como `interleave_by_origin` preserva a ordem interna de cada grupo, um sort estável na lista plana vira "melhor primeiro dentro de cada origem" sem tocar na justiça entre origens. Empate mantém a posição do feed. **Candidato sem nota ordena nos próprios limiares**, não no fim — mandá-lo para o fim converteria falha de modelo em handicap permanente, e são as sobras de cada ciclo que herdariam isso.
 
 Desligável em `[scout] story_quality`.
+
+### Revolta e vilão (`outrage` / `villain`)
+
+`StoryScore(hook, score, outrage, villain, hook_line, reason)` + `.rank_value(outrage_neutral, outrage_weight)`.
+
+**Por que existe.** O canal vive de indignação: a história que rende comentário é a que tem alguém claramente errado — o namorado que traiu e quer voltar, a sogra que sabota, a amiga que conta o segredo. O `score` de storytelling não mede isso: um relato mal escrito pode ser revoltante e uma história muito bem contada pode não ter vilão nenhum. São eixos diferentes e o prompt manda respondê-los separado.
+
+**A ordenação é `outrage_weight × outrage + story_score`** (`min_outrage_score` = piso e ponto neutro; `outrage_weight` = 2 por padrão).
+
+⚠️ **Peso, não ordem de prioridade.** Ordenar só por revolta poria uma história 10 de revolta e 3 de narrativa na frente de uma 9/9 — e história que ninguém termina de assistir não rende o comentário pelo qual a revolta foi escolhida. Com peso 2, dois pontos de revolta valem mais que quatro de narrativa, e nada mais que isso. `outrage_weight = 0` reproduz exatamente a ordenação antiga, que é o teste que fixa o significado do botão.
+
+⚠️ **`min_outrage_score` NÃO é portão** — mesma regra do `min_story_score`. Num ciclo sem nada revoltante, a melhor história disponível publica assim mesmo: dia sem vídeo é pior que vídeo mais calmo. O corte serve para (a) ordenar candidato não julgado no lugar neutro e (b) contar `low_outrage`, que é como se vigia a oferta.
+
+⚠️ **`outrage IS NULL` ≠ 0.** Nulo = o modelo não respondeu o campo; zero = respondeu que não há com quem se indignar. Um veredito sem `outrage` **continua valendo** pelo `score` — a degradação é por campo, não por candidato — e ordena no ponto neutro. Toda linha anterior à migration 005 é nula pelo mesmo motivo.
+
+**O que viaja para o refino** (`as_metadata`): `outrage_score` (omitido quando nulo) e `has_villain`. O refino usa isso no CTA da legenda — quando há vilão, o CTA pede o veredito do espectador sobre ele, que é o que faz alguém parar para escrever (ver `llm_service/CLAUDE.md`).
+
+**Público-alvo no prompt.** O topo da escala (8–10) é reservado para a revolta que atinge o público principal do canal — **mulheres de 18 a 35** —, porque é ele que converte: traição, sogra invasiva, marido ausente, amiga falsa, homem que descarta e volta. Revolta que só funciona para outro público continua pontuando, só não chega ao topo.
+
+**Colunas novas** (migration 005): `seen_items.outrage_score` (indexada) e `seen_items.has_villain`. Cruas ao lado de `story_score`, para o peso entre os dois eixos poder ser re-derivado contra o que já foi publicado.
 
 ✅ **Calibragem encerrada em 14/08/2026** — as quatro decisões de `docs/story_quality_calibration.md` estão fechadas. A decisão de corpus foi tomada antes (rota (a): trocar as fontes por subs de história-entretenimento), com o prompt de `story.py` ajustado junto — ele não desconta mais por "pergunta ao fórum" quando a pergunta *emoldura* a história, que é a forma de todo post do `EuSouOBabaca`. As três que faltavam: **`min_story_score` fica em 6** (nota 5 é fraco), **`story_excerpt_chars` fica em 700**, e o **teto 9–10 foi relaxado** — o prompt agora manda usar a escala inteira, porque nenhum post chegava lá e a régua era efetivamente 2–8.
 
@@ -229,7 +251,7 @@ Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando
 - `POST /scout/run` — roda um ciclo agora, síncrono, e devolve os contadores. Feito para calibrar filtros vendo o resultado na hora.
 - `GET /scout/seen?status=&story_tag=&limit=&offset=` — trilha de auditoria; filtre por `filtered` para ver o que foi rejeitado e por quê, e por `story_tag=weak_storytelling` para calibrar `min_story_score`.
 
-**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `story_scored`, `weak_storytelling`, `story_quality_unavailable`, `archive_swept`, `archive_fetched`, `archive_wrapped`, `duplicate_story`, `too_long`, `already_running`.
+**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `story_scored`, `weak_storytelling`, `low_outrage`, `with_villain`, `story_quality_unavailable`, `archive_swept`, `archive_fetched`, `archive_wrapped`, `duplicate_story`, `too_long`, `already_running`.
 
 `too_long` conta os candidatos julgados e gravados com a nota, depois recusados pelo teto de tamanho. É recorte de `filtered`, não uma categoria à parte.
 
@@ -237,13 +259,15 @@ Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando
 
 `already_running=true` (com todos os contadores em zero) significa que já havia um ciclo em andamento e esta chamada não fez nada — não é erro.
 
-`weak_storytelling` conta tudo que foi julgado no ciclo, não só o que foi publicado.
+`weak_storytelling`, `low_outrage` e `with_villain` contam tudo que foi julgado no ciclo, não só o que foi publicado. Nenhum dos três rejeita nada — são a leitura da oferta.
 
-`GET /scout/seen` devolve também `author`, `comment_count` (nulo = não consultado), `has_hook`, `story_score`, `story_tag`, `hook_line`, `story_reason` (todos nulos = não avaliado) e `comments[]` com `external_id`, `author`, `text`, `position`, `published`.
+`GET /scout/seen` devolve também `author`, `comment_count` (nulo = não consultado), `has_hook`, `story_score`, `outrage_score`, `has_villain`, `story_tag`, `hook_line`, `story_reason` (todos nulos = não avaliado) e `comments[]` com `external_id`, `author`, `text`, `position`, `published`.
 
 ### Notificação de operação (`src/core/notify.py`)
 
 Arquivo **idêntico** ao de `orchestrator/src/core/notify.py` — mesmo padrão de `bootstrap.py`/`logger.py`. Ao editar um, copiar para o outro. API e regras completas no `CLAUDE.md` do orchestrator; aqui ficam só os enganches deste serviço.
+
+⚠️ **O destino em produção é o ntfy pelo `NOTIFY_WEBHOOK_URL`**, com `[monitoring] webhook_format = text` no `config.ini` (o ntfy mostra o corpo como veio; em `json` o celular receberia o literal com chaves e aspas). O CallMeBot está desligado desde 16/08/2026 — cota grátis esgotada.
 
 | Evento | Nível | Local |
 |---|---|---|
@@ -277,8 +301,8 @@ Nada mais muda: dedup, filtros, backpressure e orçamento tratam toda fonte igua
 
 ## Testing rules
 
-- `tests/test_reddit_source.py` (34), `tests/test_filters.py` (14) e `tests/test_story_quality.py` (23) — marcados `no_db`, rodam sem docker. O último usa `respx` para o cliente HTTP.
-- `tests/test_scout.py` (74) — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
+- `tests/test_reddit_source.py` (34), `tests/test_filters.py` (14) e `tests/test_story_quality.py` (34) — marcados `no_db`, rodam sem docker. O último usa `respx` para o cliente HTTP.
+- `tests/test_scout.py` (78) — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
 - A fixture `length_cfg` (não-autouse) fixa `min_chars`/`max_chars` nos testes do teto de tamanho, para eles não dependerem do `config.ini` — subir `max_chars` em produção não pode quebrar a suíte.
 - ⚠️ **Nunca rodar a suíte com DB contra o banco vivo**: o fixture autouse `clean_db` apaga `seen_items` e `archive_cursors`, ou seja, o histórico de dedup inteiro — o scout voltaria a republicar tudo. Criar um banco descartável: `docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE content_scout_wt;"`, `alembic upgrade head` nele e rodar com `DATABASE_URL=…/content_scout_wt`.
 - O helper `_candidate` em `test_scout.py` costura o `external_id` dentro do corpo. Corpos iguais fazem o dedup por fingerprint tratar todo candidato depois do primeiro como repost — um helper com `"aaa…"` para todos quebraria a suíte inteira.

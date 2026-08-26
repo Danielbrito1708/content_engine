@@ -18,11 +18,13 @@ from src.core import notify as notify_module
 from src.core.notify import (
     QUEUE_MAX,
     _deliver,
+    callmebot_accepted,
     format_message,
     notify,
     ping,
     sender_loop,
     short_id,
+    strip_html,
 )
 from src.orchestrator.db.models import PipelinePart, PipelineRun
 from src.orchestrator.worker import _schedule, _when, run_pipeline
@@ -41,6 +43,28 @@ def whatsapp(monkeypatch):
     monkeypatch.setenv("CALLMEBOT_PHONE", "5511987654321")
     monkeypatch.setenv("CALLMEBOT_APIKEY", "123456")
     monkeypatch.setenv("CALLMEBOT_BASE_URL", "http://callmebot.test/whatsapp.php")
+
+
+#: Corpo de uma resposta aceita. O CallMeBot devolve 200 nos dois casos, então
+#: é só isto que separa entregue de recusado.
+CALLMEBOT_OK = "<p>Message to: +55...<p>Message queued. You will receive it soon."
+
+#: Corpo real da recusa por cota, capturado em 16/08/2026.
+CALLMEBOT_QUOTA_EXHAUSTED = (
+    '<p>Message to: +558896549713<p>Text to send: teste'
+    '<p style="color:red">You have <b>0</b> messages left.</p>'
+    '<p style="color:red"><b>Message not sent</b>'
+)
+
+
+@pytest.fixture
+def webhook_json(monkeypatch):
+    """Força `webhook_format = json`, seja qual for o config.ini do serviço."""
+    monkeypatch.setattr(
+        notify_module,
+        "_cfg",
+        lambda key, default: "json" if key == "webhook_format" else default,
+    )
 
 
 def _queued() -> list[str]:
@@ -174,7 +198,9 @@ def test_notify_missing_monitoring_section_uses_defaults(webhook, monkeypatch):
 
 @respx.mock
 async def test_deliver_sends_to_callmebot_urlencoded(whatsapp):
-    route = respx.get("http://callmebot.test/whatsapp.php").mock(return_value=Response(200))
+    route = respx.get("http://callmebot.test/whatsapp.php").mock(
+        return_value=Response(200, text=CALLMEBOT_OK)
+    )
 
     await _deliver("🚀 Run concluído\nrun: abc")
 
@@ -186,7 +212,7 @@ async def test_deliver_sends_to_callmebot_urlencoded(whatsapp):
 
 
 @respx.mock
-async def test_deliver_posts_json_to_webhook(webhook):
+async def test_deliver_posts_json_to_webhook(webhook, webhook_json):
     route = respx.post(webhook).mock(return_value=Response(200))
 
     await _deliver("🚀 Run concluído")
@@ -199,7 +225,9 @@ async def test_deliver_posts_json_to_webhook(webhook):
 async def test_deliver_uses_both_destinations_when_both_are_set(whatsapp, webhook):
     """Os dois podem conviver — é o caminho de migração para WAHA sem apagar o
     CallMeBot antes de saber que o novo funciona."""
-    wa = respx.get("http://callmebot.test/whatsapp.php").mock(return_value=Response(200))
+    wa = respx.get("http://callmebot.test/whatsapp.php").mock(
+        return_value=Response(200, text=CALLMEBOT_OK)
+    )
     hook = respx.post(webhook).mock(return_value=Response(200))
 
     await _deliver("mensagem")
@@ -223,6 +251,104 @@ async def test_deliver_retries_once(webhook, monkeypatch):
     await _deliver("mensagem")
 
     assert route.call_count == 2
+
+
+# ── formato do corpo do webhook ──────────────────────────────────────
+
+@respx.mock
+async def test_deliver_posts_raw_text_when_format_is_text(webhook, monkeypatch):
+    """O ntfy.sh mostra o corpo como veio: em JSON o celular receberia o literal
+    `{"text": "..."}`, com chaves e aspas."""
+    monkeypatch.setattr(
+        notify_module,
+        "_cfg",
+        lambda key, default: "text" if key == "webhook_format" else default,
+    )
+    route = respx.post(webhook).mock(return_value=Response(200))
+
+    await _deliver("🚀 Run concluído\nrun: abc")
+
+    assert route.called
+    assert route.calls[0].request.read().decode("utf-8") == "🚀 Run concluído\nrun: abc"
+
+
+@respx.mock
+async def test_deliver_defaults_to_json_without_the_config_key(webhook, monkeypatch):
+    """Um serviço cujo `[monitoring]` ainda não tem a chave continua mandando
+    `{"text": ...}` — mudar o default em silêncio quebraria o destino dele."""
+    monkeypatch.setattr(notify_module, "_cfg", lambda key, default: default)
+    route = respx.post(webhook).mock(return_value=Response(200))
+
+    await _deliver("mensagem")
+
+    assert json.loads(route.calls[0].request.read()) == {"text": "mensagem"}
+
+
+# ── recusa disfarçada de sucesso ─────────────────────────────────────
+
+def test_callmebot_accepted_reads_the_body_not_the_status():
+    assert callmebot_accepted(CALLMEBOT_OK)
+    assert not callmebot_accepted(CALLMEBOT_QUOTA_EXHAUSTED)
+
+
+def test_callmebot_rejects_an_unknown_failure_mode():
+    """A checagem é pelo sucesso, não por uma lista de erros conhecidos: um modo
+    de recusa novo tem que virar aviso em vez de passar batido."""
+    assert not callmebot_accepted("<p>ERROR: APIKey is invalid</p>")
+
+
+def test_strip_html_leaves_the_reason_readable():
+    assert strip_html(CALLMEBOT_QUOTA_EXHAUSTED) == (
+        "Message to: +558896549713 Text to send: teste "
+        "You have 0 messages left. Message not sent"
+    )
+
+
+@respx.mock
+async def test_deliver_warns_when_callmebot_refuses_with_200(whatsapp, monkeypatch):
+    """O caso que deixou o monitoramento mudo por dias: cota zerada, HTTP 200, e
+    o log registrando sucesso para mensagens que nunca saíram."""
+    warnings: list[dict] = []
+    monkeypatch.setattr(
+        notify_module.log, "warning", lambda event, **kw: warnings.append({"event": event, **kw})
+    )
+    respx.get("http://callmebot.test/whatsapp.php").mock(
+        return_value=Response(200, text=CALLMEBOT_QUOTA_EXHAUSTED)
+    )
+
+    await _deliver("mensagem")
+
+    assert [w["event"] for w in warnings] == ["notify_rejected"]
+    assert warnings[0]["destination"] == "callmebot"
+    assert "0 messages left" in warnings[0]["reason"]
+
+
+@respx.mock
+async def test_deliver_is_quiet_when_callmebot_accepts(whatsapp, monkeypatch):
+    """Um alarme que toca no caminho feliz é um alarme que ninguém lê."""
+    warnings: list[str] = []
+    monkeypatch.setattr(notify_module.log, "warning", lambda event, **kw: warnings.append(event))
+    respx.get("http://callmebot.test/whatsapp.php").mock(
+        return_value=Response(200, text=CALLMEBOT_OK)
+    )
+
+    await _deliver("mensagem")
+
+    assert warnings == []
+
+
+@respx.mock
+async def test_deliver_does_not_double_warn_on_transport_failure(whatsapp, monkeypatch):
+    """Destino fora do ar já é `notify_send_failed`; sem a guarda de None ele
+    viraria também um `notify_rejected` com o motivo vazio."""
+    monkeypatch.setattr(notify_module, "SEND_ATTEMPTS", 1)
+    warnings: list[str] = []
+    monkeypatch.setattr(notify_module.log, "warning", lambda event, **kw: warnings.append(event))
+    respx.get("http://callmebot.test/whatsapp.php").mock(return_value=Response(500))
+
+    await _deliver("mensagem")
+
+    assert warnings == ["notify_send_failed"]
 
 
 # ── dead-man's switch ────────────────────────────────────────────────

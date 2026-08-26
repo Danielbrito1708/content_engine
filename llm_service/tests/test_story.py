@@ -274,3 +274,93 @@ def test_prompt_no_longer_reserves_the_top_for_the_exceptional():
 def test_prompt_still_puts_an_ordinary_post_in_the_middle():
     """Soltar o topo não é inflacionar a régua inteira — o meio não se move."""
     assert "post comum de fórum é 4–6" in SYSTEM_PROMPT
+
+
+# ─────────────────────────── revolta e vilão ───────────────────────────
+
+
+async def test_outrage_and_villain_come_back_in_the_verdict(client, fake_llm):
+    fake_llm(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "index": 0,
+                        "hook": True,
+                        "score": 7,
+                        "outrage": 9,
+                        "villain": True,
+                        "reason": "namorado traiu e quer voltar",
+                    }
+                ]
+            }
+        )
+    )
+
+    resp = await client.post("/story-quality", json={"items": _items("a")})
+
+    assert resp.status_code == 200
+    verdict = resp.json()["results"][0]
+    assert verdict["outrage"] == 9
+    assert verdict["villain"] is True
+
+
+async def test_missing_outrage_is_none_not_zero(client, fake_llm):
+    """Unanswered is not a judgement — the caller sorts it at the neutral point."""
+    fake_llm(json.dumps({"results": [{"index": 0, "hook": True, "score": 7}]}))
+
+    verdict = (await client.post("/story-quality", json={"items": _items("a")})).json()["results"][0]
+
+    assert verdict["outrage"] is None
+    assert verdict["villain"] is False
+
+
+async def test_outrage_out_of_range_is_clamped_not_rejected(client, fake_llm):
+    """Same rule as ``score``: one bad number must not cost the whole batch."""
+    fake_llm(
+        json.dumps(
+            {
+                "results": [
+                    {"index": 0, "hook": True, "score": 7, "outrage": 47},
+                    {"index": 1, "hook": True, "score": 7, "outrage": -3},
+                ]
+            }
+        )
+    )
+
+    results = (
+        await client.post("/story-quality", json={"items": _items("a", "b")})
+    ).json()["results"]
+
+    assert results[0]["outrage"] == 10
+    assert results[1]["outrage"] == 0
+
+
+def test_verdict_defaults_keep_outrage_unjudged():
+    verdict = StoryVerdict(index=0, hook=True, score=5)
+    assert verdict.outrage is None
+    assert verdict.villain is False
+
+
+def test_prompt_defines_outrage_and_villain():
+    assert '"outrage"' in SYSTEM_PROMPT
+    assert '"villain"' in SYSTEM_PROMPT
+    assert "0–2" in SYSTEM_PROMPT and "8–10" in SYSTEM_PROMPT
+
+
+def test_prompt_names_the_core_audience():
+    """The top of the outrage scale is reserved for the audience that converts."""
+    assert "mulher" in SYSTEM_PROMPT
+    assert "18 a 35" in SYSTEM_PROMPT
+
+
+def test_prompt_keeps_outrage_separate_from_storytelling():
+    """Two axes that may disagree — collapsing them would hide which is missing."""
+    assert "notas separadas e podem discordar" in SYSTEM_PROMPT
+
+
+def test_prompt_does_not_turn_outrage_into_a_safety_call():
+    """Judging reaction is not approving the behaviour — moderation decides that."""
+    assert "não é de moral e não é de segurança" in SYSTEM_PROMPT or (
+        "não de moral e não de segurança" in SYSTEM_PROMPT
+    )

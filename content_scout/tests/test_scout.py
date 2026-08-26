@@ -727,9 +727,11 @@ async def test_seen_endpoint_exposes_comments(
 
 @pytest.fixture
 def story_cfg(monkeypatch):
-    def _set(story_quality=True, min_story_score=6):
+    def _set(story_quality=True, min_story_score=6, min_outrage_score=6, outrage_weight=2):
         monkeypatch.setattr(settings.CONFIG.scout, "story_quality", story_quality)
         monkeypatch.setattr(settings.CONFIG.scout, "min_story_score", min_story_score)
+        monkeypatch.setattr(settings.CONFIG.scout, "min_outrage_score", min_outrage_score)
+        monkeypatch.setattr(settings.CONFIG.scout, "outrage_weight", outrage_weight)
     _set()
     return _set
 
@@ -771,6 +773,63 @@ async def test_weak_storytelling_is_tagged_but_still_published(
     assert row.story_score == 1
     assert row.has_hook is False
     assert row.story_reason == "desabafo sem enredo"
+
+
+async def test_the_outraging_story_wins_the_slot(
+    submissions, set_active_runs, budget, story_cfg, story_quality
+):
+    """A calmer story that is better told does not take the slot from a villain."""
+    budget(max_per_cycle=1)
+    story_quality.set({
+        "t3_calma": StoryScore(hook=True, score=9, outrage=2),
+        "t3_revolta": StoryScore(hook=True, score=6, outrage=9, villain=True),
+    })
+    source = FakeSource([_candidate("t3_calma"), _candidate("t3_revolta")])
+
+    report = await run_cycle([source])
+
+    assert report.submitted_ids == ["t3_revolta"]
+
+
+async def test_outrage_is_recorded_and_forwarded_to_the_refiner(
+    submissions, set_active_runs, budget, story_cfg, story_quality, session
+):
+    story_quality.set({
+        "t3_a": StoryScore(hook=True, score=8, outrage=9, villain=True),
+    })
+
+    await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    row = (await _seen_rows(session))[0]
+    assert row.outrage_score == 9
+    assert row.has_villain is True
+    assert submissions[0]["metadata"]["outrage_score"] == 9
+    assert submissions[0]["metadata"]["has_villain"] is True
+
+
+async def test_low_outrage_is_counted_but_still_published(
+    submissions, set_active_runs, budget, story_cfg, story_quality, session
+):
+    """Nothing outrageous in the cycle still publishes: an empty day is worse."""
+    story_quality.set({"t3_a": StoryScore(hook=True, score=8, outrage=1)})
+
+    report = await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert report.submitted == 1
+    assert report.low_outrage == 1
+    assert report.with_villain == 0
+    assert (await _seen_rows(session))[0].status == SeenStatus.submitted
+
+
+async def test_unjudged_outrage_is_not_counted_as_low(
+    submissions, set_active_runs, budget, story_cfg, story_quality
+):
+    """NULL is "not judged" — counting it as low would invent supply data."""
+    story_quality.set({"t3_a": StoryScore(hook=True, score=8)})
+
+    report = await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert report.low_outrage == 0
 
 
 async def test_good_story_without_a_hook_is_tagged_no_hook(

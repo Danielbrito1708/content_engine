@@ -166,9 +166,20 @@ async def test_schedule_includes_mandatory_hashtags(client):
 
         await client.post("/schedule", json=SAMPLE_REQUEST)
 
-    caption = create_mock.call_args[0][1]
+    # A PRIMEIRA chamada, não a última: `_schedule_youtube` roda depois do post
+    # do TikTok e usa o mesmo BufferClient, então `call_args` aponta para o post
+    # do YouTube — que leva outras obrigatórias de propósito (`#tiktokbrasil` e
+    # `#fyp` não significam nada lá). Mirar na última fez este teste falhar em
+    # silêncio desde que o segundo destino entrou.
+    caption = create_mock.call_args_list[0][0][1]
     assert "#tiktokbrasil" in caption
     assert "#fyp" in caption
+
+    # E a do YouTube leva as dela — é o que impede o teste de voltar a medir o
+    # post errado sem ninguém notar.
+    youtube_description = create_mock.call_args_list[1][0][1]
+    assert "#historiasreais" in youtube_description
+    assert "#tiktokbrasil" not in youtube_description
 
 
 async def test_schedule_passes_presigned_url_to_buffer(client):

@@ -61,15 +61,42 @@ class ModerationClient:
 class StoryScore:
     """How well one candidate opens, as judged by ``llm_service``.
 
-    ``hook`` and ``score`` answer separate questions — whether the title or first
-    lines promise a payoff, and how strong the storytelling is overall — so a
-    candidate can have one without the other.
+    ``hook``, ``score`` and ``outrage`` answer separate questions — whether the
+    title or first lines promise a payoff, how strong the storytelling is, and how
+    much indignation the story provokes — so a candidate can have one without the
+    others.
     """
 
     hook: bool
     score: int
+    #: Outrage potential, 0–10. ``None`` when the model did not answer it, which
+    #: is why it is not an ``int`` with a zero default: an unanswered field must
+    #: sort at the neutral point, not at the bottom. See ``rank_value``.
+    outrage: int | None = None
+    #: Whether the story has someone plainly in the wrong. Not part of the
+    #: ranking arithmetic — ``outrage`` already prices it in, and multiplying the
+    #: same signal twice would only make the weight harder to reason about. It is
+    #: stored so the audit trail can answer "does a villain actually predict the
+    #: numbers?" without re-reading every post.
+    villain: bool = False
     hook_line: str | None = None
     reason: str | None = None
+
+    def rank_value(self, outrage_neutral: int, outrage_weight: int) -> int:
+        """The number the cycle sorts on, higher first.
+
+        ``outrage_weight`` multiplies the outrage score before adding the
+        storytelling one, which makes the trade-off explicit rather than a
+        priority order: at weight 2 a story has to be about five points better
+        told to beat a story two points angrier. Ordering strictly by outrage
+        would let a 10/3 beat a 9/9, and a story nobody can sit through does not
+        collect the comments the outrage was selected for.
+
+        An unanswered ``outrage`` scores at ``outrage_neutral`` for the same
+        reason an unscored candidate does — see ``rank_by_story``.
+        """
+        outrage = self.outrage if self.outrage is not None else outrage_neutral
+        return outrage_weight * outrage + self.score
 
     def tag(self, min_score: int) -> str:
         """The label stored on the audit row and forwarded to the refiner.
@@ -94,7 +121,10 @@ class StoryScore:
             "story_tag": self.tag(min_score),
             "story_score": self.score,
             "has_hook": self.hook,
+            "has_villain": self.villain,
         }
+        if self.outrage is not None:
+            payload["outrage_score"] = self.outrage
         if self.hook_line:
             payload["hook_line"] = self.hook_line
         return payload
@@ -164,9 +194,20 @@ class StoryQualityClient:
                 score = int(entry["score"])
             except (KeyError, TypeError, ValueError):
                 continue
+            # Outrage degrades on its own: a verdict that answers the
+            # storytelling score but not this one is still a usable verdict, so a
+            # missing or unparseable value becomes "not judged" instead of
+            # dropping the whole entry.
+            try:
+                outrage = int(entry["outrage"])
+            except (KeyError, TypeError, ValueError):
+                outrage = None
+
             scores[candidates[index].external_id] = StoryScore(
                 hook=bool(entry.get("hook")),
                 score=score,
+                outrage=outrage,
+                villain=bool(entry.get("villain")),
                 hook_line=entry.get("hook_line") or None,
                 reason=entry.get("reason") or None,
             )

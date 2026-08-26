@@ -42,6 +42,10 @@ Então, antes de escolher, o sistema lê o título e a abertura de cada históri
 
 A primeira: **existe um gancho ali?** Um gancho é uma frase que, sozinha, faz querer saber o resto. Ela tem gente concreta, de preferência uma relação, um conflito já acontecendo, a promessa de um desfecho, e uma curiosidade que fica no ar. Por exemplo: *"minha mãe foi intimidada por outras mães, então ela se vingou de forma doce"* — tem a mãe, tem a agressão, promete a vingança e não conta qual foi. Já *"desabafo"* ou *"preciso de conselhos"* nomeiam um sentimento e não prometem nada.
 
+A terceira: **essa história dá vontade de comentar?** Aqui a pergunta não é sobre qualidade de escrita, é sobre revolta. O sistema procura uma pessoa claramente errada — o namorado que traiu e quer voltar, a sogra que sabota, a amiga que conta o segredo — e dá uma nota de 0 a 10 para o quanto a história provoca indignação em quem assiste. Tragédia sem culpado não conta: dá pena, e pena não faz ninguém comentar.
+
+O topo dessa nota é reservado para a revolta que atinge o público principal do canal, **mulheres de 18 a 35 anos**. Uma injustiça que só funciona para outro público — uma briga de trânsito entre desconhecidos — ainda pontua, mas não chega ao topo.
+
 A segunda: **a história se conta bem?** Isso rende uma nota de 0 a 10. Ganha ponto quem tem conflito claro, gente que age, cenas concretas e sinal de que vem uma virada. Perde ponto quem só reclama, quem apresenta gente demais de uma vez, quem faz pergunta ao fórum em vez de contar o que aconteceu, ou quem escreve uma abertura da qual não se entende nada.
 
 **A nota máxima voltou a ser alcançável.** O topo da escala estava reservado para o excepcional, e na prática nenhuma história chegava lá: a nota ia de 2 a 8 e nada mais. Isso apagava justamente a diferença entre uma história boa e uma ótima — que é a diferença que decide qual vira vídeo primeiro. Agora a nota máxima é para a história que você contaria adiante depois de ler, não para uma raridade anual. O meio da escala não mudou: um post comum de fórum continua valendo nota média.
@@ -50,9 +54,13 @@ A segunda: **a história se conta bem?** Isso rende uma nota de 0 a 10. Ganha po
 
 Duas coisas, e nenhuma delas é jogar a história no lixo.
 
-A primeira é **ordenar**. As vagas de cada ciclo passam a ir para as histórias que abrem melhor, não para as que apareceram primeiro no feed. O rodízio entre comunidades continua valendo por cima disso: cada comunidade concorre com a sua melhor abertura, e nenhuma monopoliza.
+A primeira é **ordenar**. As vagas de cada ciclo passam a ir para as histórias que revoltam mais e abrem melhor, não para as que apareceram primeiro no feed. O rodízio entre comunidades continua valendo por cima disso: cada comunidade concorre com a sua melhor história, e nenhuma monopoliza.
+
+**A revolta pesa mais que a escrita, mas não atropela.** A ordem é decidida por uma soma em que a nota de revolta conta o dobro. Não é uma ordem de prioridade: se fosse só revolta, uma história revoltante e mal contada passaria na frente de uma que é as duas coisas — e história que ninguém termina de assistir não rende o comentário pelo qual ela foi escolhida. Na prática, dois pontos de revolta valem mais que quatro pontos de escrita.
 
 A segunda é **marcar**. Toda história avaliada recebe uma etiqueta: `strong` quando tem gancho e se conta bem, `no_hook` quando é boa história mas começa longe do assunto — o gancho existe, está enterrado mais adiante — e `weak_storytelling` quando a nota ficou abaixo do corte. A etiqueta viaja junto com o roteiro até a etapa de refinamento, então o modelo que escreve o texto final sabe se está polindo um gancho que já existe ou se vai ter que construir um. Quando existe uma frase que serve de gancho, ela vai junto, identificada.
+
+**Nenhuma história é descartada por ser pouco revoltante.** Se um ciclo inteiro não trouxer nada indignante, a melhor história disponível vai ao ar do mesmo jeito — um dia sem vídeo é pior que um vídeo mais calmo. O que o sistema faz é contar quantas ficaram abaixo do corte e quantas tinham vilão, para você ver se a oferta secou antes de o canal sentir.
 
 **Por que marcar e não descartar:** a etiqueta é informação, não veredito. Uma história com abertura fraca e nada melhor atrás dela ainda vai ao ar — recusá-la transformaria um sinal de qualidade em filtro rígido e poderia esvaziar a fila em semanas fracas. O que a nota faz é decidir a *ordem*, e a etiqueta serve para o refinamento trabalhar melhor e para você olhar depois quais notas correspondiam a vídeos que renderam. O ponto de corte entre fraco e forte é ajustável justamente por isso.
 
@@ -254,7 +262,7 @@ Quando o vídeo está pronto, o sistema agenda a publicação automaticamente no
 
 **Ritmo de publicação:**
 
-O sistema publica dois vídeos por dia, nos horários preferidos configurados (padrão: 8h e 20h UTC). Ele nunca agenda dois posts no mesmo horário — se um slot já está ocupado, avança para o próximo disponível.
+O sistema publica três vídeos por dia, dentro da janela em que o público brasileiro está acordado: **11h, 15h e 19h no horário de Brasília**. Ele nunca agenda dois posts no mesmo horário — se um slot já está ocupado, avança para o próximo disponível.
 
 **Séries:**
 
@@ -354,7 +362,7 @@ O sistema é configurável em vários aspectos sem precisar alterar o código:
 
 **Pool de hashtags:** uma lista de hashtags de fallback, editável sem reiniciar o sistema. Basta editar o arquivo e reiniciar o container.
 
-**Horários de publicação:** em quais horários do dia os posts são agendados. Padrão: 8h e 20h UTC.
+**Horários de publicação:** em quais horários do dia os posts são agendados. Hoje: 11h, 15h e 19h de Brasília. O arquivo de configuração guarda esses horários em UTC (14h, 18h e 22h), então mudar um horário exige converter — três horas a mais.
 
 **Limite de fila:** quantos posts podem estar agendados simultaneamente antes de o sistema recusar novos agendamentos. Padrão: 10 (limite do Buffer free).
 
@@ -503,7 +511,29 @@ Agora cada passo manda uma mensagem no WhatsApp, na hora em que acontece:
 
 **Você pode diminuir o volume depois.** No começo vale receber tudo: é assim que se descobre o que o sistema realmente faz quando roda sozinho. Quando o fluxo já for previsível, uma linha de configuração corta as mensagens miúdas e deixa só os marcos, ou só os problemas. Nada disso exige mexer no código.
 
+**O aviso agora sai no celular por um app próprio, não mais pelo WhatsApp.** O canal antigo era um serviço gratuito de WhatsApp com uma cota mensal de mensagens, e em 16/08/2026 essa cota acabou. As notificações pararam de chegar e **ninguém foi avisado de que elas tinham parado** — o serviço continuava respondendo "recebi" para mensagens que jamais entregava, então o sistema achava que estava tudo certo. O silêncio durou dias e só foi notado porque você estranhou não receber nada.
+
+Duas coisas mudaram por causa disso. A primeira: o destino passou a ser o **ntfy**, um app de notificação sem cota — não existe mais um limite mensal para estourar. Você instala o app no celular, assina um endereço secreto, e as mensagens chegam como notificação normal do celular. A segunda, mais importante: o sistema agora **confere se a mensagem foi realmente aceita**, em vez de confiar no "recebi". Se um destino passar a recusar mensagens, isso vira um registro explícito de falha em vez de silêncio.
+
+**Por que isso importa mais do que parece:** o canal de aviso é o único que conta quando todo o resto quebra. Um canal de aviso que morre em silêncio é pior do que não ter canal nenhum, porque a ausência de mensagens passa a ser interpretada como "está tudo bem". Era exatamente o que estava acontecendo.
+
 **E existe um alarme para o silêncio.** Notificação só funciona quando o sistema está vivo o bastante para mandá-la — uma queda de luz não avisa ninguém. Por isso o sistema também bate ponto num serviço externo de vigília: um sinal a cada 15 minutos dizendo "estou de pé", outro a cada busca do scout, e um terceiro **só quando um vídeo é concluído de verdade**. Se os sinais param de chegar, é o serviço de fora que avisa. O terceiro é o que resolve o pior caso de todos: tudo aparentemente funcionando e nenhum vídeo saindo.
+
+## A legenda pergunta de que lado você está
+
+O vídeo escolhido é o que tem alguém claramente errado. A legenda passou a fechar o ciclo: quando existe um vilão na história, o convite ao comentário pede o **seu veredito sobre ele** — "ela tava errada de perdoar?" — em vez do convite genérico de antes. Tomar partido é o que faz alguém parar de assistir e escrever.
+
+A regra tem limite escrito: sem xingamento e sem mandar odiar ninguém. A pergunta é o convite; a raiva é de quem responde. Histórias sem vilão continuam com o convite normal, sobre o que você faria no lugar de quem viveu aquilo.
+
+## Os vídeos saem no horário em que o público está acordado
+
+Antes os posts saíam às 21h, 9h e 17h de Brasília — um deles à noite, quase no fim do dia, e outro logo cedo. Não era escolha: os horários estavam escritos em UTC no arquivo de configuração, e ninguém tinha convertido para o fuso de quem assiste.
+
+Desde 25 de agosto de 2026 a publicação acontece **entre 11h e 20h**, três vezes por dia: **11h, 15h e 19h**, sempre no horário de Brasília.
+
+**Por que o último é às 19h e não às 20h.** Quando uma história é dividida, a parte 2 sai meia hora depois da parte 1 — ela não entra na fila de horários, ela pendura na anterior. Um último post às 20h em ponto empurraria a continuação para 20h30, fora da janela. A folga de uma hora é o que mantém a história inteira dentro dela.
+
+**O erro que isso previne é silencioso.** Um horário fora da janela não gera falha nenhuma: o vídeo é produzido, agendado e publicado normalmente — só que de madrugada. Por isso existe agora uma verificação automática que lê a configuração e recusa qualquer horário fora de 11h–20h, junto com a conta da continuação.
 
 ## Fluxo completo resumido
 
