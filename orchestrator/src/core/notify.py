@@ -25,14 +25,19 @@ nenhum deles, então é copiável para qualquer serviço novo sem edição.
 Env vars (todas opcionais — ausente significa destino desligado):
 
 - ``CALLMEBOT_PHONE`` / ``CALLMEBOT_APIKEY`` — WhatsApp via CallMeBot
-- ``NOTIFY_WEBHOOK_URL`` — POST ``{"text": ...}``, escape hatch para WAHA/ntfy/Discord
+- ``NOTIFY_WEBHOOK_URL`` — POST, escape hatch para ntfy/Discord/WAHA. O corpo
+  depende de ``[monitoring] webhook_format``: ``json`` manda ``{"text": ...}``
+  (Slack, Discord via proxy), ``text`` manda a mensagem crua no corpo (ntfy, que
+  em JSON mostraria o literal ``{"text": ...}`` na tela do celular).
 - ``HEALTHCHECK_{CHECK}_URL`` — destino do ping de ``ping("{check}")``
 
-Config em ``[monitoring]``: ``enabled``, ``level``, ``min_interval_seconds``.
+Config em ``[monitoring]``: ``enabled``, ``level``, ``min_interval_seconds``,
+``webhook_format``.
 """
 
 import asyncio
 import os
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -67,6 +72,30 @@ SEND_ATTEMPTS = 2
 SEND_BACKOFF = 1.0
 
 CALLMEBOT_DEFAULT_URL = "https://api.callmebot.com/whatsapp.php"
+
+#: Formato do corpo do webhook quando o ``config.ini`` não diz nada. ``json``
+#: preserva o contrato antigo — mudar o default quebraria em silêncio qualquer
+#: destino que já esteja lendo ``{"text": ...}``.
+DEFAULT_WEBHOOK_FORMAT = "json"
+
+#: Marcador de sucesso na resposta do CallMeBot, que responde ``200`` **mesmo
+#: quando recusa** — cota esgotada, apikey inválida, número não autorizado — e
+#: diz isso só no corpo. Em 16/08/2026 a cota grátis zerou e o monitoramento
+#: morreu em silêncio exatamente por aqui: o log registrou ``200 OK`` para dias
+#: de mensagens que nunca saíram, e a falha foi descoberta por não ter chegado
+#: mensagem nenhuma no celular.
+#:
+#: A checagem é pelo **sucesso**, não por uma lista de textos de erro conhecidos:
+#: um modo de recusa novo cai no ``else`` e vira aviso, em vez de passar batido
+#: por não estar na lista. É a escolha que troca o risco de um alarme falso no
+#: log pelo risco de outro silêncio — e o silêncio é o que já custou caro.
+CALLMEBOT_OK_MARKER = "queued"
+
+#: Tamanho do trecho da recusa que vai para o log. A resposta é HTML e o motivo
+#: legível ("You have 0 messages left") cabe folgado nisto.
+REJECTION_REASON_CHARS = 200
+
+_HTML_TAG = re.compile(r"<[^>]+>")
 
 _queue: asyncio.Queue[str] | None = None
 
@@ -191,19 +220,40 @@ async def ping(check: str, *, fail: bool = False) -> None:
         log.warning("healthcheck_ping_failed", check=check, error=str(exc))
 
 
-async def _send(method: str, url: str, **kwargs: Any) -> bool:
+def strip_html(body: str) -> str:
+    """Texto legível de uma resposta HTML, em uma linha. Puro.
+
+    Existe porque o CallMeBot devolve o motivo da recusa embrulhado em ``<p>`` e
+    ``<b>``: sem isto o log carregaria a marcação e o motivo — a única coisa que
+    interessa ali — ficaria mais difícil de ler do que o problema que descreve.
+    """
+    return " ".join(_HTML_TAG.sub(" ", body).split())
+
+
+def callmebot_accepted(body: str) -> bool:
+    """Se o CallMeBot aceitou a mensagem, lido no corpo — o status é sempre 200."""
+    return CALLMEBOT_OK_MARKER in body.lower()
+
+
+async def _send(method: str, url: str, **kwargs: Any) -> httpx.Response | None:
+    """A resposta de um envio bem-sucedido, ou ``None``. Nunca levanta.
+
+    Devolve a resposta inteira, e não um ``bool``, porque status ``2xx`` não é o
+    mesmo que mensagem entregue: quem chama pode precisar ler o corpo para saber
+    se o destino de fato aceitou.
+    """
     for attempt in range(1, SEND_ATTEMPTS + 1):
         try:
             async with httpx.AsyncClient(timeout=SEND_TIMEOUT) as client:
                 response = await client.request(method, url, **kwargs)
             response.raise_for_status()
-            return True
+            return response
         except Exception as exc:  # noqa: BLE001
             if attempt >= SEND_ATTEMPTS:
                 log.warning("notify_send_failed", error=str(exc))
-                return False
+                return None
             await asyncio.sleep(SEND_BACKOFF)
-    return False
+    return None
 
 
 async def _deliver(message: str) -> None:
@@ -212,10 +262,24 @@ async def _deliver(message: str) -> None:
     if phone and apikey:
         base = os.environ.get("CALLMEBOT_BASE_URL", "").strip() or CALLMEBOT_DEFAULT_URL
         url = f"{base}?phone={quote(phone)}&apikey={quote(apikey)}&text={quote(message)}"
-        await _send("GET", url)
+        response = await _send("GET", url)
+        if response is not None and not callmebot_accepted(response.text):
+            log.warning(
+                "notify_rejected",
+                destination="callmebot",
+                reason=strip_html(response.text)[:REJECTION_REASON_CHARS],
+            )
 
     if webhook:
-        await _send("POST", webhook, json={"text": message})
+        if str(_cfg("webhook_format", DEFAULT_WEBHOOK_FORMAT)).strip().lower() == "text":
+            await _send(
+                "POST",
+                webhook,
+                content=message.encode("utf-8"),
+                headers={"Content-Type": "text/plain; charset=utf-8"},
+            )
+        else:
+            await _send("POST", webhook, json={"text": message})
 
 
 async def sender_loop() -> None:

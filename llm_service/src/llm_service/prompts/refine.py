@@ -64,6 +64,13 @@ REGRAS DE CLASSIFICAÇÃO:
 - tone: "suspenseful" | "funny" | "emotional" | "educational" | "inspirational" | "shocking"
 - target_audience.gender: "female" | "male" | "all"
 - hashtag_hints: 5 a 8 hashtags em português e inglês relevantes para o conteúdo
+- cta_per_part: o convite ao comentário, uma frase curta. Quando a história tem \
+alguém claramente errado — que é o caso da maioria delas —, o CTA pede o VEREDITO \
+do espectador sobre essa pessoa ("ela tava errada de perdoar?", "eu ficaria com \
+raiva, e você?"), porque tomar partido é o que faz alguém parar para escrever. \
+Sem xingamento e sem mandar odiar ninguém: a pergunta é o convite, a raiva é de \
+quem responde. História sem vilão leva CTA normal, sobre o que se faria no lugar \
+de quem viveu aquilo
 
 REGRA DO NARRADOR (campo "narrator_gender", fora de "classification"):
 - É o gênero de QUEM CONTA a história — a pessoa que fala "eu". A história vai \

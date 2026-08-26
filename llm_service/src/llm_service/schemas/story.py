@@ -31,6 +31,7 @@ class StoryVerdict(BaseModel):
     ``hook`` and ``score`` answer different questions and can disagree: a title
     can promise a great payoff over a body that then rambles (hook without
     story), and a well-told story can open on a buried lede (story without hook).
+    ``outrage`` is a third such question — see the field.
     """
 
     index: int
@@ -38,12 +39,22 @@ class StoryVerdict(BaseModel):
     hook: bool
     #: Overall storytelling strength, 0–10. The caller decides where "weak" starts.
     score: int
+    #: How much indignation the story is likely to provoke, 0–10. A third axis,
+    #: not a flavour of ``score``: a badly written post can be infuriating and a
+    #: beautifully told one can have nobody to be angry at. ``None`` means the
+    #: model did not answer it — distinct from a zero, which is a judgement.
+    outrage: int | None = None
+    #: Is there someone in the story whose behaviour is plainly indefensible?
+    #: Asked as a boolean next to the score because "who is the asshole here" is
+    #: the question the audience answers in the comments, and a story without an
+    #: answer to it does not get comments no matter how high the outrage reads.
+    villain: bool = False
     #: The line the model read as the hook, when there was one. Kept for
     #: calibration: it shows *what* the model rewarded, not just how much.
     hook_line: str | None = None
     reason: str | None = None
 
-    @field_validator("score", mode="before")
+    @field_validator("score", "outrage", mode="before")
     @classmethod
     def _clamp(cls, value):
         """Pull out-of-range scores into range instead of failing the batch.

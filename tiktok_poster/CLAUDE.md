@@ -68,7 +68,9 @@ Agora `create_post` levanta `BufferRejected` (tipo próprio, filho de `RuntimeEr
 `next_available_slot(pending_posts, posts_per_day, preferred_times, queue_limit) -> datetime | None`
 
 - Escaneia dias à frente até encontrar um com menos de `posts_per_day` posts
-- Horários preferidos configurados em `config.ini [posting] preferred_times` (padrão: `08:00,20:00` UTC)
+- Horários preferidos configurados em `config.ini [posting] preferred_times`, em **UTC**: hoje `14:00,18:00,22:00`, que é **11:00, 15:00 e 19:00 em Brasília** (UTC-3)
+- ⚠️ **A janela de publicação é 11h–20h no horário do Brasil**, e o arquivo está em UTC — mexer nos horários sem converter joga vídeo para a madrugada sem erro nenhum. `tests/test_posting_window.py` lê o `config.ini` e falha se algum slot sair da janela
+- O último slot para em 19:00 BRT de propósito: a parte 2 de uma série pendura `series_gap_minutes` depois da parte 1 e ignora os `preferred_times`, então o fim do dia precisa dessa folga para a continuação não sair da janela
 - Retorna `None` se a fila já tem `queue_limit` posts (Buffer free: 10)
 
 ### Continuação de série (`continuation_slot`)

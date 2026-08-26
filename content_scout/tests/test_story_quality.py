@@ -64,6 +64,7 @@ def test_metadata_carries_the_hook_line_when_there_is_one():
         "story_tag": TAG_STRONG,
         "story_score": 8,
         "has_hook": True,
+        "has_villain": False,
         "hook_line": "ela se vingou",
     }
 
@@ -86,7 +87,7 @@ def test_rank_puts_the_strongest_opening_first():
         "c": StoryScore(hook=True, score=6),
     }
 
-    ordered = rank_by_story(candidates, scores, neutral=6)
+    ordered = rank_by_story(candidates, scores, neutral=6, outrage_neutral=6, outrage_weight=2)
 
     assert [c.external_id for c in ordered] == ["b", "c", "a"]
 
@@ -96,7 +97,7 @@ def test_rank_keeps_source_order_on_ties():
     candidates = [_candidate(x) for x in ("a", "b", "c")]
     scores = {x: StoryScore(hook=True, score=7) for x in ("a", "b", "c")}
 
-    ordered = rank_by_story(candidates, scores, neutral=6)
+    ordered = rank_by_story(candidates, scores, neutral=6, outrage_neutral=6, outrage_weight=2)
 
     assert [c.external_id for c in ordered] == ["a", "b", "c"]
 
@@ -109,7 +110,7 @@ def test_unscored_candidate_sorts_at_the_threshold_not_last():
         "strong": StoryScore(hook=True, score=9),
     }
 
-    ordered = rank_by_story(candidates, scores, neutral=6)
+    ordered = rank_by_story(candidates, scores, neutral=6, outrage_neutral=6, outrage_weight=2)
 
     assert [c.external_id for c in ordered] == ["strong", "unscored", "weak"]
 
@@ -118,13 +119,13 @@ def test_rank_with_no_scores_at_all_is_a_no_op():
     """Total outage falls straight back to the source's own ranking."""
     candidates = [_candidate(x) for x in ("a", "b", "c")]
 
-    ordered = rank_by_story(candidates, {}, neutral=6)
+    ordered = rank_by_story(candidates, {}, neutral=6, outrage_neutral=6, outrage_weight=2)
 
     assert [c.external_id for c in ordered] == ["a", "b", "c"]
 
 
 def test_rank_empty():
-    assert rank_by_story([], {}, neutral=6) == []
+    assert rank_by_story([], {}, neutral=6, outrage_neutral=6, outrage_weight=2) == []
 
 
 def test_ranking_survives_the_interleave_without_breaking_fairness():
@@ -142,7 +143,7 @@ def test_ranking_survives_the_interleave_without_breaking_fairness():
         "b_good": StoryScore(hook=True, score=8),
     }
 
-    ordered = interleave_by_origin(rank_by_story(candidates, scores, neutral=6))
+    ordered = interleave_by_origin(rank_by_story(candidates, scores, neutral=6, outrage_neutral=6, outrage_weight=2))
 
     assert [c.external_id for c in ordered] == ["a_good", "b_good", "a_bad", "b_bad"]
 
@@ -255,3 +256,138 @@ async def test_missing_results_key_yields_no_scores():
     respx.post(URL).mock(return_value=Response(200, json={}))
 
     assert await StoryQualityClient().score([_candidate("t3_a")]) == {}
+
+
+# ─────────────────────────── revolta ───────────────────────────
+
+
+def test_outrage_outranks_a_better_told_calm_story():
+    """The channel is built on indignation — that is what the ordering buys."""
+    candidates = [_candidate(x) for x in ("calma", "revoltante")]
+    scores = {
+        "calma": StoryScore(hook=True, score=9, outrage=2),
+        "revoltante": StoryScore(hook=True, score=6, outrage=9, villain=True),
+    }
+
+    ordered = rank_by_story(candidates, scores, neutral=6, outrage_neutral=6, outrage_weight=2)
+
+    assert [c.external_id for c in ordered] == ["revoltante", "calma"]
+
+
+def test_storytelling_still_wins_when_the_outrage_gap_is_small():
+    """Weighting is not a priority order: 10/3 must not beat 9/9."""
+    candidates = [_candidate(x) for x in ("mal_contada", "bem_contada")]
+    scores = {
+        "mal_contada": StoryScore(hook=True, score=3, outrage=10, villain=True),
+        "bem_contada": StoryScore(hook=True, score=9, outrage=9, villain=True),
+    }
+
+    ordered = rank_by_story(candidates, scores, neutral=6, outrage_neutral=6, outrage_weight=2)
+
+    assert [c.external_id for c in ordered] == ["bem_contada", "mal_contada"]
+
+
+def test_weight_zero_reproduces_the_old_pure_storytelling_order():
+    """The knob has to be able to turn the whole thing off."""
+    candidates = [_candidate(x) for x in ("revoltante", "bem_contada")]
+    scores = {
+        "revoltante": StoryScore(hook=True, score=4, outrage=10),
+        "bem_contada": StoryScore(hook=True, score=9, outrage=0),
+    }
+
+    ordered = rank_by_story(candidates, scores, neutral=6, outrage_neutral=6, outrage_weight=0)
+
+    assert [c.external_id for c in ordered] == ["bem_contada", "revoltante"]
+
+
+def test_unjudged_outrage_sorts_at_the_threshold_not_at_zero():
+    """A model that skipped the field must not bury the story under a real 0."""
+    candidates = [_candidate(x) for x in ("sem_revolta", "sem_campo")]
+    scores = {
+        "sem_revolta": StoryScore(hook=True, score=7, outrage=0),
+        "sem_campo": StoryScore(hook=True, score=7),
+    }
+
+    ordered = rank_by_story(candidates, scores, neutral=6, outrage_neutral=6, outrage_weight=2)
+
+    assert [c.external_id for c in ordered] == ["sem_campo", "sem_revolta"]
+
+
+def test_unscored_candidate_still_sorts_at_both_thresholds():
+    """Same rule as before, now across two axes instead of one."""
+    candidates = [_candidate(x) for x in ("fraca", "nao_julgada", "forte")]
+    scores = {
+        "fraca": StoryScore(hook=False, score=2, outrage=1),
+        "forte": StoryScore(hook=True, score=9, outrage=9),
+    }
+
+    ordered = rank_by_story(candidates, scores, neutral=6, outrage_neutral=6, outrage_weight=2)
+
+    assert [c.external_id for c in ordered] == ["forte", "nao_julgada", "fraca"]
+
+
+def test_rank_value_is_the_weighted_sum():
+    assert StoryScore(hook=True, score=6, outrage=9).rank_value(
+        outrage_neutral=6, outrage_weight=2
+    ) == 24
+
+
+def test_metadata_carries_outrage_and_villain():
+    meta = StoryScore(hook=True, score=8, outrage=9, villain=True).as_metadata(min_score=6)
+
+    assert meta["outrage_score"] == 9
+    assert meta["has_villain"] is True
+
+
+def test_metadata_omits_outrage_when_it_was_not_judged():
+    """The refiner must not read "not judged" as "nothing to be angry about"."""
+    meta = StoryScore(hook=True, score=8).as_metadata(min_score=6)
+
+    assert "outrage_score" not in meta
+    assert meta["has_villain"] is False
+
+
+@respx.mock
+async def test_client_parses_outrage_and_villain():
+    respx.post(URL).mock(
+        return_value=Response(
+            200,
+            json={
+                "results": [
+                    {"index": 0, "hook": True, "score": 7, "outrage": 9, "villain": True}
+                ]
+            },
+        )
+    )
+
+    scores = await StoryQualityClient().score([_candidate("a")])
+
+    assert scores["a"].outrage == 9
+    assert scores["a"].villain is True
+
+
+@respx.mock
+async def test_client_keeps_the_verdict_when_outrage_is_missing():
+    """Outrage degrades on its own — the storytelling verdict is still usable."""
+    respx.post(URL).mock(
+        return_value=Response(200, json={"results": [_verdict(0, score=8)]})
+    )
+
+    scores = await StoryQualityClient().score([_candidate("a")])
+
+    assert scores["a"].score == 8
+    assert scores["a"].outrage is None
+    assert scores["a"].villain is False
+
+
+@respx.mock
+async def test_client_treats_garbage_outrage_as_unjudged():
+    respx.post(URL).mock(
+        return_value=Response(
+            200, json={"results": [_verdict(0, score=8, outrage="muito")]}
+        )
+    )
+
+    scores = await StoryQualityClient().score([_candidate("a")])
+
+    assert scores["a"].outrage is None

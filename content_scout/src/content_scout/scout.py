@@ -46,6 +46,11 @@ class ScoutReport:
     comments_fetched: int = 0
     story_scored: int = 0
     weak_storytelling: int = 0
+    #: Judged candidates whose outrage score fell under ``min_outrage_score``.
+    #: A count, not a rejection — see the ranking.
+    low_outrage: int = 0
+    #: Judged candidates the model saw a clear villain in.
+    with_villain: int = 0
     story_quality_unavailable: bool = False
     already_running: bool = False
     #: Origin swept this cycle, ``None`` when none was due.
@@ -144,9 +149,13 @@ def interleave_by_origin(
 
 
 def rank_by_story(
-    candidates: list[Candidate], scores: dict[str, StoryScore], neutral: int
+    candidates: list[Candidate],
+    scores: dict[str, StoryScore],
+    neutral: int,
+    outrage_neutral: int,
+    outrage_weight: int,
 ) -> list[Candidate]:
-    """Order candidates by storytelling score, strongest first.
+    """Order candidates by outrage and storytelling together, strongest first.
 
     A stable sort over the flat list is all this needs: ``interleave_by_origin``
     preserves each origin group's internal order, so sorting here turns that
@@ -154,14 +163,25 @@ def rank_by_story(
     the interleave exists to provide. Ties keep the source's own ranking, which
     is the fallback signal when the model cannot separate two candidates.
 
-    A candidate with no score sorts at ``neutral`` — the weak/strong threshold —
-    rather than last. Sending it to the back would turn a model failure into a
-    permanent handicap for a story nobody has actually judged, and the leftovers
-    of every cycle are exactly the candidates that would inherit it.
+    **Outrage carries the weight, storytelling breaks the near-ties.** The key is
+    ``outrage_weight × outrage + score`` (see ``StoryScore.rank_value``): the
+    channel is built on indignation, so the story with the clearer villain wins,
+    but not at any cost in craft. Sorting by outrage alone would put a 10/3 above
+    a 9/9, and a story nobody finishes collects no comments — which is the whole
+    reason outrage was selected for.
+
+    A candidate with no score sorts at ``neutral``/``outrage_neutral`` — the two
+    thresholds — rather than last. Sending it to the back would turn a model
+    failure into a permanent handicap for a story nobody has actually judged, and
+    the leftovers of every cycle are exactly the candidates that would inherit it.
     """
+    unjudged = outrage_weight * outrage_neutral + neutral
+
     def key(candidate: Candidate) -> int:
         score = scores.get(candidate.external_id)
-        return -(score.score if score is not None else neutral)
+        if score is None:
+            return -unjudged
+        return -score.rank_value(outrage_neutral, outrage_weight)
 
     return sorted(candidates, key=key)
 
@@ -454,6 +474,15 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 for score in story_scores.values()
                 if score.tag(scout_cfg.min_story_score) == TAG_WEAK
             )
+            # Counted, never gated. If a cycle brings nothing outrageous, the best
+            # available story still publishes — an empty day is worse than a
+            # calmer video, and this number is how the supply gets watched.
+            report.low_outrage = sum(
+                1
+                for score in story_scores.values()
+                if score.outrage is not None and score.outrage < scout_cfg.min_outrage_score
+            )
+            report.with_villain = sum(1 for score in story_scores.values() if score.villain)
 
         # The length ceiling, applied only now that every candidate has been
         # judged. It used to run with the cheap filters, which meant a story was
@@ -498,7 +527,14 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
             )
 
         ordered = interleave_by_origin(
-            rank_by_story(publishable, story_scores, scout_cfg.min_story_score), usage
+            rank_by_story(
+                publishable,
+                story_scores,
+                scout_cfg.min_story_score,
+                scout_cfg.min_outrage_score,
+                scout_cfg.outrage_weight,
+            ),
+            usage,
         )
 
         # Walk past the budget: rejected candidates don't consume a slot, so the
@@ -614,6 +650,7 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 run_id=str(run_id),
                 story_score=story.score if story else None,
                 story_tag=story.tag(scout_cfg.min_story_score) if story else None,
+                outrage_score=story.outrage if story else None,
             )
             notify(
                 "História enviada ao pipeline",
@@ -622,6 +659,7 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 de=candidate.origin,
                 titulo=candidate.title[:100],
                 nota=story.score if story else None,
+                revolta=story.outrage if story else None,
                 chars=candidate.char_count,
             )
 
@@ -661,6 +699,8 @@ def _seen_row(candidate: Candidate, status: SeenStatus, skip_reason: str | None 
         comment_count=thread.total if thread is not None else None,
         has_hook=story.hook if story is not None else None,
         story_score=story.score if story is not None else None,
+        outrage_score=story.outrage if story is not None else None,
+        has_villain=story.villain if story is not None else None,
         story_tag=story.tag(min_story_score) if story is not None else None,
         hook_line=story.hook_line if story is not None else None,
         story_reason=story.reason[:255] if story is not None and story.reason else None,

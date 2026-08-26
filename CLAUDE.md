@@ -137,7 +137,7 @@ acima responde `404 Template not found` — que parece erro de credencial do R2 
 - `llm_service` — `/refine`, `/moderate`, `/story-quality` (OpenRouter / Anthropic / Chutes)
 - `tts_service` — providers `edge`/`azure`, corte de silêncio + normalização de loudness, transcrição word-level
 - `tiktok_poster` — agendamento via Buffer, slots, séries, hashtags e caption; **dois destinos** (TikTok + YouTube) no mesmo slot
-- `content_scout` — fonte Reddit via RSS, varredura do arquivo, dedup por conteúdo, nota de storytelling (YouTube previsto como minerador de tema)
+- `content_scout` — fonte Reddit via RSS, varredura do arquivo, dedup por conteúdo, nota de storytelling **e de revolta** (YouTube previsto como minerador de tema)
 
 **Desde 14/08/2026 a stack roda no servidor** (`192.168.0.106`), que é o ambiente de
 produção — a stack da máquina Windows foi desligada para não haver dois produtores no mesmo
@@ -162,6 +162,8 @@ antes, sem erro e sem aviso.
 4. ⏳ Conferir no primeiro post se o Buffer aceita vídeo **acima de 3 minutos** no canal do
    YouTube. É o único ponto não verificável sem publicar: o canal é do tipo Shorts e a
    política de divisão permite até 30 minutos de fala.
+
+**Notificação: o destino mudou em 16/08/2026.** A cota grátis do CallMeBot esgotou e o canal morreu em silêncio (ele responde `200` mesmo recusando). Produção agora manda para o **ntfy** via `NOTIFY_WEBHOOK_URL`, com `webhook_format = text`; o CallMeBot está comentado no `.env` do servidor. Ver `docs/vision.md` → "A recusa disfarçada de sucesso".
 
 O que falta **não é código de feature** — é monitoramento: os três checks do
 Healthchecks.io, o cron do disco (script pronto, falta agendar) e o Uptime Kuma. Ver também
@@ -191,3 +193,13 @@ Decisão tomada em 15/08/2026:
 | Publicação no YouTube | Pelo **Buffer**, canal novo na mesma conta. A API direta trava o vídeo como **privado** enquanto o projeto não passar pela auditoria do Google |
 | Título do YouTube | **Campo novo** no refino (`youtube_title`), não o gancho reciclado — o título é lido antes do vídeo abrir, o gancho é ouvido depois |
 | Horário no YouTube | **O mesmo do TikTok** — o slot sai da fila do TikTok e é reusado nos dois canais |
+
+Decisão tomada em 25/08/2026:
+
+| Decisão | Escolha |
+|---|---|
+| Janela de publicação | **11h–20h de Brasília**, três posts por dia: 11:00, 15:00 e 19:00 BRT (`preferred_times = 14:00,18:00,22:00`, que é **UTC**) |
+| Último slot às 19h | A folga de uma hora é para a **continuação de série**, que pendura 30 min depois da parte 1 e ignora os `preferred_times` |
+| Guarda de janela em `continuation_slot` | **Não fazer** — empurrar a parte 2 para o dia seguinte parte a história ao meio, que é o que o encadeamento existe para evitar |
+| Critério de seleção de história | **Revolta com vilão claro**, público-alvo mulheres 18–35. `/story-quality` devolve `outrage` (0–10) e `villain`; o scout ordena por `2 × outrage + story_score` |
+| `min_outrage_score` | **Rótulo e contador, não portão** — ciclo sem nada revoltante publica a melhor história disponível; fila vazia é o modo de falha mais caro |

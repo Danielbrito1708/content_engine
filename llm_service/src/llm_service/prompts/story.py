@@ -44,6 +44,61 @@ Exemplos de gancho FRACO:
 
 O gancho pode estar no TÍTULO ou nas primeiras linhas da ABERTURA. Basta um dos dois.
 
+════════ REVOLTA E VILÃO (campos "outrage" e "villain") ════════
+
+O canal vive de uma emoção específica: a **indignação**. A história que rende é
+a que faz o espectador querer comentar "não acredito que ele fez isso" — e o
+motor disso é quase sempre alguém sendo canalha com quem não merecia.
+
+**"villain" (true/false):** existe na história uma pessoa cujo comportamento é
+claramente indefensável? O namorado que traiu e agora quer voltar, a sogra que
+sabota, o chefe que rouba o crédito, a amiga que conta o segredo. Não precisa
+ser mau caráter de novela: basta ser alguém errado de um jeito que qualquer
+pessoa reconhece na hora, sem precisar de explicação.
+
+Não é vilão: o azar, a doença, a burocracia, a morte, o mal-entendido que se
+resolve. Tragédia sem culpado dá pena, e pena não faz ninguém comentar.
+
+**"outrage" (0 a 10):** o quanto essa história provoca revolta em quem assiste.
+
+O público principal do canal é **mulher, de 18 a 35 anos**, e o topo da escala é
+reservado para a revolta que atinge esse público em cheio — traição, ciúme
+disfarçado de cuidado, sogra invasiva, marido que não faz nada em casa, amiga
+falsa, homem que descarta e volta quando é conveniente, chefe que humilha. Uma
+história de revolta que só funciona para outro público (rixa entre jogadores,
+briga de trânsito entre desconhecidos) é revolta de verdade e ganha nota — só
+não chega ao topo.
+
+Some pontos por:
+- vítima que não fez por merecer, e que o espectador consegue ser
+- deslealdade: quem traiu a confiança tinha o dever de não trair
+- a cara de pau depois — o vilão exige perdão, nega, inverte a culpa, se faz de vítima
+- injustiça ainda de pé quando o texto abre: dá vontade de ver a conta chegar
+- gente ao redor tomando o partido errado ("todo mundo mandou eu relevar")
+
+Desconte por:
+- ninguém errado — só uma situação triste, um desencontro, um acidente
+- o narrador é quem está errado, e sem ironia nenhuma: o espectador vira contra
+  ele, e o comentário deixa de ser a favor da história
+- revolta abstrata: política, "o mundo hoje em dia", indignação sem uma pessoa com nome
+- o conflito já acabou bem antes de começar e não sobrou nada em jogo
+
+Régua:
+  0–2  não há com quem se indignar
+  3–5  alguém agiu mal, mas é pequeno ou o espectador entende os dois lados
+  6–7  vilão claro e injustiça de verdade — dá vontade de comentar
+  8–10 revolta imediata, do tipo que faz responder antes de terminar de assistir;
+       8+ pede o público principal do canal
+
+`outrage` e `score` são notas separadas e podem discordar: um relato mal escrito
+pode ser revoltante (revolta alta, storytelling baixo) e uma história muito bem
+contada pode não ter vilão nenhum (o contrário). Responda as duas com
+sinceridade — quem decide o peso de cada uma é quem chama.
+
+Isto é julgamento de **potencial de reação**, não de moral e não de segurança:
+você não está aprovando o que o vilão fez, nem decidindo se o assunto pode ir ao
+ar. Isso é decidido em outro lugar.
+
 ════════ O QUE É BOM STORYTELLING (campo "score", 0 a 10) ════════
 
 Julgue como história narrada, não como pedido de ajuda. Some pontos por:
@@ -87,10 +142,15 @@ em outro lugar. Uma história pesada bem contada tem nota alta.
 
 Responda APENAS com JSON, um objeto por história recebida, usando o mesmo número:
 {"results": [
-  {"index": 0, "hook": true, "score": 8, "hook_line": "<a frase que serve de \
-gancho, copiada do texto>", "reason": "<no máximo 12 palavras, em português>"},
-  {"index": 1, "hook": false, "score": 3, "hook_line": null, "reason": "..."}
-]}"""
+  {"index": 0, "hook": true, "score": 8, "outrage": 9, "villain": true, \
+"hook_line": "<a frase que serve de gancho, copiada do texto>", "reason": "<no \
+máximo 12 palavras, em português>"},
+  {"index": 1, "hook": false, "score": 3, "outrage": 2, "villain": false, \
+"hook_line": null, "reason": "..."}
+]}
+
+Os quatro campos de julgamento — `hook`, `score`, `outrage` e `villain` — são \
+obrigatórios em TODOS os objetos."""
 
 
 def build_user_prompt(items) -> str:
