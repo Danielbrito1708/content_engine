@@ -378,7 +378,9 @@ O vídeo agora **abre com um card de comentário** — aquele card branco de fun
 
 Antes, o vídeo começava com três segundos de fundo rodando sozinho: o card era gerado, a frase gancho era narrada em arquivo separado, e nada disso chegava ao vídeo. As duas peças existiam e não se encontravam.
 
-**Como fica na tela.** O card aparece e some suavemente, centralizado, com a mesma folga do lado direito que as demais artes deixam para os botões de curtir e comentar do TikTok. A posição, a duração do aparecer/sumir e a pausa entre o gancho e o início da narração são ajustáveis no template.
+**Como fica na tela.** O card **já está na tela no primeiro frame** — não aparece aos poucos — e some suavemente quando a abertura termina. Fica centralizado, com a mesma folga do lado direito que as demais artes deixam para os botões de curtir e comentar do TikTok. A posição, a duração do sumir e a pausa entre o gancho e o início da narração são ajustáveis no template.
+
+**Por que o card não aparece mais aos poucos.** Todo vídeo abre com o mesmo card, no mesmo lugar, e antes todos abriam também com a mesma transição de meio segundo por cima dele — os primeiros frames de qualquer vídeo do canal eram, quadro a quadro, quase a mesma imagem. Isso é o tipo de coincidência que a plataforma lê como conteúdo repostado. Com o card já posicionado desde o começo, a abertura de cada vídeo passa a ser o card daquela história e mais nada. De quebra, a frase gancho fica legível alguns quadros antes.
 
 **A foto de perfil e o texto do card ficaram maiores** — cerca de 40% em cima do tamanho original, tanto no cabeçalho (foto, nome e selos) quanto na letra da frase. No tamanho anterior o card era lido como uma legendinha no meio da tela; agora ele tem o peso de um card de comentário de verdade, que é o que faz alguém parar de rolar o feed para ler. O espaçamento entre o cabeçalho e o texto acompanhou o aumento. Nada disso é código: são números no arquivo de template do card, ajustáveis a qualquer momento.
 

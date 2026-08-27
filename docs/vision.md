@@ -607,6 +607,16 @@ Vale igual para o **`narrator_gender`**, que o gancho recebe do run pelo mesmo m
 
 `card.y_position` usa a mesma escala do `y_position` da legenda (fração da altura do frame, 0 = base), aplicada como `transform.offset_y` em pixels a partir do centro; clampada a 0..1 porque um valor fora do frame vira card sumido sem erro. O fade é limitado a ⅓ do strip pelo mesmo motivo que o da legenda — um fade maior que o strip nunca chegaria a opacidade cheia.
 
+### O card entra sem fade (`fade_frames` só vale para a saída)
+
+O card está em opacidade cheia **no primeiro frame** do vídeo. Só a saída tem fade, e é ela que `card.fade_frames` mede agora.
+
+**A razão não é estética, é de distribuição.** Todo vídeo do canal abre com um card de comentário na mesma posição, e a rampa de `blend_alpha` por cima dela era idêntica em todos: os primeiros quatro frames de qualquer vídeo eram quase o mesmo par de imagens, variando só no texto ainda semitransparente. Isso é assinatura no nível do frame, e é o que um detector de conteúdo duplicado procura. Com o card já posto, o que abre cada vídeo é o card daquela história e mais nada.
+
+O efeito colateral é bem-vindo: o gancho fica legível quatro frames antes, nos segundos em que a pessoa decide se continua assistindo.
+
+**Compatibilidade.** `fade_frames` não mudou de nome nem de unidade — um template publicado no bucket continua sendo lido, e o número que ele traz passa a valer só para o fim da abertura. `fade_frames: 0` continua desligando o fade inteiro, e o teto de ⅓ do strip continua valendo.
+
 ### O gancho é dito uma vez só (`hook_muted`)
 
 O gancho é **literalmente** a primeira frase da parte 1, então montar o `hook.mp3` na frente dela faria a abertura e a narração dizerem a mesma coisa em sequência. `_hook_is_muted(part, run)` marca essa parte, e o render entra num modo diferente:
