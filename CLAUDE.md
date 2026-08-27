@@ -146,6 +146,17 @@ em ~12min42s por parte. Ver `docs/servidor.md` → "O que roda na máquina".
 
 ### Passos pendentes de deploy (YouTube, 15/08/2026)
 
+⏸️ **A publicação no YouTube está desligada desde 27/08/2026, a pedido, até
+segunda ordem.** `[youtube] enabled = false` no `config.ini` do `tiktok_poster`
+— o freio manual, que não apaga a credencial: `BUFFER_YOUTUBE_CHANNEL_ID`
+continua no `.env` do servidor. Com ele desligado a stack publica só no TikTok,
+sem erro (o destino é secundário e degrada em silêncio por desenho). Os 8 posts
+que já estavam agendados no canal foram parados junto — ver o histórico abaixo,
+que descreve como o destino foi ligado e continua valendo para religá-lo.
+**⚠️ O `config.ini` é copiado para a imagem, não montado: mudar o flag exige
+`docker compose up -d --build tiktok_poster`, e um `restart` sozinho não muda
+nada.**
+
 ✅ **O destino está ligado em produção desde 15/08/2026** — passos 1 a 3 aplicados no
 servidor. Sobra o passo 4, que só o primeiro post responde. Em qualquer outro ambiente os
 três primeiros continuam valendo, e sem eles a stack publica só no TikTok, exatamente como
