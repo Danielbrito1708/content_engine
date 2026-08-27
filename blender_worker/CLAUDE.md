@@ -187,7 +187,7 @@ The video opens with the comment card on screen while the hook phrase is read al
 
 **bpy-side:**
 - `add_image_strip(vse, path, channel, frame_start, frame_end)` — `fit_method="ORIGINAL"` (the PNG is authored at the exact frame width, so any fit only resamples it) and `blend_type="ALPHA_OVER"` set **explicitly**: a strip added through the API does not inherit the ALPHA_OVER the UI gives it, and without it the card's transparent margin renders as a black box over the video.
-- `add_card(scene, vse, path, channel, frame_start, frame_end, config, frame_height)` — the strip plus its `blend_alpha` fade, capped at ⅓ of the strip (same reason as the subtitle fade).
+- `add_card(scene, vse, path, channel, frame_start, frame_end, config, frame_height)` — the strip plus its `blend_alpha` fade **out**, capped at ⅓ of the strip (same reason as the subtitle fade). No fade in: see **The card has no fade in** below.
 
 **Channels** — `channels.hook` (5) and `channels.card` (6) come from `template.json` but **default in code**. `template.json` lives in the bucket: a template published before this feature has neither key, and without the default the card would land on the background's channel and cover the whole video. The card sits above the subtitles: with a played hook the two never coexist (subtitles start with the narration, by which time the card is gone), and with a muted one the subtitles under the card are dropped rather than stacked.
 
@@ -196,6 +196,8 @@ The video opens with the comment card on screen while the hook phrase is read al
 "card": { "y_position": 0.5, "fade_frames": 4, "tail_seconds": 0.3 }
 ```
 `tail_seconds` is the silence between the hook's last word and the narration's first — without it the two run together as one sentence.
+
+**The card has no fade in.** It is at full opacity on the first frame of the video; `fade_frames` measures only the fade *out*, at the end of the intro. The reason is distribution, not taste: every video opens on a comment card in the same position, and an identical four-frame `blend_alpha` ramp on top of that made the first frames of every video near-identical images — a frame-level signature a duplicate-content detector reads as the same opening reposted. Landing the card already up also gets the hook legible four frames earlier. The key kept its name and unit, so a template already published in the bucket still reads; `fade_frames: 0` still disables the fade entirely.
 
 `render_job` downloads both keys into the tmpdir and adds them to `job_config.json` under `assets.card` / `assets.hook`, plus `hook_muted` at the top level; a missing key is simply absent from the dict. The hook file is downloaded either way — muted or not, it is what the card is measured by. It is muted (`strip.mute = True`), not removed, so the assembled `.blend` still shows where the card's length comes from.
 

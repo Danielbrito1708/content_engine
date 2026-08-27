@@ -238,21 +238,28 @@ def test_card_is_positioned_from_the_guide():
     assert strip.transform.offset_y == 480
 
 
-def test_card_fades_in_and_out():
+def test_card_fades_out_only():
     strip = _add_card(frame_start=1, frame_end=91, config={"fade_frames": 4})
     frames = [(f, alpha) for _, f, alpha in strip.keyframes]
-    assert (1, 0.0) in frames
-    assert (5, 1.0) in frames
     assert (87, 1.0) in frames
     assert (91, 0.0) in frames
+    # No ramp at the head: the card is already there on the first frame.
+    assert [alpha for f, alpha in frames if f <= 87] == [1.0]
+
+
+def test_card_is_opaque_from_its_first_frame():
+    # Two videos opening on the same fade read as the same opening; the card
+    # landing already up is what breaks that signature.
+    strip = _add_card(frame_start=1, frame_end=91, config={"fade_frames": 4})
+    assert (1, 0.0) not in [(f, alpha) for _, f, alpha in strip.keyframes]
 
 
 def test_fade_is_capped_at_a_third_of_the_strip():
     # A fade longer than the strip would leave the card half-transparent for its
     # whole life instead of ever reaching full opacity.
     strip = _add_card(frame_start=1, frame_end=7, config={"fade_frames": 30})
-    fade_ups = [f for _, f, alpha in strip.keyframes if alpha == 1.0]
-    assert min(fade_ups) == 3
+    fade_starts = [f for _, f, alpha in strip.keyframes if alpha == 1.0]
+    assert min(fade_starts) == 5
 
 
 def test_fade_can_be_switched_off():

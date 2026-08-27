@@ -460,10 +460,16 @@ def add_image_strip(vse, path, channel, frame_start, frame_end):
 def add_card(scene, vse, path, channel, frame_start, frame_end, config=None, frame_height=None):
     """The comment card, on screen for the whole intro.
 
-    Fades in and out at the edges of the intro. The fade is capped at a third of
-    the strip for the same reason the subtitles' is: a fade longer than the strip
-    would insert inverted keyframes and the card would end up half-transparent
-    for its whole life.
+    Up at full opacity on its first frame — there is no fade in. Every video
+    opens on the same card in the same place, and the same short ramp on top of
+    that is a frame-level signature the platform can read as the same opening
+    reposted; the card landing already there breaks the pattern, and it puts the
+    hook on screen a beat earlier besides.
+
+    `fade_frames` therefore measures the fade *out* only. It stays capped at a
+    third of the strip for the same reason the subtitles' is: a fade longer than
+    the strip would insert inverted keyframes and the card would end up
+    half-transparent for its whole life.
     """
     config = config or {}
     strip = add_image_strip(vse, path, channel, frame_start, frame_end)
@@ -476,10 +482,7 @@ def add_card(scene, vse, path, channel, frame_start, frame_end, config=None, fra
     duration = strip.frame_final_duration
     fade = min(int(config.get("fade_frames", DEFAULT_CARD_FADE_FRAMES)), duration // 3)
     if fade > 0:
-        strip.blend_alpha = 0.0
-        strip.keyframe_insert("blend_alpha", frame=frame_start)
         strip.blend_alpha = 1.0
-        strip.keyframe_insert("blend_alpha", frame=frame_start + fade)
         strip.keyframe_insert("blend_alpha", frame=frame_start + duration - fade)
         strip.blend_alpha = 0.0
         strip.keyframe_insert("blend_alpha", frame=frame_start + duration)
