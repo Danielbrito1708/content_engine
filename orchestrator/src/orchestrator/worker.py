@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from structlog import get_logger
 
 from src.core import settings
@@ -296,7 +296,23 @@ def _hook_is_muted(part: PipelinePart, run: PipelineRun) -> bool:
     return bool(run.hook) and opens_with_hook(part.script, run.hook)
 
 
-async def background_key_for(run_id: uuid.UUID, part_number: int) -> str:
+async def _background_usage(session) -> dict[str, int]:
+    """Quantas partes já saíram em cada clipe.
+
+    É a memória da rotação. Conta a tabela inteira, não uma janela: o objetivo é
+    "nenhum clipe repete antes de a biblioteca acabar", e isso é uma contagem
+    acumulada. Partes anteriores à coluna têm `background_key` nulo e ficam de
+    fora — o primeiro ciclo depois da migration passa pela biblioteca inteira.
+    """
+    rows = await session.execute(
+        select(PipelinePart.background_key, func.count())
+        .where(PipelinePart.background_key.is_not(None))
+        .group_by(PipelinePart.background_key)
+    )
+    return {key: count for key, count in rows.all()}
+
+
+async def background_key_for(session, run_id: uuid.UUID, part_number: int) -> str:
     """The background clip this part renders over.
 
     Falls back to the single ``background_video_key`` when nothing is published
@@ -309,7 +325,7 @@ async def background_key_for(run_id: uuid.UUID, part_number: int) -> str:
     if prefix:
         keys = await list_keys(settings.CONFIG.storage.bucket, prefix)
         if keys:
-            return pick_background(keys, str(run_id), part_number)
+            return pick_background(keys, str(run_id), part_number, await _background_usage(session))
         log.warning("no background clips under prefix", prefix=prefix)
         # Degradação silenciosa de novo: o render funciona, mas todos os vídeos
         # passam a dividir o mesmo fundo fixo — que é o que a rotação existe
@@ -336,7 +352,14 @@ async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
     part.status = PartStatus.render_pending
     await session.commit()
 
-    background_key = await background_key_for(run.id, part.part_number)
+    # Gravado **antes** do render, não depois. É o que faz um re-render reusar a
+    # mesma footage sem depender de recalcular, e é o que tira o clipe do bolso
+    # dos disponíveis antes que a próxima parte escolha — o render leva minutos,
+    # e nesse intervalo a escolha já tem de estar contabilizada.
+    if not part.background_key:
+        part.background_key = await background_key_for(session, run.id, part.part_number)
+        await session.commit()
+    background_key = part.background_key
 
     blender = BlenderClient()
     video_id = await blender.create_video(

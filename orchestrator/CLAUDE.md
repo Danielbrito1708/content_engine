@@ -177,11 +177,17 @@ O orchestrador não participa da geração de legenda: o `tts_service` transcrev
 
 ### Rotação de background (`src/orchestrator/backgrounds.py`)
 
-`pick_background(keys, run_id, part_number) -> str` — escolhe o clipe de fundo de cada parte entre os objetos sob `[template] background_prefix` (default `assets/backgrounds/`).
+`pick_background(keys, run_id, part_number, used=None) -> str` — escolhe o clipe de fundo de cada parte entre os objetos sob `[template] background_prefix` (default `assets/backgrounds/`).
 
-- **Determinístico** (`sha256(run_id:part)`, não `hash()`, que é salgado por processo): re-render devolve o mesmo fundo, e partes da mesma série caem em clipes diferentes.
-- `background_key_for(run_id, part_number)` no worker lista o prefixo e cai no `background_video_key` único quando não há clipes.
+- **Rotação de verdade desde 28/08/2026.** `used` mapeia clipe → quantas partes já saíram nele; a escolha vem do subconjunto **menos usado**, então nenhum clipe repete antes de a biblioteca inteira passar. ⚠️ Antes era `sha256(run_id) % len(keys)` — sorteio **com reposição**, que só parecia rotação: em 47 posts sobre 40 clipes reusou um clipe **20 vezes**, a primeira repetição no segundo dia da conta.
+- **Empate resolvido por hash**, não por ordem da lista: senão um ciclo novo caminharia a biblioteca alfabeticamente e posts consecutivos dividiriam trechos consecutivos do mesmo arquivo de origem.
+- **Determinístico** (`sha256(run_id:part)`, não `hash()`, que é salgado por processo): partes da mesma série caem em clipes diferentes. O que garante o re-render agora é a **persistência**, não o cálculo — a contagem muda com o tempo, a coluna não.
+- **`PipelinePart.background_key`** (migration `007`) guarda o clipe escolhido. Gravado **antes** do render, não depois: é o que tira o clipe do bolso dos disponíveis antes que a próxima parte escolha (o render leva minutos) e o que faz um re-render reusar a mesma footage. Nulo nas partes anteriores à migration, que por isso não contam para o ciclo — o primeiro ciclo depois dela passa pela biblioteca inteira.
+- **Clipe novo fura a fila**: começa com zero usos, então sai antes do que já está em rotação. Footage nova chega ao canal sem esperar o ciclo fechar. Contagem de clipe que saiu do bucket é ignorada.
+- `_background_usage(session)` agrega a contagem; `background_key_for(session, run_id, part_number)` lista o prefixo e cai no `background_video_key` único quando não há clipes.
 - Levanta `ValueError` com lista vazia — quem chama decide o fallback.
+
+⚠️ **Requer a migration `007` aplicada.** O `CMD` do Dockerfile roda `alembic upgrade head` no boot, então subir com `--build` basta; fora do Docker é manual.
 
 ### Resiliência (`src/orchestrator/worker.py`)
 
@@ -263,4 +269,4 @@ docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE orchestrato
 alembic upgrade head && python -m pytest -q
 ```
 
-143 testes em 12 arquivos: `test_pipeline.py` (6, API layer), `test_youtube_destination.py` (12 — o segundo destino de publicação), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (11 — inclui a regressão do `greenlet_spawn`: um run que falha não pode abortar os seguintes da mesma varredura), `test_backgrounds.py` (6) e `test_http.py` (5).
+162 testes em 12 arquivos: `test_pipeline.py` (6, API layer), `test_youtube_destination.py` (12 — o segundo destino de publicação), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (13 — inclui a rotação consultando o banco: clipe já usado não volta, e parte anterior à migration não conta; inclui também a regressão do `greenlet_spawn`: um run que falha não pode abortar os seguintes da mesma varredura), `test_backgrounds.py` (12 — inclui o ciclo que esgota a biblioteca antes de repetir) e `test_http.py` (5).

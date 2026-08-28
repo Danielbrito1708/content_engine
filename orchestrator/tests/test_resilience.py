@@ -289,19 +289,19 @@ async def test_restart_fails_a_run_with_no_parts_at_all(session):
 
 # ── background selection ───────────────────────────────────────────────────
 
-async def test_background_comes_from_the_clip_library(monkeypatch):
+async def test_background_comes_from_the_clip_library(session, monkeypatch):
     async def fake_list(_bucket, prefix):
         assert prefix == "assets/backgrounds/"
         return ["assets/backgrounds/bg_000.mp4", "assets/backgrounds/bg_001.mp4"]
 
     monkeypatch.setattr("src.orchestrator.worker.list_keys", fake_list)
 
-    key = await background_key_for(uuid.uuid4(), 1)
+    key = await background_key_for(session, uuid.uuid4(), 1)
 
     assert key.startswith("assets/backgrounds/bg_")
 
 
-async def test_background_falls_back_to_the_fixed_key_when_library_is_empty(monkeypatch):
+async def test_background_falls_back_to_the_fixed_key_when_library_is_empty(session, monkeypatch):
     """A bucket nobody filled still renders, on the single old key, instead of
     failing at the last step."""
     async def empty(_bucket, _prefix):
@@ -309,6 +309,42 @@ async def test_background_falls_back_to_the_fixed_key_when_library_is_empty(monk
 
     monkeypatch.setattr("src.orchestrator.worker.list_keys", empty)
 
-    key = await background_key_for(uuid.uuid4(), 1)
+    key = await background_key_for(session, uuid.uuid4(), 1)
 
     assert key == "assets/background.mp4"
+
+
+async def test_background_skips_clips_already_used(session, monkeypatch):
+    """A rotação tem memória: um clipe que já saiu não volta enquanto houver
+    footage inédita. É o que o picker antigo não sabia fazer — ele sorteava com
+    reposição e repetia clipe muito antes de a biblioteca acabar."""
+    clipes = [f"assets/backgrounds/bg_{i:03d}.mp4" for i in range(3)]
+
+    async def fake_list(_bucket, _prefix):
+        return clipes
+
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", fake_list)
+
+    run = await _make_run(session)
+    for numero, clipe in enumerate(clipes[:2], start=1):
+        parte = await _make_part(session, run.id, number=numero)
+        parte.background_key = clipe
+    await session.commit()
+
+    assert await background_key_for(session, uuid.uuid4(), 1) == clipes[2]
+
+
+async def test_background_ignores_parts_from_before_the_rotation(session, monkeypatch):
+    """Partes anteriores à coluna têm `background_key` nulo. Elas não podem
+    entrar na contagem — nem como chave `None`, que travaria a query."""
+    clipes = ["assets/backgrounds/bg_000.mp4"]
+
+    async def fake_list(_bucket, _prefix):
+        return clipes
+
+    monkeypatch.setattr("src.orchestrator.worker.list_keys", fake_list)
+
+    run = await _make_run(session)
+    await _make_part(session, run.id, number=1)
+
+    assert await background_key_for(session, uuid.uuid4(), 1) == clipes[0]

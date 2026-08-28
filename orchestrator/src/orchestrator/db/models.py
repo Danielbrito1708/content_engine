@@ -87,6 +87,11 @@ class PipelinePart(Base):
     #: o YouTube é destino secundário. É esta coluna que torna a ausência
     #: auditável depois do aviso ter passado.
     youtube_video_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: Clipe de fundo sobre o qual esta parte foi renderizada. É gravado antes do
+    #: render, não depois: é ele que faz um re-render reusar a mesma footage, e é
+    #: a contagem destas linhas que diz à rotação quais clipes ainda não saíram.
+    #: `None` nas partes anteriores à rotação — elas não contam para o ciclo.
+    background_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

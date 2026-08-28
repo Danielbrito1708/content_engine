@@ -537,6 +537,34 @@ Desde 25 de agosto de 2026 a publicação acontece **entre 11h e 20h**, três ve
 
 **O erro que isso previne é silencioso.** Um horário fora da janela não gera falha nenhuma: o vídeo é produzido, agendado e publicado normalmente — só que de madrugada. Por isso existe agora uma verificação automática que lê a configuração e recusa qualquer horário fora de 11h–20h, junto com a conta da continuação.
 
+## Dois hábitos que faziam todo vídeo parecer o mesmo vídeo
+
+Os vídeos do canal são montados por uma receita, e isso é o que permite produzir três por
+dia. O problema é quando a receita deixa marcas iguais em todos eles — aí quem assiste (e
+quem distribui) começa a ver um vídeo só, repetido.
+
+Duas dessas marcas foram removidas em 28/08/2026.
+
+**O fundo repetia muito antes de a biblioteca acabar.** Existem 40 clipes de fundo, e a
+ideia sempre foi rodar entre eles para dois vídeos seguidos não parecerem o mesmo com
+outras palavras por cima. Só que o sistema sorteava um clipe a cada vídeo, sem lembrar
+quais já tinham saído — como tirar uma carta do baralho e devolvê-la antes da próxima. Na
+prática, dos 47 vídeos publicados, 20 reaproveitaram um fundo que já tinha aparecido, e a
+primeira repetição foi no segundo dia do canal. Agora o sistema anota o fundo de cada vídeo
+e escolhe sempre entre os que ainda não saíram: a biblioteca inteira passa antes de
+qualquer clipe voltar. Um clipe novo adicionado à pasta entra na frente da fila, então
+material novo chega ao canal sem esperar o ciclo terminar.
+
+**A legenda terminava sempre igual.** Todo post levava as mesmas duas hashtags fixas, e as
+vagas restantes eram preenchidas sempre pelas primeiras da lista — 47 legendas terminando
+com as mesmas palavras na mesma ordem. As hashtags fixas foram removidas, e as de
+preenchimento agora vêm embaralhadas de um jeito diferente em cada post. O que descreve a
+história continua vindo do texto dela, como antes.
+
+Em ambos os casos o comportamento é reproduzível: refazer o mesmo vídeo devolve o mesmo
+fundo e a mesma legenda, para que uma nova tentativa não publique algo diferente do que foi
+conferido.
+
 ## Fluxo completo resumido
 
 ```
