@@ -132,7 +132,11 @@ async def _schedule_youtube(
 
     try:
         mandatory = _split_csv(getattr(cfg.hashtags, "youtube_mandatory", ""))
-        hashtags = select_hashtags(hints, mandatory, pool, max_total)
+        # Seed com prefixo próprio: o mesmo vídeo nos dois destinos não pode
+        # sair com a mesma cauda de hashtags nos dois.
+        hashtags = select_hashtags(
+            hints, mandatory, pool, max_total, seed=f"youtube:{body.series_id}:{body.part_number}"
+        )
         description = compose_caption(cta, hashtags, body.part_number, body.total_parts)
         title = compose_title(raw_title, body.part_number, body.total_parts)
 
@@ -202,7 +206,9 @@ async def schedule(body: ScheduleRequest) -> ScheduleResponse:
     hashtag_data = _load_hashtag_config()
     pool: list[str] = hashtag_data.get("pool", [])
     hints: list[str] = body.classification.get("hashtag_hints", [])
-    hashtags = select_hashtags(hints, mandatory, pool, max_total)
+    hashtags = select_hashtags(
+        hints, mandatory, pool, max_total, seed=f"tiktok:{body.series_id}:{body.part_number}"
+    )
 
     cta_list: list[str] = body.classification.get("cta_per_part", [])
     cta = cta_list[body.part_number - 1] if body.part_number <= len(cta_list) else ""

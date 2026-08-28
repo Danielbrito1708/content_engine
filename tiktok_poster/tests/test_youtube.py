@@ -186,7 +186,10 @@ async def test_tiktok_post_never_gets_youtube_metadata(client, youtube_on):
 
 
 async def test_youtube_description_uses_its_own_mandatory_hashtags(client, youtube_on):
-    """`#tiktokbrasil` e `#fyp` não significam nada no YouTube."""
+    """Hashtag de YouTube é busca, não distribuição — as obrigatórias de lá são
+    outras, e é isto que impede o teste de medir o post errado sem ninguém notar.
+    O TikTok não tem mais obrigatórias (ver `test_schedule.py`), então a
+    separação é medida pelas do YouTube não vazarem para a legenda de lá."""
     create_mock = AsyncMock(side_effect=[BUFFER_CREATE_RESPONSE, YOUTUBE_CREATE_RESPONSE])
     with (
         patch("src.tiktok_poster.api.routes.schedule.BufferClient") as mock_buf,
@@ -199,15 +202,19 @@ async def test_youtube_description_uses_its_own_mandatory_hashtags(client, youtu
 
     tiktok_caption = create_mock.await_args_list[0][0][1]
     youtube_description = create_mock.await_args_list[1][0][1]
-    assert "#tiktokbrasil" in tiktok_caption
-    assert "#tiktokbrasil" not in youtube_description
     assert "#historiasreais" in youtube_description
+    assert "#historiasreais" not in tiktok_caption
+    assert "#reddit" not in tiktok_caption
 
 
 # ── rota: degradação ───────────────────────────────────────────────────────
 
-async def test_youtube_is_skipped_when_no_channel_is_configured(client):
-    """Sem canal conectado o serviço segue postando só no TikTok, sem erro."""
+async def test_youtube_is_skipped_when_no_channel_is_configured(client, youtube_on):
+    """Sem canal conectado o serviço segue postando só no TikTok, sem erro.
+
+    Precisa do `youtube_on` para chegar até a checagem de canal: com o destino
+    desligado no `config.ini` (desde 27/08/2026) o `enabled` curto-circuita
+    antes, e o teste mediria a mensagem do freio manual, não a do canal ausente."""
     create_mock = AsyncMock(return_value=BUFFER_CREATE_RESPONSE)
     with (
         patch("src.tiktok_poster.api.routes.schedule.BufferClient") as mock_buf,

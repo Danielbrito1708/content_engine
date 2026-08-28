@@ -154,7 +154,7 @@ async def test_continuation_still_respects_the_queue_limit(client):
     assert resp.status_code == 429
 
 
-async def test_schedule_includes_mandatory_hashtags(client):
+async def test_tiktok_caption_carries_no_fixed_hashtags(client):
     with (
         patch("src.tiktok_poster.api.routes.schedule.BufferClient") as mock_buf,
         patch("src.tiktok_poster.api.routes.schedule.generate_presigned_url",
@@ -166,20 +166,16 @@ async def test_schedule_includes_mandatory_hashtags(client):
 
         await client.post("/schedule", json=SAMPLE_REQUEST)
 
-    # A PRIMEIRA chamada, não a última: `_schedule_youtube` roda depois do post
-    # do TikTok e usa o mesmo BufferClient, então `call_args` aponta para o post
-    # do YouTube — que leva outras obrigatórias de propósito (`#tiktokbrasil` e
-    # `#fyp` não significam nada lá). Mirar na última fez este teste falhar em
-    # silêncio desde que o segundo destino entrou.
+    # `[hashtags] mandatory` está vazio desde 28/08/2026: eram `#tiktokbrasil` e
+    # `#fyp` em todo post, e legenda com cauda idêntica post após post é
+    # assinatura de conta automatizada. O que sai agora vem da classificação da
+    # história — e o pool que completa é reordenado por post.
+    # (Que cada destino leva as suas está em `test_youtube.py`, onde o fixture
+    # `youtube_on` liga o segundo post.)
     caption = create_mock.call_args_list[0][0][1]
-    assert "#tiktokbrasil" in caption
-    assert "#fyp" in caption
-
-    # E a do YouTube leva as dela — é o que impede o teste de voltar a medir o
-    # post errado sem ninguém notar.
-    youtube_description = create_mock.call_args_list[1][0][1]
-    assert "#historiasreais" in youtube_description
-    assert "#tiktokbrasil" not in youtube_description
+    assert "#tiktokbrasil" not in caption
+    assert "#fyp" not in caption
+    assert "#drama" in caption
 
 
 async def test_schedule_passes_presigned_url_to_buffer(client):

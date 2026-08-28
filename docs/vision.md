@@ -485,11 +485,28 @@ Default no código porque o `template.json` vive no bucket — o template public
 
 ### Rotação de fundo (`orchestrator/backgrounds.py`)
 
-`pick_background(keys, run_id, part_number)` escolhe o clipe de cada parte entre os objetos publicados sob `[template] background_prefix`.
+`pick_background(keys, run_id, part_number, used)` escolhe o clipe de cada parte entre os objetos publicados sob `[template] background_prefix`.
 
 **Determinístico, não aleatório.** Duas razões: uma parte re-renderizada depois de um restart tem que voltar com a mesma imagem, senão o retry produz silenciosamente um vídeo diferente do que já foi revisado; e a semente inclui o número da parte, então as partes de uma mesma série — publicadas em sequência, onde a repetição seria mais visível — caem em clipes diferentes. A semente é `sha256(run_id:part)`, não `hash()`, que é salgado por processo e mudaria a cada restart.
 
 **Fallback preservado.** Prefixo vazio ou sem objetos cai no `background_video_key` único de antes. Uma biblioteca não preenchida degrada para o comportamento antigo em vez de falhar na última etapa.
+
+#### Era um sorteio, não uma rotação (28/08/2026)
+
+O nome do módulo e a sua própria docstring diziam "rotação", mas a regra era `sha256(run_id) % len(keys)`: um **sorteio com reposição**, sem memória do que já tinha saído. Sorteio uniforme não é rotação — pelo problema do aniversário, 47 tiragens sobre 40 clipes esgotam em média só ~26 deles. Foi o que aconteceu: **20 dos 47 vídeos publicados reusaram um clipe já usado, e a primeira repetição caiu no segundo dia do canal**, quando 39 clipes seguiam intocados.
+
+Isso importa porque o fundo é a maior superfície do quadro. Um canal cujos vídeos abrem no mesmo card, na mesma posição, com a mesma voz sintética e sobre footage que já apareceu é um canal emitindo assinatura de produção em massa — a mesma linha de raciocínio que tirou o fade-in do card. A rotação existia justamente para não emitir essa assinatura, e não estava rotacionando.
+
+**A regra agora é "o menos usado".** `used` mapeia clipe → quantas partes já saíram nele; a escolha vem do subconjunto com a menor contagem, o que garante que a biblioteca inteira passe antes de qualquer clipe voltar. Consequências deliberadas:
+
+- **Empate resolvido por hash, não por ordem da lista.** No começo de um ciclo todos empatam; quebrar pela ordem faria o canal caminhar a biblioteca alfabeticamente, e como os clipes vêm de cortes do mesmo arquivo de origem, posts consecutivos sairiam sobre trechos consecutivos da mesma cena — repetição pior que a que se quer evitar.
+- **Clipe novo fura a fila.** Zero usos é a menor contagem possível, então footage adicionada ao bucket sai antes do que já está em rotação, sem esperar o ciclo fechar. É o comportamento desejado: material novo é justamente o que quebra a assinatura.
+- **A contagem é acumulada, não uma janela.** O objetivo é "nenhum clipe repete antes de a biblioteca acabar", que é uma propriedade acumulada. Uma janela deslizante permitiria um clipe voltar cedo por ter saído da janela.
+
+**A escolha é persistida, e é ela que dá determinismo agora.** `PipelinePart.background_key` (migration `007`) guarda o clipe. Antes o determinismo vinha do cálculo ser puro; com a contagem entrando na conta, o mesmo cálculo em dois momentos dá respostas diferentes — o que segura o re-render é a coluna. Ela é gravada **antes** do render, não depois: o render leva minutos, e nesse intervalo a escolha já precisa estar contabilizada, ou duas partes em voo escolheriam o mesmo clipe.
+
+Partes anteriores à migration ficam com `background_key` nulo e **não entram na contagem**, de propósito: o primeiro ciclo depois da mudança passa pela biblioteca inteira em vez de herdar um estado enviesado pelos 20 reusos.
+
 
 ---
 
@@ -705,9 +722,24 @@ Então `youtube_title` é campo de topo do `RefineResponse`, com prompt próprio
 
 ### As hashtags do YouTube são outras
 
-`#tiktokbrasil` e `#fyp` são inúteis lá: hashtag no YouTube é busca, não distribuição. Daí `[hashtags] youtube_mandatory` existir separado de `mandatory`.
+`#tiktokbrasil` e `#fyp` eram inúteis lá: hashtag no YouTube é busca, não distribuição. Daí `[hashtags] youtube_mandatory` existir separado de `mandatory`. (As duas do TikTok saíram de cena em 28/08/2026 — ver abaixo —, mas a separação continua valendo: são eixos diferentes, não a mesma lista.)
 
 **`#shorts` ficou de fora de propósito.** A política de divisão permite até 30 minutos de fala num vídeo, e Short é só até 3 — a maioria das histórias não é Short. Marcar como Short um vídeo que não é engana quem clica sem mudar a distribuição. Se um dia o formato encurtar, a tag entra por config, sem código.
+
+### A cauda da legenda não pode ser a mesma post após post (28/08/2026)
+
+`select_hashtags` montava a lista como obrigatórias → hints → pool. As obrigatórias eram `#tiktokbrasil,#fyp` em **todo** post, e o pool preenchia as vagas restantes sempre a partir do topo da lista — na prática, `#viral #foryou #foryoupage`. O resultado é que 47 vídeos saíram com a mesma cauda de legenda, nas mesmas posições. Isso é o análogo textual do fundo repetido e do fade-in idêntico: um traço estável, barato de medir, que separa conta operada por pessoa de conta operada por script.
+
+Duas mudanças, e elas atacam pontas diferentes do mesmo problema:
+
+- **`[hashtags] mandatory` vazio.** O mecanismo continua no código e na config — preencher a linha volta a fixar tags. O que mudou é a escolha de não fixar nenhuma no TikTok, onde hashtag genérica de alcance (`#fyp`) não compra distribuição e só acrescenta constante à legenda. O `youtube_mandatory` **fica**: lá a hashtag é termo de busca, e uma constante é exatamente o que se quer.
+- **Pool reordenado por post.** `seed` reordena o pool por `sha256(seed:tag)`. Sem seed o comportamento antigo é preservado, o que mantém a função utilizável fora da rota.
+
+**Embaralhado, não sorteado.** `random.shuffle` faria a legenda mudar entre a montagem e um reagendamento, e um retry publicaria texto diferente do que foi revisado — o mesmo requisito que torna a rotação de fundo determinística, resolvido do mesmo jeito. A seed é `{destino}:{series_id}:{part_number}`.
+
+**Só o pool é embaralhado.** `mandatory` é escolha explícita de quem configurou e `hints` descrevem a história — reordenar qualquer um dos dois trocaria variedade por ruído, porque a ordem ali carrega intenção. O pool é o único trecho onde a ordem nunca significou nada, e é por isso que é ele que varia.
+
+**A seed leva o destino no prefixo.** Sem isso, o mesmo vídeo no TikTok e no YouTube receberia a mesma reordenação do pool e as duas legendas terminariam iguais — reintroduzindo a constante em outro eixo.
 
 ### A falha no YouTube é degradável
 

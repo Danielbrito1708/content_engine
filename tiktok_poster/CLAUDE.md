@@ -106,17 +106,29 @@ O **mesmo vídeo**, no **mesmo slot**, pelo **mesmo Buffer** — só o canal mud
 
 **Contrato verificado por introspecção** no schema real do Buffer (`YoutubePostMetadataInput`): `title`, `categoryId`, `privacy` (`private`/`public`/`unlisted`), `madeForKids`, `notifySubscribers`, `embeddable`, `license`, `isAiGenerated`.
 
-`ai_disclosed` sai `true` por padrão — a narração é voz sintética e o YouTube pede que isso seja declarado.
+`ai_disclosed` sai **`false`** no `config.ini` desde 26/08/2026. O default da função continua `true`; quem decide é a config, porque é uma declaração sobre o vídeo, não uma constante do código.
+
+⚠️ **O rótulo do YouTube mira outra coisa.** "Conteúdo alterado ou sintético" cobre fazer pessoa real parecer dizer o que não disse, alterar registro de evento real, ou gerar cena realista falsa. Um narrador genérico lendo história de terceiros não faz nada disso — ninguém é levado a crer que uma pessoa específica está falando. Estávamos declarando por excesso de zelo. **Se entrar clonagem de voz de pessoa real, volta para `true`.**
+
+⚠️ **Não foi isto que zerou as impressões.** A mudança saiu junto da investigação do canal sem alcance, mas o YouTube afirma que o rótulo não reduz recomendação, e não há evidência de que reduza. Tratar isto como a correção daquele problema é procurar no lugar errado.
 
 ### Hashtags (`src/tiktok_poster/hashtags/selector.py`)
 
-`select_hashtags(hints, mandatory, pool, max_total) -> list[str]`
+`select_hashtags(hints, mandatory, pool, max_total, seed=None) -> list[str]`
 
 - Prioridade: obrigatórias → hints do LLM → pool de fallback
 - Deduplicação preservando ordem
 - Total limitado por `config.ini [hashtags] max_total` (padrão: 8)
-- Obrigatórias configuradas em `config.ini [hashtags] mandatory` (padrão: `#tiktokbrasil,#fyp`)
+- Obrigatórias configuradas em `config.ini [hashtags] mandatory` — **vazio desde 28/08/2026**
 - Pool em `hashtags.json` (versionado no repo, editável sem deploy)
+
+⚠️ **A cauda da legenda não pode ser a mesma post após post.** Eram `#tiktokbrasil,#fyp` fixas em **todo** post, e o pool preenchia o resto sempre a partir do topo da lista — 47 vídeos terminaram com as mesmas tags na mesma ordem, que é assinatura de conta automatizada. Duas mudanças: `mandatory` vazio no `config.ini`, e o **pool reordenado por post** via `seed`.
+
+**A ordem do pool é embaralhada, não sorteada** (`sorted` por `sha256(seed:tag)`): reagendar a mesma parte tem de devolver a mesma legenda, ou um retry publica texto diferente do que foi revisado — mesmo princípio da rotação de background no orchestrador. `mandatory` e `hints` **não** são reordenados: aquelas são escolha explícita, estes descrevem a história.
+
+**Cada destino tem seed própria** (`tiktok:{series_id}:{part}` / `youtube:{series_id}:{part}`): o mesmo vídeo nos dois lugares não pode sair com a mesma cauda.
+
+⚠️ `hashtags.json` ainda tem uma chave `"mandatory"` — **não é lida**. Só `"pool"` é. Quem define obrigatórias é o `config.ini`.
 
 **O YouTube tem outras obrigatórias** (`[hashtags] youtube_mandatory`, padrão `#historiasreais,#reddit`): `#tiktokbrasil` e `#fyp` não significam nada lá — hashtag de YouTube é busca, não distribuição. `#shorts` **não** está na lista: a política de divisão permite vídeo de até 30 minutos e Short é só até 3, então marcar como Short um vídeo que não é engana o espectador sem mudar a distribuição.
 
@@ -148,7 +160,7 @@ O bucket deve ser o mesmo configurado nos demais serviços (`blender-jobs`).
 
 ## Testes
 
-69 testes em 5 arquivos: `test_queue_backpressure.py` (9 — a recusa do Buffer que é teto vira pausa, a que não é continua erro, a recontagem que falha não mascara a recusa, e a cota estourada virando espera na contagem e na criação), `test_hashtags.py`, `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim e o rótulo de parte) e `test_youtube.py` (26 — mapa de categorias, título com rótulo protegido, metadata, os dois destinos no mesmo slot, a mutation com e sem `metadata`, e cada caminho de degradação). Buffer e MinIO são sempre mockados.
+78 testes em 6 arquivos: `test_queue_backpressure.py` (9 — a recusa do Buffer que é teto vira pausa, a que não é continua erro, a recontagem que falha não mascara a recusa, e a cota estourada virando espera na contagem e na criação), `test_hashtags.py` (14 — inclui a cauda que varia entre posts, a reprodutibilidade no reagendamento e as seeds dos dois destinos divergindo), `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim e o rótulo de parte) e `test_youtube.py` (26 — mapa de categorias, título com rótulo protegido, metadata, os dois destinos no mesmo slot, a mutation com e sem `metadata`, e cada caminho de degradação). Buffer e MinIO são sempre mockados.
 
 ⚠️ O destino do YouTube é ligado nos testes pelo fixture `youtube_on`, que troca `_youtube_channel_id`. A função existe para ser essa costura: `settings.env` é um modelo congelado e não aceita `monkeypatch.setattr`.
 
