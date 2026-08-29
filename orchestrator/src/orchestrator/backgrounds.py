@@ -52,3 +52,75 @@ def pick_background(
     seed = f"{run_id}:{part_number}".encode()
     index = int(hashlib.sha256(seed).hexdigest()[:8], 16) % len(candidates)
     return candidates[index]
+
+
+def plan_segments(duration: float, segment_seconds: int, min_tail: int) -> list[int]:
+    """Os offsets de início dos segmentos de um vídeo, em segundos.
+
+    ``min_tail`` descarta a sobra final quando ela é curta demais para virar
+    fundo — um resto de 11 s viraria um clipe que dá loop seis vezes debaixo de
+    uma narração de um minuto, que é o defeito que a biblioteca ASMR já tem em
+    quatro clipes. A sobra só entra se sozinha já valer um clipe.
+
+    Vídeo inteiro menor que ``min_tail`` devolve lista vazia: não há segmento
+    aproveitável, e é melhor a fonte sumir do manifesto do que entrar um clipe
+    que ninguém quer ver repetido.
+    """
+    if duration < min_tail:
+        return []
+    inteiros = int(duration // segment_seconds)
+    starts = [i * segment_seconds for i in range(inteiros)]
+    sobra = duration - inteiros * segment_seconds
+    if sobra >= min_tail:
+        starts.append(inteiros * segment_seconds)
+    return starts or ([0] if duration >= min_tail else [])
+
+
+def segment_key(prefix: str, video_id: str, start: int) -> str:
+    """Nome do objeto de um segmento.
+
+    O offset entra no nome, não um índice sequencial: assim a chave é uma função
+    da fonte e do trecho, e regerar o manifesto com outro `segment_seconds` não
+    faz uma chave antiga apontar para outro pedaço de vídeo — ela simplesmente
+    deixa de ser citada. Chave estável é o que permite o cache sobreviver a uma
+    reconstrução do manifesto.
+    """
+    return f"{prefix}{video_id}_{int(start):05d}.mp4"
+
+
+def manifest_keys(manifest: dict) -> list[str]:
+    """As chaves candidatas de um manifesto, ordenadas.
+
+    Ordenada pela mesma razão que ``list_keys`` é: o desempate da rotação é por
+    hash, mas a lista precisa ser estável entre chamadas para que a escolha seja
+    reproduzível.
+    """
+    return sorted(str(c["key"]) for c in manifest.get("clips", []) if c.get("key"))
+
+
+def manifest_entry(manifest: dict, key: str) -> dict | None:
+    """A entrada de uma chave, ou ``None`` se ela não vem do manifesto.
+
+    ``None`` é a resposta esperada para um clipe subido à mão no bucket — eles
+    convivem com os do manifesto e nunca precisam ser materializados.
+    """
+    for clip in manifest.get("clips", []):
+        if clip.get("key") == key:
+            return clip
+    return None
+
+
+#: Extensões aceitas como clipe de fundo.
+CLIP_SUFFIXES = (".mp4", ".mov", ".mkv", ".webm")
+
+
+def is_clip(key: str) -> bool:
+    """Se a chave é um vídeo, e não outro objeto qualquer sob o prefixo.
+
+    ``list_keys`` devolve o prefixo inteiro, e nada garante que só haja vídeo
+    ali: o manifesto foi parar fora de `assets/backgrounds/` justamente porque
+    um `.json` no meio dos clipes entraria no sorteio e o render tentaria montar
+    um JSON como movie strip. O filtro é o cinto por cima da suspensória — vale
+    para qualquer arquivo solto que apareça ali depois.
+    """
+    return key.lower().endswith(CLIP_SUFFIXES)

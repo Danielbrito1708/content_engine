@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from datetime import datetime
 
@@ -7,7 +8,13 @@ from structlog import get_logger
 
 from src.core import settings
 from src.core.notify import notify, ping, short_id
-from src.orchestrator.backgrounds import pick_background
+from src.orchestrator.background_source import ensure_available, evict
+from src.orchestrator.backgrounds import (
+    is_clip,
+    manifest_entry,
+    manifest_keys,
+    pick_background,
+)
 from src.orchestrator.clients.blender import BlenderClient
 from src.orchestrator.clients.llm import LLMClient
 from src.orchestrator.clients.tiktok import BufferQueueFull, TikTokClient
@@ -15,7 +22,7 @@ from src.orchestrator.clients.tts import TTSClient
 from src.orchestrator.db.engine import AsyncSessionLocal
 from src.orchestrator.db.models import PartStatus, PipelinePart, PipelineRun, PipelineStatus
 from src.orchestrator.hook_text import opens_with_hook
-from src.orchestrator.storage.client import list_keys
+from src.orchestrator.storage.client import get_bytes, list_keys
 
 log = get_logger(__name__)
 
@@ -312,8 +319,34 @@ async def _background_usage(session) -> dict[str, int]:
     return {key: count for key, count in rows.all()}
 
 
-async def background_key_for(session, run_id: uuid.UUID, part_number: int) -> str:
+async def _load_background_manifest() -> dict:
+    """O manifesto de segmentos materializáveis, ou ``{}``.
+
+    Vive no bucket e não no repo pela mesma razão que o `template.json`: a lista
+    de fontes muda sem deploy. Manifesto ausente ou ilegível devolve ``{}``, e a
+    rotação volta a sortear só entre os arquivos já publicados — a biblioteca
+    materializada é uma camada a mais, não um pré-requisito.
+    """
+    path = str(getattr(settings.CONFIG.template, "background_manifest", "") or "")
+    if not path:
+        return {}
+    try:
+        return json.loads(await get_bytes(settings.CONFIG.storage.bucket, path))
+    except Exception as exc:  # noqa: BLE001 — botocore e json levantam famílias diferentes
+        log.warning("background manifest unreadable", path=path, error=str(exc)[:200])
+        return {}
+
+
+async def background_key_for(
+    session, run_id: uuid.UUID, part_number: int, manifest: dict | None = None
+) -> str:
     """The background clip this part renders over.
+
+    Os candidatos são a **união** do manifesto com o que já está publicado sob o
+    prefixo: um segmento ainda não materializado concorre em pé de igualdade com
+    um clipe subido à mão, e quem resolve a diferença é :func:`_ensure_background`,
+    depois da escolha. Unir em vez de escolher uma das duas fontes é o que deixa
+    as duas bibliotecas conviverem sem que uma esconda a outra.
 
     Falls back to the single ``background_video_key`` when nothing is published
     under the prefix: a bucket that was never filled still renders, instead of
@@ -321,9 +354,12 @@ async def background_key_for(session, run_id: uuid.UUID, part_number: int) -> st
     """
     template = settings.CONFIG.template
     prefix = str(getattr(template, "background_prefix", "") or "")
+    manifest = manifest if manifest is not None else await _load_background_manifest()
 
     if prefix:
-        keys = await list_keys(settings.CONFIG.storage.bucket, prefix)
+        publicados = [k for k in await list_keys(settings.CONFIG.storage.bucket, prefix)
+                      if is_clip(k)]
+        keys = sorted(set(publicados) | set(manifest_keys(manifest)))
         if keys:
             return pick_background(keys, str(run_id), part_number, await _background_usage(session))
         log.warning("no background clips under prefix", prefix=prefix)
@@ -338,6 +374,67 @@ async def background_key_for(session, run_id: uuid.UUID, part_number: int) -> st
         )
 
     return template.background_video_key
+
+
+async def _ensure_background(session, key: str, manifest: dict) -> str:
+    """Garante que o clipe escolhido existe no bucket. Devolve a chave usável.
+
+    Chave que não está no manifesto é clipe subido à mão: já está no bucket por
+    definição e não há o que materializar.
+
+    **Falha em materializar não derruba o run.** O download depende de rede e de
+    um site de terceiro, e um soluço ali custaria um run que já pagou LLM, TTS e
+    Whisper. Então a queda é para outro clipe já materializado, e só se não
+    houver nenhum é que o fundo fixo entra. Esta é a sétima degradação silenciosa
+    do pipeline: o vídeo sai, o run termina `scheduled`, e nada no status
+    distingue o fundo sorteado do fundo de emergência — daí o aviso.
+    """
+    entrada = manifest_entry(manifest, key)
+    if entrada is None:
+        return key
+
+    cfg = settings.CONFIG.backgrounds
+    bucket = settings.CONFIG.storage.bucket
+    prefix = str(getattr(settings.CONFIG.template, "background_prefix", "") or "")
+
+    try:
+        materializou = await ensure_available(
+            key,
+            entrada,
+            bucket=bucket,
+            segment_seconds=int(cfg.segment_seconds),
+            video_filter=str(cfg.video_filter),
+            quality=str(cfg.source_quality),
+            crf=int(cfg.crf),
+        )
+    except Exception as exc:  # noqa: BLE001 — yt-dlp e ffmpeg levantam famílias largas
+        publicados = [k for k in await list_keys(bucket, prefix) if is_clip(k) and k != key]
+        alternativa = (
+            pick_background(publicados, str(key), 0, await _background_usage(session))
+            if publicados
+            else settings.CONFIG.template.background_video_key
+        )
+        log.warning("background materialize failed", key=key, fallback=alternativa,
+                    error=str(exc)[:200])
+        notify(
+            "Fundo não pôde ser baixado — vídeo sai com outro clipe",
+            level="warning",
+            icon="⚠️",
+            pedido=key.rsplit("/", 1)[-1],
+            usado=alternativa.rsplit("/", 1)[-1],
+            erro=str(exc)[:160],
+        )
+        return alternativa
+
+    if materializou:
+        # Só depois de um download é que o cache pode ter passado do teto —
+        # varrer o prefixo a cada render custaria uma listagem por vídeo sem
+        # nada ter mudado.
+        publicados = await list_keys(bucket, prefix)
+        do_manifesto = [k for k in publicados if manifest_entry(manifest, k) is not None]
+        await evict(session, bucket=bucket, materializados=do_manifesto, teto=int(cfg.cache_max))
+
+    return key
 
 
 async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
@@ -356,10 +453,24 @@ async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
     # mesma footage sem depender de recalcular, e é o que tira o clipe do bolso
     # dos disponíveis antes que a próxima parte escolha — o render leva minutos,
     # e nesse intervalo a escolha já tem de estar contabilizada.
+    #
+    # O manifesto é lido uma vez e passa pelas duas etapas: escolher entre os
+    # candidatos e garantir que o escolhido existe. Reler custaria duas buscas no
+    # bucket por parte, do mesmo objeto.
+    manifest = await _load_background_manifest()
     if not part.background_key:
-        part.background_key = await background_key_for(session, run.id, part.part_number)
+        part.background_key = await background_key_for(
+            session, run.id, part.part_number, manifest
+        )
         await session.commit()
-    background_key = part.background_key
+
+    # Pode devolver outra chave: materialização que falha cai para um clipe já
+    # disponível, e a coluna passa a registrar o que foi de fato usado — senão um
+    # re-render insistiria para sempre na fonte que não baixa.
+    background_key = await _ensure_background(session, part.background_key, manifest)
+    if background_key != part.background_key:
+        part.background_key = background_key
+        await session.commit()
 
     blender = BlenderClient()
     video_id = await blender.create_video(
