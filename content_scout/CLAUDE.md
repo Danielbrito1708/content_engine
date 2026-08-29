@@ -30,6 +30,8 @@ poetry run pytest -m no_db        # parser + filtros, sem docker
 alembic upgrade head
 ```
 
+⚠️ **As migrations rodam no boot pelo `CMD` do Dockerfile** (`alembic upgrade head && uvicorn ...`), então subir com `--build` basta; fora do Docker é manual. **Não era assim até 26/08/2026**: o `CMD` chamava o `uvicorn` direto, e o deploy da migration `005` subiu o código novo com o banco parado em `004` sem nenhum sinal — container `Up`, `/health` em `200` (ele pinga o DB, não a versão do schema), e a quebra só apareceria no primeiro ciclo, até uma hora depois. O `&&` é deliberado: migration que falha derruba o boot, porque um scout servindo com o schema errado é pior que um scout fora do ar — só o segundo é visível.
+
 ## Variáveis de ambiente
 
 - `ROOT_DIR`, `ENV`, `DEBUG` — padrão dos serviços

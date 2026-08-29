@@ -21,4 +21,14 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "src.content_scout.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# `alembic upgrade head` antes do uvicorn, como no orchestrator. Sem isto o
+# `up -d --build` sobe o código novo e deixa o banco para trás em silêncio: o
+# container fica `Up`, o `/health` responde 200 — ele só pinga o DB, não a
+# versão do schema — e a quebra só aparece quando o ciclo chega na escrita, até
+# `interval_seconds` (3600s) depois. Aconteceu no deploy da migration 005 em
+# 26/08/2026.
+#
+# O `&&` é a parte que importa: migration que falha tem que derrubar o boot. Um
+# scout servindo com o schema errado é pior que um scout fora do ar, porque só
+# o segundo é visível.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn src.content_scout.api.app:app --host 0.0.0.0 --port 8000"]
