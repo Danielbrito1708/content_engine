@@ -565,6 +565,34 @@ Em ambos os casos o comportamento é reproduzível: refazer o mesmo vídeo devol
 fundo e a mesma legenda, para que uma nova tentativa não publique algo diferente do que foi
 conferido.
 
+## O fundo dos vídeos virou uma biblioteca que não cabe no disco
+
+O canal tinha 40 clipes de fundo cortados de um único vídeo de gameplay, e
+depois 11 clipes de ASMR. Em 29 de agosto de 2026 a fonte passou a ser uma
+playlist de **326 vídeos** de gameplay sem direitos autorais — 55 horas de
+material, que cortadas em pedaços de dois minutos dão **1.677 fundos
+diferentes**. A três vídeos por dia, isso é mais de um ano antes de qualquer
+fundo se repetir.
+
+O problema é que baixar tudo custaria em torno de 100 GB, num servidor que tem
+175 GB livres. Então nada é baixado antes da hora: o sistema guarda apenas uma
+**lista** de onde cada pedaço mora, e vai buscar o vídeo só no momento em que
+aquele pedaço é sorteado para um vídeo. Baixa só os dois minutos que interessam,
+não o vídeo inteiro. Depois de alguns dias o sistema apaga os pedaços que estão
+há mais tempo sem aparecer, mantendo no máximo algumas dezenas guardados.
+
+Como os vídeos da playlist são horizontais e o formato do canal é vertical,
+cada pedaço é recortado pelo meio. Comparamos esse recorte com a alternativa —
+encaixar a imagem inteira no meio da tela e preencher as bordas com uma versão
+borrada dela mesma — e o recorte ganhou com folga: a câmera do jogo mantém o
+carro no centro, então nada de importante se perde, e o céu no topo e o chão na
+base são justamente onde entram o card de comentário e a legenda.
+
+**Se o download falhar, o vídeo sai assim mesmo**, com outro fundo que já esteja
+disponível. Um tropeço de rede não pode custar um vídeo que já passou pelo
+roteirista, pela narração e pela legendagem — mas você recebe um aviso no
+celular dizendo que aconteceu.
+
 ## Fluxo completo resumido
 
 ```

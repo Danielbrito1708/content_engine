@@ -189,6 +189,27 @@ O orchestrador não participa da geração de legenda: o `tts_service` transcrev
 
 ⚠️ **Requer a migration `007` aplicada.** O `CMD` do Dockerfile roda `alembic upgrade head` no boot, então subir com `--build` basta; fora do Docker é manual.
 
+### Fundo sob demanda (`src/orchestrator/background_source.py`)
+
+A biblioteca deixou de ser "arquivos no bucket" e passou a ser **manifesto + cache**. O manifesto (`[template] background_manifest`, um JSON no bucket) lista ~1.677 segmentos de 2 min cortados de uma playlist de 326 vídeos; o clipe só vira arquivo no render que o sortear.
+
+- **Candidatos = manifesto ∪ prefixo.** Um segmento ainda não materializado concorre em pé de igualdade com um clipe subido à mão. Manifesto ausente ou ilegível devolve `{}` e a rotação volta a sortear só o que está publicado — a camada é opcional.
+- `plan_segments(duration, segment_seconds, min_tail)` / `segment_key(prefix, video_id, start)` — puros. A chave é função de `(video_id, start)`, então **regerar o manifesto não invalida o cache**.
+- `is_clip(key)` — filtra o que não é vídeo. ⚠️ `list_keys` devolve o prefixo inteiro: por isso o manifesto vive **fora** de `background_prefix`, e o filtro é a segunda linha de defesa. Um `.json` sorteado como fundo faria o render montar um JSON como movie strip.
+- `ensure_available(...)` baixa **só a faixa pedida** (`download_ranges`) e recorta. ⚠️ **Nada de `force_keyframes_at_cuts`**: com ele o yt-dlp baixa o vídeo inteiro para cortar com precisão de frame — medido, 188 MB e subindo para um trecho de 2 min, contra 404 MB para o vídeo todo. Precisão de frame não vale nada num fundo.
+- ⚠️ **A fonte tem de ser 4K.** O recorte 9:16 de um 3840×2160 dá 1215×2160 e *desce* para 1080×1920; de um 1080p daria 607×1080 e *subiria*, borrado. Daí `source_quality` pedir `height>=2160` antes de aceitar menos.
+- `evict(...)` — despejo LRU quando o cache passa de `[backgrounds] cache_max`. **Nunca despeja clipe de parte com `video_key` nulo** (está esperando render, e o blender_worker vai buscar a chave no bucket) nem o recém-materializado (é o clipe do render corrente). Só roda **depois** de um download: varrer o prefixo a cada render custaria uma listagem por vídeo sem nada ter mudado.
+
+⚠️ **Sétima degradação silenciosa.** Falha em materializar não derruba o run — cai para outro clipe já disponível e, em último caso, para o `background_video_key` fixo. O `background_key` é reescrito com o que foi de fato usado, senão um re-render insistiria para sempre na fonte que não baixa. O vídeo sai e o run termina `scheduled`: sem o `notify` aqui, não há aviso em lugar nenhum.
+
+**Dependências novas na imagem:** `yt-dlp` (pyproject) e **`ffmpeg`** (Dockerfile). Sem ffmpeg no PATH o download por faixa cai para o vídeo inteiro, em silêncio.
+
+**Reconstruir o manifesto** (não baixa vídeo nenhum, é `extract_flat`):
+
+```bash
+python scripts/build_background_manifest.py <url-da-playlist> [--dry-run]
+```
+
 ### Resiliência (`src/orchestrator/worker.py`)
 
 - **`BufferQueueFull` não é falha.** `_schedule` devolve `False`, o run fica em `scheduling` com os vídeos intactos, e o scout lê isso como capacidade ocupada (backpressure). `_schedule` é idempotente: parte com `scheduled_at` é pulada.
@@ -269,4 +290,4 @@ docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE orchestrato
 alembic upgrade head && python -m pytest -q
 ```
 
-162 testes em 12 arquivos: `test_pipeline.py` (6, API layer), `test_youtube_destination.py` (12 — o segundo destino de publicação), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (13 — inclui a rotação consultando o banco: clipe já usado não volta, e parte anterior à migration não conta; inclui também a regressão do `greenlet_spawn`: um run que falha não pode abortar os seguintes da mesma varredura), `test_backgrounds.py` (12 — inclui o ciclo que esgota a biblioteca antes de repetir) e `test_http.py` (5).
+184 testes em 13 arquivos: `test_pipeline.py` (6, API layer), `test_youtube_destination.py` (12 — o segundo destino de publicação), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (13 — inclui a rotação consultando o banco: clipe já usado não volta, e parte anterior à migration não conta; inclui também a regressão do `greenlet_spawn`: um run que falha não pode abortar os seguintes da mesma varredura), `test_backgrounds.py` (23 — o ciclo que esgota a biblioteca antes de repetir, o planejamento de segmentos e o filtro de extensão), `test_background_source.py` (11 — união dos candidatos, a queda quando o download falha e as três coisas que o despejo nunca apaga) e `test_http.py` (5).

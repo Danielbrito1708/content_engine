@@ -507,6 +507,30 @@ Isso importa porque o fundo é a maior superfície do quadro. Um canal cujos ví
 
 Partes anteriores à migration ficam com `background_key` nulo e **não entram na contagem**, de propósito: o primeiro ciclo depois da mudança passa pela biblioteca inteira em vez de herdar um estado enviesado pelos 20 reusos.
 
+#### A biblioteca deixou de caber no disco (29/08/2026)
+
+A fonte de fundo passou a ser uma playlist de **326 vídeos** de gameplay sem direitos autorais — 55 horas, mediana de 9,2 min por vídeo. Cortada em segmentos de 2 min, dá **1.677 clipes**: a três posts por dia, mais de um ano antes de a regra "não repete até esgotar" precisar entrar em ação uma segunda vez.
+
+Baixar tudo custaria ~100 GB medidos (0,39 a 0,73 MB por segundo de vídeo) num servidor com 175 GB livres, para consumir três clipes por dia. Então a biblioteca virou **manifesto + cache**, e não arquivos.
+
+**O manifesto é uma lista, não um diretório.** Um JSON no bucket com `{key, video_id, start}` por segmento. A rotação sorteia sobre a **união** do manifesto com o que já está publicado sob o prefixo — unir, e não escolher uma das duas fontes, é o que deixa os 11 clipes ASMR subidos à mão conviverem com os 1.677 segmentos sem que uma biblioteca esconda a outra. Manifesto ausente ou ilegível degrada para o comportamento anterior: a camada é opcional, não pré-requisito.
+
+**A chave é função de `(video_id, start)`**, não um índice sequencial. Isso é o que faz reconstruir o manifesto ser barato: um manifesto novo continua citando os clipes que já estão materializados, e eles não precisam ser rebaixados. O preço é que mudar `segment_seconds` gera chaves novas e deixa as antigas órfãs no bucket — o despejo só considera o que o manifesto corrente cita.
+
+**Duas medidas é que tornam o download barato:**
+
+- **Só a faixa pedida.** `download_ranges` do yt-dlp busca o trecho, não o arquivo. ⚠️ Isso vale *enquanto* `force_keyframes_at_cuts` ficar desligado: com ele o yt-dlp baixa o vídeo inteiro para cortar com precisão de frame — medido, 188 MB e subindo para um trecho de 2 min. Precisão de frame não significa nada num fundo, e o custo dela é o download inteiro.
+- **A fonte tem de ser 4K.** O recorte 9:16 de um 3840×2160 dá 1215×2160 e *desce* para 1080×1920. De um 1080p daria 607×1080 e *subiria* — o mesmo pixel esticado 1,78×. Pedir qualidade alta aqui **reduz** o borrão em vez de aumentar o custo final, porque o que sobe para o bucket é o recorte, não a fonte.
+
+**O enquadramento é corte central, e foi medido.** A alternativa — encaixar o 16:9 no meio da tela vertical com as bordas preenchidas por uma versão borrada do próprio quadro — foi comparada em três frames no dia 29/08/2026 e perdeu: o gameplay fica no terço central e sobram duas faixas mortas. O corte central funciona porque a câmera de terceira pessoa mantém o veículo no centro por construção. De quebra, o céu liso em cima e a rampa embaixo são justamente onde o card e a legenda entram, então o enquadramento ajuda a legibilidade em vez de brigar com ela. O filtro está em `config.ini`, não em código: trocar de opinião não é mudança de software.
+
+**O despejo é LRU, e tem três exceções.** Acima de `cache_max` os clipes menos recentemente usados são apagados — LRU e não FIFO porque a rotação já garante que um clipe usado não volta tão cedo, então o menos recentemente usado é também o que mais demora a ser pedido de novo. Nunca são despejados: clipe de parte que ainda não renderizou (o `blender_worker` vai buscar essa chave, e apagá-la trocaria o freio de espaço por um render quebrado), o recém-materializado (é o clipe do render corrente), e qualquer coisa fora do manifesto (clipe subido à mão não é rebaixável).
+
+**Falhar em baixar é a sétima degradação silenciosa.** O download depende de rede e de site de terceiro, e um soluço ali custaria um run que já pagou LLM, TTS e Whisper. Então a queda é para outro clipe já disponível e, em último caso, para o fundo fixo. O `background_key` é reescrito com o que foi de fato usado — senão um re-render insistiria para sempre na fonte que não baixa. Como em todas as outras, o vídeo sai e o run termina `scheduled`: nenhum status distingue o fundo sorteado do fundo de emergência, e é por isso que existe o `notify`.
+
+⚠️ **O manifesto vive fora de `background_prefix`.** `list_keys` devolve o prefixo inteiro, então um `.json` ali dentro entraria no sorteio e o render tentaria montar um JSON como movie strip. O `is_clip()` filtra por extensão como segunda linha de defesa, para qualquer arquivo solto que apareça ali depois.
+
+
 
 ---
 

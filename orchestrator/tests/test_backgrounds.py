@@ -102,3 +102,90 @@ def test_no_usage_map_keeps_the_old_behaviour():
     """Sem contagem — a primeira parte depois da migration, com a tabela toda
     nula — a escolha continua sendo a de antes, não um erro."""
     assert pick_background(CLIPS, "run-a", 1, {}) == pick_background(CLIPS, "run-a", 1)
+
+
+# --- manifesto e segmentos -------------------------------------------------
+
+from src.orchestrator.backgrounds import (  # noqa: E402
+    manifest_entry,
+    manifest_keys,
+    plan_segments,
+    segment_key,
+)
+
+MANIFESTO = {
+    "clips": [
+        {"key": "assets/backgrounds/vid1_00000.mp4", "video_id": "vid1", "start": 0},
+        {"key": "assets/backgrounds/vid1_00120.mp4", "video_id": "vid1", "start": 120},
+    ]
+}
+
+
+def test_plan_segments_cobre_o_video_inteiro():
+    """9m24s a 120s dá cinco segmentos: 0, 120, 240, 360, 480."""
+    assert plan_segments(564, 120, 45) == [0, 120, 240, 360, 480]
+
+
+def test_plan_segments_descarta_sobra_curta():
+    """125s são um segmento de 2 min e 5 s de resto. Os 5 s não viram clipe —
+    um fundo tão curto daria loop várias vezes dentro do mesmo vídeo."""
+    assert plan_segments(125, 120, 45) == [0]
+
+
+def test_plan_segments_aproveita_sobra_que_vale_um_clipe():
+    assert plan_segments(180, 120, 45) == [0, 120]
+
+
+def test_plan_segments_descarta_video_curto_demais():
+    """Sem nenhum trecho aproveitável a fonte some do manifesto, em vez de
+    entrar um clipe que ninguém quer ver repetido."""
+    assert plan_segments(30, 120, 45) == []
+
+
+def test_segment_key_e_funcao_da_fonte_e_do_trecho():
+    """Chave estável é o que faz o cache sobreviver a uma reconstrução do
+    manifesto: o mesmo (video_id, start) sempre dá o mesmo objeto."""
+    assert segment_key("assets/backgrounds/", "abc", 240) == "assets/backgrounds/abc_00240.mp4"
+    assert segment_key("assets/backgrounds/", "abc", 240) == segment_key(
+        "assets/backgrounds/", "abc", 240
+    )
+
+
+def test_segment_key_ordena_por_offset():
+    """O zero-padding existe para a lista ordenada não intercalar 1000 entre
+    100 e 200 — a rotação indexa numa lista ordenada."""
+    keys = [segment_key("p/", "v", s) for s in (0, 60, 120, 1200)]
+    assert keys == sorted(keys)
+
+
+def test_manifest_keys_vem_ordenado():
+    assert manifest_keys(MANIFESTO) == sorted(manifest_keys(MANIFESTO))
+
+
+def test_manifest_keys_de_manifesto_vazio():
+    assert manifest_keys({}) == []
+
+
+def test_manifest_entry_encontra_a_fonte():
+    e = manifest_entry(MANIFESTO, "assets/backgrounds/vid1_00120.mp4")
+    assert e["video_id"] == "vid1"
+    assert e["start"] == 120
+
+
+def test_manifest_entry_devolve_none_para_clipe_subido_a_mao():
+    """Clipe fora do manifesto convive com os do manifesto e nunca é
+    materializado — `None` é a resposta esperada, não um erro."""
+    assert manifest_entry(MANIFESTO, "assets/backgrounds/asmr_000.mp4") is None
+
+
+def test_is_clip_aceita_video_e_recusa_o_resto():
+    """O manifesto saiu de dentro do prefixo por isto, e o filtro é a segunda
+    linha de defesa: um `.json` sorteado como fundo faria o render tentar montar
+    um JSON como movie strip."""
+    from src.orchestrator.backgrounds import is_clip
+
+    assert is_clip("assets/backgrounds/asmr_000.mp4")
+    assert is_clip("assets/backgrounds/VID_001.MP4")
+    assert not is_clip("assets/backgrounds/manifest.json")
+    assert not is_clip("assets/backgrounds/")
+    assert not is_clip("assets/backgrounds/leiame.txt")
