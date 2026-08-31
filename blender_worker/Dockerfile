@@ -31,7 +31,14 @@ RUN wget -q https://download.blender.org/release/Blender4.2/blender-4.2.20-linux
     && ln -s /opt/blender/blender /usr/local/bin/blender \
     && rm blender-4.2.20-linux-x64.tar.xz
 
-RUN pip install --no-cache-dir poetry==2.1.3
+# Alinhado com o Poetry de desenvolvimento (2.3.3). A incompatibilidade entre as
+# duas versoes e de MAO UNICA, medido em 27/08/2026: o 2.3.3 le sem reclamar um
+# lock gerado pelo 2.1.3, e o 2.1.3 RECUSA um lock gerado pelo 2.3.3 com
+# "pyproject.toml changed significantly since poetry.lock was generated".
+# Com o pin antigo, qualquer `poetry lock` rodado na maquina de desenvolvimento
+# quebrava este build em silencio - o erro so aparecia no `docker compose build`,
+# longe da causa. Subir o pin custa nada e fecha esse caminho.
+RUN pip install --no-cache-dir poetry==2.3.3
 
 # Camada de dependências (cache quebra só se pyproject/lock mudar)
 COPY pyproject.toml poetry.lock ./
