@@ -12,6 +12,8 @@ content_engine/
     vision.md               ← visão geral do sistema, pipeline, decisões
     deploy.md               ← plano de deploy na máquina de casa (dimensionamento, monitoramento)
     servidor.md             ← como acessar a máquina por SSH + estado verificado dela
+    multi_account.md        ← proposta: operar N contas (TikTok+YouTube) reaproveitando roteiro
+    aquecimento.md          ← proposta: rampa de publicação + rotina manual para conta nova/parada
   orchestrator/             ← coordenação do pipeline (FastAPI + DB próprio)
   blender_worker/           ← montagem VSE + renderização (FastAPI + Blender 4.2)
   llm_service/              ← refinamento e classificação de roteiros
@@ -135,9 +137,10 @@ acima responde `404 Template not found` — que parece erro de credencial do R2 
 - `blender_worker` — API, DB, Blender pipeline, image compositor, semáforo de render
 - `orchestrator` — pipeline completo, rotação de background, recuperação de runs órfãos, retry de agendamento, notificação
 - `llm_service` — `/refine`, `/moderate`, `/story-quality` (OpenRouter / Anthropic / Chutes)
-- `tts_service` — providers `edge`/`azure`, corte de silêncio + normalização de loudness, transcrição word-level
+- `tts_service` — providers `edge`/`azure`, corte de silêncio + normalização de loudness, transcrição word-level, **`POST /transcribe`** (URL de vídeo → texto, para roteiro viral virar matéria-prima)
 - `tiktok_poster` — agendamento via Buffer, slots, séries, hashtags e caption; **dois destinos** (TikTok + YouTube) no mesmo slot
 - `content_scout` — fonte Reddit via RSS, varredura do arquivo, dedup por conteúdo, nota de storytelling **e de revolta** (YouTube previsto como minerador de tema)
+- **caixa de entrada de links** — link de TikTok compartilhado pelo celular via ntfy vira roteiro, com dedup cruzado com o do Reddit
 
 **Desde 14/08/2026 a stack roda no servidor** (`192.168.0.106`), que é o ambiente de
 produção — a stack da máquina Windows foi desligada para não haver dois produtores no mesmo
@@ -145,17 +148,6 @@ perfil do Buffer. Primeiro vídeo produzido de ponta a ponta lá em 14/08/2026; 
 em ~12min42s por parte. Ver `docs/servidor.md` → "O que roda na máquina".
 
 ### Passos pendentes de deploy (YouTube, 15/08/2026)
-
-⏸️ **A publicação no YouTube está desligada desde 27/08/2026, a pedido, até
-segunda ordem.** `[youtube] enabled = false` no `config.ini` do `tiktok_poster`
-— o freio manual, que não apaga a credencial: `BUFFER_YOUTUBE_CHANNEL_ID`
-continua no `.env` do servidor. Com ele desligado a stack publica só no TikTok,
-sem erro (o destino é secundário e degrada em silêncio por desenho). Os 8 posts
-que já estavam agendados no canal foram parados junto — ver o histórico abaixo,
-que descreve como o destino foi ligado e continua valendo para religá-lo.
-**⚠️ O `config.ini` é copiado para a imagem, não montado: mudar o flag exige
-`docker compose up -d --build tiktok_poster`, e um `restart` sozinho não muda
-nada.**
 
 ✅ **O destino está ligado em produção desde 15/08/2026** — passos 1 a 3 aplicados no
 servidor. Sobra o passo 4, que só o primeiro post responde. Em qualquer outro ambiente os
@@ -214,3 +206,14 @@ Decisão tomada em 25/08/2026:
 | Guarda de janela em `continuation_slot` | **Não fazer** — empurrar a parte 2 para o dia seguinte parte a história ao meio, que é o que o encadeamento existe para evitar |
 | Critério de seleção de história | **Revolta com vilão claro**, público-alvo mulheres 18–35. `/story-quality` devolve `outrage` (0–10) e `villain`; o scout ordena por `2 × outrage + story_score` |
 | `min_outrage_score` | **Rótulo e contador, não portão** — ciclo sem nada revoltante publica a melhor história disponível; fila vazia é o modo de falha mais caro |
+
+Decisão tomada em 27/08/2026:
+
+| Decisão | Escolha |
+|---|---|
+| Roteiro de vídeo viral de terceiro | Entra como **input do `/refine`** pela porta manual, nunca como `script` final. Recitar o texto expõe a conta a corte de alcance por conteúdo não-original e a strike de direito autoral; a estrutura dramática não é protegível, a expressão literal é |
+| Como o link chega | **Tópico ntfy de entrada** (outro, não o das notificações). Reusa app e infra que já estão no ar, funciona fora da LAN e aparece na aba de compartilhar do Android. Endpoint HTTP só valeria dentro de casa; bot de Telegram custaria token e serviço a mais |
+| O que acontece após transcrever | **Entra na fila direto.** O Buffer segura tudo antes de publicar, então uma etapa de aprovação custaria estado novo para proteger contra um risco que a fila já contém |
+| Fila cheia na caixa de entrada | **Recusa com aviso**, não enfileira. Guardar exigiria tabela de pendências; engolir a capacidade converteria o freio de memória do `blender_worker` em sugestão |
+| Minerar TikTok automaticamente | **Não.** O rate limit é por IP e adaptativo. Volume é papel do scout no Reddit; a caixa de entrada é para o punhado de histórias que já provaram reter |
+| Subreddits em inglês no scout | **Próximo passo, não implementado.** Os vídeos medidos eram AITA/antiwork traduzidos — o concorrente resolve a escassez de material pt-BR traduzindo, não transcrevendo |

@@ -530,8 +530,6 @@ Baixar tudo custaria ~100 GB medidos (0,39 a 0,73 MB por segundo de vídeo) num 
 
 ⚠️ **O manifesto vive fora de `background_prefix`.** `list_keys` devolve o prefixo inteiro, então um `.json` ali dentro entraria no sorteio e o render tentaria montar um JSON como movie strip. O `is_clip()` filtra por extensão como segunda linha de defesa, para qualquer arquivo solto que apareça ali depois.
 
-
-
 ---
 
 ## Cards de comentário (`blender_worker`)
@@ -781,12 +779,117 @@ O post do TikTok **já foi criado** quando o YouTube é tentado. Derrubar o requ
 
 ## Trigger (entrada)
 
-Duas portas de entrada, ambas terminando no mesmo `POST /pipeline`:
+Três portas de entrada, todas terminando no mesmo `POST /pipeline`:
 
 1. **Manual** — `POST /pipeline` no orchestrador com `{ "script": "...", "metadata": {} }`.
 2. **Automática** — o `content_scout` descobre roteiros sozinho e chama o mesmo endpoint.
+3. **Caixa de entrada** — um link de vídeo compartilhado pelo celular, que o `content_scout`
+   transcreve e manda para o mesmo endpoint (ver "A caixa de entrada de links", abaixo).
 
 O trigger sempre normaliza para `plain text + metadata` antes de enviar ao orchestrador, independente da origem.
+
+---
+
+### Roteiro viral entra como matéria-prima, nunca como roteiro final
+
+Reaproveitar roteiro de vídeo que já viralizou é tentador pelo motivo certo: o upvote do
+Reddit mede quantas pessoas votaram, o view count mede que a história **reteve**, que é o
+sinal que falta em toda a seleção atual. O erro é confundir o sinal com o texto.
+
+**Texto recitado palavra por palavra é o modo de falha.** Não pela detecção automática —
+Content ID e o fingerprint do TikTok casam áudio e vídeo, e narração própria com fundo
+próprio não casa com nada. O risco é outro e é mais silencioso: as políticas de conteúdo
+não-original (elegibilidade do For You no TikTok, conteúdo repetitivo/produzido em massa no
+YPP) cortam **alcance e monetização sem emitir aviso**. Numa operação de três posts por dia
+isso some sem sintoma, que é exatamente o tipo de falha que este projeto mais paga caro.
+Segundo, roteiro é obra literária: recitar o texto é reprodução, e três strikes encerram o
+canal do YouTube.
+
+Daí a regra: o roteiro viral entra pela porta manual como **input do `/refine`**, no mesmo
+lugar onde entraria um post do Reddit — nunca como o `script` final do `POST /pipeline`. O
+refino reescreve premissa, ordem dos beats e gancho. O que sobrevive é a estrutura
+dramática, que não é protegível e é justamente o que faz a história reter; o que morre é a
+expressão literal, que é o que gera strike e o que gera o comentário "isso é copiado".
+
+**O dedup do scout não cobre este caminho.** `seen_items` compara contra o que já foi
+minerado, não contra a internet: material colado à mão não tem rede de segurança contra
+republicar o mesmo roteiro duas vezes.
+
+### A caixa de entrada de links
+
+A regra acima diz *o que* fazer com um roteiro viral. Isto é *como* ele chega.
+
+**O sinal que justifica a porta.** O ranking do Reddit mede quantas pessoas votaram; a
+visualização de um vídeo mede que a história **reteve** quem começou a assistir. São coisas
+diferentes, e a segunda é a que o pipeline nunca teve. Ela não é minerável: o TikTok não é
+API pública, tem rate limit por IP e se defende de cliente automatizado. Então quem escolhe é
+uma pessoa olhando o número, e o sistema só precisa não perder o link no caminho.
+
+**O canal é o ntfy que já existe, num tópico separado.** Ele já é o destino das notificações
+que saem, o app já está no celular e aparece na aba de compartilhar do Android — o caminho
+vira TikTok → Compartilhar → ntfy, sem digitar nada e sem depender de estar na LAN de casa.
+Um endpoint HTTP só funcionaria dentro do wifi; um bot de Telegram custaria token,
+dependência e um serviço a mais para manter. **O tópico é outro**, porque no mesmo o serviço
+leria as próprias notificações de saída e tentaria achar link nelas.
+
+**A divisão entre os dois serviços segue o que cada um já tem.** O `tts_service` ganhou
+`POST /transcribe` porque já carrega ffmpeg e faster-whisper na imagem; o `content_scout`
+ganhou o laço porque já tem o dedup, o backpressure e o cliente do orchestrador. Nenhum dos
+dois recebeu uma capacidade que o outro já tivesse.
+
+**O que o TikTok cobra para entregar um vídeo** (medido em 27/08/2026, não suposto). O
+diagnóstico importa porque cada obstáculo se parece com um problema diferente do que é:
+
+| Obstáculo | Como aparece | Custo real |
+|---|---|---|
+| Fingerprint de TLS | HTTP **200** com casca de 1,4 KB; erro de "extractor" | uma flag e uma dependência |
+| Desafio JS | — | zero, o yt-dlp resolve sozinho |
+| Parser da página falhando | "Unable to extract universal data" | segunda tentativa pela API mobile |
+| Rate limit por IP | URLs seguidas derrubam até a que funcionou | pausa entre requisições |
+
+O primeiro é o que engana: um `200` com corpo vazio parece extractor desatualizado, e um
+nightly compilado no mesmo dia falha igual. Nenhum dos quatro exige login, cookies ou
+navegador — o que descarta as três soluções caras que pareciam necessárias antes da medição
+(sessão logada, Playwright headless, API paga).
+
+**Este caminho não escala, e não deve.** O rate limit é por IP e adaptativo: três URLs em
+sequência rápida derrubaram as três, incluindo uma que funcionara segundos antes. Isso é
+irrelevante para alguns roteiros por semana e proibitivo para mineração — que é exatamente a
+divisão de trabalho pretendida. Minerar volume é papel do `content_scout` no Reddit; esta
+porta existe para o punhado de histórias que já provaram reter.
+
+**Ordem das checagens: barato antes de caro.** A transcrição custa ~70s de CPU por vídeo de
+3 minutos (~0.4x tempo real), e é a etapa cara. Vêm antes dela a capacidade e a checagem de
+reenvio do mesmo link — esta última existindo *só* para não pagar a transcrição, já que o
+dedup de verdade (id do vídeo e fingerprint do texto) só fica disponível depois. Reenviar o
+mesmo link é o engano mais provável de quem compartilha do celular, então a consulta barata
+se paga.
+
+**O fingerprint cruza as duas fontes.** Uma história que o scout já garimpou no Reddit é
+reconhecida quando chega pelo TikTok, porque é a mesma coluna `content_fingerprint`. Isso
+fecha o buraco que a regra anterior deixava explícito: material colado à mão passou a ter
+rede contra republicação.
+
+**Falha de plataforma não queima a história.** Duplicado e filtrado gravam linha em
+`seen_items`; falha de transcrição **não**. Rate limit é transitório, e gravar ali faria o
+dedup recusar o mesmo link no reenvio — que é justamente o que o aviso pede para fazer.
+
+**Fila cheia recusa em vez de enfileirar.** Não há tabela de pendências, e engolir a
+capacidade converteria o freio de memória do `blender_worker` em sugestão. O link é recusado
+com aviso pedindo reenvio. É a limitação conhecida do desenho.
+
+**Sem nota de storytelling e sem moderação.** A nota é sinal de *seleção* — ela ordena
+candidatos entre si, e aqui não há ordenação: uma pessoa já escolheu olhando o view count. A
+moderação continua valendo para o ciclo automático, onde ninguém leu o texto antes.
+
+**O que a primeira medição revelou por acidente.** Os três vídeos testados eram posts de
+subreddits **em inglês, traduzidos** — a hashtag do próprio criador diz `#reddit`. O
+concorrente resolve a escassez de material pt-BR traduzindo o Reddit anglófono, não
+transcrevendo. Os dois caminhos são complementares e nenhum descarta o outro: o TikTok dá
+prova de retenção, o Reddit em inglês daria volume. O segundo está registrado como próximo
+passo, não implementado.
+
+---
 
 ---
 
@@ -1221,6 +1324,20 @@ Fila cheia deixou de ser falha terminal. O `429 buffer_queue_full` mantém o run
 - **Sem scheduler durável.** O pré-requisito registrado aqui (Celery/APScheduler) não foi necessário porque o retry é idempotente e o estado vive no Postgres, não na memória: `recover_interrupted_runs()` reconcilia no boot e o loop periódico faz o resto. Um restart no meio custa uma varredura repetida, não um run perdido.
 
 **O que ainda falta: atomicidade de série.** Hoje as partes são agendadas uma a uma; se a fila fechar entre a parte 1 e a 2, a parte 1 fica agendada e a 2 espera a próxima varredura. Como as partes são agendadas em dias consecutivos e o retry roda a cada 15 min, a janela é pequena, mas existe — e publicar um cliffhanger sem continuação é pior que atrasar a série inteira. Resolver exige que o `tiktok_poster` exponha as vagas livres na resposta do `429`, para o orchestrador decidir antes de começar.
+
+---
+
+### Multi-conta (dezenas a centenas de contas) — **proposta, não implementado**
+
+Operar N contas de TikTok+YouTube reaproveitando roteiro entre elas. O desenho completo está
+em `docs/multi_account.md`: o que trava primeiro (render a ~113 partes/dia, disco a ~30
+GB/dia, oferta do scout — o banco não), a separação de `pipeline_runs` em
+`stories`/`renders`/`publications`, onde as credenciais passam a morar, e as três fases.
+
+A tensão que o documento existe para registrar: **reuso economiza roteiro, não render.**
+Mesmo MP4 em N contas é o fingerprint que derruba a rede inteira de uma vez; variante por
+conta devolve o custo de render por conta. O que decide a escala é o custo da variante mais
+barata que ainda é distinta — e esse número ainda não foi medido.
 
 ---
 

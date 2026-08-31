@@ -35,6 +35,13 @@ class ScoutEnvSettings(BaseModel):
     database_url: str
     scout_enabled: bool
     user_agent: str
+    #: Tópico ntfy de **entrada** — onde os links compartilhados do celular
+    #: chegam. Vazio desliga o laço, que é o padrão: sem tópico configurado o
+    #: serviço se comporta exatamente como antes da caixa de entrada existir.
+    #:
+    #: ⚠️ Não é o mesmo tópico do ``NOTIFY_WEBHOOK_URL``. Apontar os dois para o
+    #: mesmo lugar faz o serviço ler as próprias notificações de saída.
+    ntfy_inbox_url: str
 
     @model_validator(mode="before")
     @classmethod
@@ -45,6 +52,7 @@ class ScoutEnvSettings(BaseModel):
             "database_url": os.environ["DATABASE_URL"],
             "scout_enabled": os.environ.get("SCOUT_ENABLED", "true").lower() == "true",
             "user_agent": os.environ.get("SCOUT_USER_AGENT", "content_engine/0.1 (content_scout)"),
+            "ntfy_inbox_url": os.environ.get("NTFY_INBOX_URL", "").strip(),
         }
 
 

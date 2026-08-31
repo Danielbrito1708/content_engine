@@ -202,7 +202,9 @@ Transcreve o áudio final (já sem silêncios) e gera o SRT que o `blender_worke
 **Função pública:**
 - `transcribe_to_srt(audio_bytes, language="pt", model_name="base") -> bytes` — recebe MP3 em bytes, devolve SRT em bytes com **uma entrada por palavra**.
 
-Usa `faster-whisper` com `word_timestamps=True` (device `cpu`, `compute_type="int8"`). O modelo é carregado uma vez e reaproveitado num cache global (`_model`) — a primeira request paga o download/load.
+Usa `faster-whisper` com `word_timestamps=True` (device `cpu`, `compute_type="int8"`). O modelo é carregado uma vez e reaproveitado num cache **por nome** (`_models`) — a primeira request paga o download/load.
+
+⚠️ **O cache era um slot só, e passou a não poder ser.** Com `POST /transcribe` usando um modelo diferente do da legenda, um cache de uma variável devolveria silenciosamente o modelo do primeiro chamador ao segundo: legenda de render rodando no modelo grande, ou transcrição de vídeo rodando no `base`. Nenhum dos dois falha de forma visível — só fica pior.
 
 **Controle via env vars:**
 
@@ -217,9 +219,59 @@ O consumo dessa legenda (offset de sincronia, hold entre palavras, fades) é res
 
 **Sem testes** — `transcribe.py` não tem cobertura (exigiria mockar `WhisperModel` ou fixture de áudio real).
 
+### Transcrição de vídeo de terceiro (`POST /transcribe`)
+
+`audio/download.py` + `api/routes/transcribe.py`. URL de vídeo → texto corrido, para o roteiro
+de um vídeo que já viralizou entrar no pipeline **como matéria-prima do refino**, nunca como
+roteiro final (a regra e o porquê estão em `docs/vision.md` → "Roteiro viral entra como
+matéria-prima"). Consumido pelo `content_scout`; ver a caixa de entrada lá.
+
+**Por que mora aqui.** O serviço já tem as duas peças caras na imagem — ffmpeg e faster-whisper.
+Um serviço novo duplicaria as duas, e o `content_scout`, que é quem consome, não tem nenhuma.
+
+**API pública:**
+- `POST /transcribe` `{url}` → `{text, char_count, audio_duration, source{...}}`
+- `download_audio(url, dest, *, impersonate, api_hostname, sleep_requests, retries, max_duration_seconds) -> DownloadedMedia`
+- `transcribe_file_to_text(audio_path, language, model_name) -> (texto, duração)`
+
+**O `source` não é enfeite.** Ele carrega `view_count` e `like_count`, que são o único sinal de
+**retenção real** que o pipeline recebe: o upvote do Reddit diz quantos votaram, a visualização
+diz que a história prendeu. É a razão de existir deste caminho, e viaja até o `metadata` do run.
+
+⚠️ **O TikTok se defende, e são três obstáculos distintos** (medidos em 27/08/2026):
+
+| Obstáculo | Sintoma | Solução |
+|---|---|---|
+| Fingerprint de TLS | HTTP **200** com casca de ~1,4 KB; o yt-dlp reporta "Unexpected response from webpage request" | `impersonate` + `curl_cffi` |
+| Desafio JS | — | o yt-dlp resolve sozinho, sem navegador |
+| Parser da página falhando | "Unable to extract universal data for rehydration" | `api_hostname` (API mobile), **só como 2ª tentativa** |
+| Rate limit por IP | URLs seguidas derrubam até a que funcionou | `sleep_requests` |
+
+⚠️ **`curl_cffi` é dependência funcional, não opcional.** Sem ela o yt-dlp aceita `impersonate` e a
+**ignora**, e o sintoma reaparece como erro de extractor. Por isso `_impersonate_target()` levanta
+`DownloadError` explicando, em vez de deixar falhar mais tarde e mais longe da causa.
+
+⚠️ **`api_hostname` nunca é a primeira tentativa.** Resolve o que a página web recusa, mas é o
+caminho mais sujeito a mudar sem aviso.
+
+⚠️ **O teto de duração corta antes de transcrever**, que é onde o custo está (~0.4x tempo real de
+CPU). Um vídeo longo mandado por engano queimaria minutos antes de alguém notar.
+
+⚠️ **`502` e não `400` quando o download falha**: a URL está bem formada, quem recusou foi a
+plataforma. A distinção é lida pelo `content_scout` para decidir se avisa "tente de novo mais
+tarde" — a resposta ao rate limit é reenviar, a resposta a URL inválida não é.
+
+⚠️ **Transcrição vazia é `422`, não `200`.** Áudio sem fala é um resultado, mas devolver texto
+vazio faria o chamador criar um run de roteiro em branco, que só morreria depois de TTS e render.
+
+**Comportamento em `config.ini [download]`** (`impersonate`, `api_hostname`, `sleep_requests`,
+`retries`, `max_duration_seconds`); modelo em `WHISPER_TRANSCRIBE_MODEL` (padrão `small`).
+
 ## Testes
 
 `tests/test_generate.py` — 12 testes; edge-tts e MinIO sempre mockados; `REMOVE_SILENCE=false` **e `NORMALIZE_AUDIO=false`** no conftest, para que nenhum teste de endpoint chame ffmpeg.
+
+`tests/test_transcribe.py` — 16 testes: a rota (texto + `source`, view count sobrevivendo ao round-trip, 502 do download, 422 de transcrição vazia), o download (impersonation presente, `api_hostname` só na 2ª tentativa, teto de duração, sucesso silencioso sem arquivo, `.part` não confundido com áudio, metadata ausente) e o cache de modelos por nome. Nada toca rede nem whisper: `_extract` é mockado, que é o ponto mais fundo que ainda exercita a lógica.
 
 `tests/test_label.py` — 10 testes do `label`: as duas keys, precedência sobre `part_number`, `part_number` opcional, e a rejeição de `/`, `..`, maiúscula e string vazia. Mesmos mocks de `test_generate.py`.
 

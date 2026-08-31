@@ -537,6 +537,57 @@ Desde 25 de agosto de 2026 a publicação acontece **entre 11h e 20h**, três ve
 
 **O erro que isso previne é silencioso.** Um horário fora da janela não gera falha nenhuma: o vídeo é produzido, agendado e publicado normalmente — só que de madrugada. Por isso existe agora uma verificação automática que lê a configuração e recusa qualquer horário fora de 11h–20h, junto com a conta da continuação.
 
+## Roteiro de vídeo que já deu certo pode ser reaproveitado — mas reescrito
+
+Uma história que já viralizou traz uma informação que o Reddit não dá: a prova de que ela
+prende quem começou a assistir. Dá para usar isso, e a forma de usar é entregar a história
+ao sistema pela entrada manual como **material bruto**, deixando o refino reescrevê-la, em
+vez de mandar o texto pronto para ser narrado como está.
+
+O motivo é prático. Repetir o texto original palavra por palavra faz o TikTok e o YouTube
+tratarem o vídeo como conteúdo não-original, e a punição não vem como aviso: vem como
+alcance que simplesmente não acontece. Além disso, o autor do vídeo original pode reclamar
+de direito autoral, e reclamações repetidas derrubam o canal.
+
+Reescrito, o vídeo mantém o que fazia a história funcionar — o conflito, a ordem em que os
+fatos aparecem, o vilão — e perde o texto que era de outra pessoa.
+
+Um cuidado que fica por sua conta: o sistema só sabe evitar repetição do que ele mesmo
+garimpou. História colada à mão pode ser publicada duas vezes sem que nada avise.
+
+## Você manda o link de um vídeo pelo celular e ele vira roteiro
+
+Antes, entregar uma história ao sistema exigia texto: ou você colava um roteiro, ou o robô
+garimpava um post no Reddit. Um vídeo que você viu e achou bom não tinha como entrar — a
+história dele existe como voz, não como texto.
+
+Agora tem. Você compartilha o link do vídeo direto do TikTok para o aplicativo de avisos que
+já te manda as notificações, e o sistema faz o resto: baixa o áudio, escuta, transcreve e
+manda a história para ser reescrita como qualquer outra. Não precisa digitar nada nem estar
+em casa.
+
+O texto que sai do vídeo **nunca** é narrado como está — ele passa pela mesma reescrita por
+que passa um post do Reddit. É isso que separa aproveitar uma boa história de copiar o
+trabalho de outra pessoa.
+
+O sistema te responde no mesmo aplicativo, contando o que aconteceu com o link: que virou
+roteiro, que a história já tinha sido usada antes, que a fila está cheia e é para reenviar
+mais tarde, ou que não conseguiu entender o áudio.
+
+**O que ele recusa, e por quê:**
+
+- **Link repetido** — o mesmo vídeo mandado duas vezes. Ele nem baixa de novo.
+- **História repetida** — o mesmo texto, mesmo vindo de outro vídeo ou já garimpado do
+  Reddit antes. O sistema compara o conteúdo, não só o endereço.
+- **Transcrição curta demais** — quase sempre significa que o vídeo era "Parte 1 de 2" e a
+  história ficou pela metade. Mande as duas partes.
+- **Fila cheia** — já há vídeos suficientes em produção. Neste caso o link é só recusado, não
+  guardado: é para reenviar depois.
+
+Uma informação nova vem junto de graça: o número de visualizações do vídeo original. É a
+primeira vez que o sistema recebe uma prova de que a história prendeu o espectador — o
+Reddit só dizia quantas pessoas votaram nela.
+
 ## Dois hábitos que faziam todo vídeo parecer o mesmo vídeo
 
 Os vídeos do canal são montados por uma receita, e isso é o que permite produzir três por

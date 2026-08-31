@@ -74,6 +74,12 @@ class TTSEnvSettings(BaseModel):
     audio_sample_rate: int | None
     whisper_model: str
     whisper_language: str
+    #: Modelo usado por ``POST /transcribe``, separado do ``whisper_model`` de
+    #: propósito. A legenda transcreve áudio de TTS limpo, onde o ``base`` basta;
+    #: a transcrição de vídeo de terceiro tem trilha sonora sob a voz, e ali o
+    #: ``base`` erra o suficiente para atrapalhar. Um modelo maior custa ~0.4x
+    #: tempo real de CPU, que só se paga no caminho que precisa dele.
+    whisper_transcribe_model: str
 
     @model_validator(mode="before")
     @classmethod
@@ -121,6 +127,7 @@ class TTSEnvSettings(BaseModel):
             ),
             "whisper_model": os.environ.get("WHISPER_MODEL", "base"),
             "whisper_language": os.environ.get("WHISPER_LANGUAGE", "pt"),
+            "whisper_transcribe_model": os.environ.get("WHISPER_TRANSCRIBE_MODEL", "small"),
         }
 
     @model_validator(mode="after")
