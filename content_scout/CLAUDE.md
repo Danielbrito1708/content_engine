@@ -19,6 +19,8 @@ Descobre roteiros candidatos na internet e submete ao orchestrador. É o serviç
 - `filters.py` — `evaluate()` / `find_blocked_term()`, puros
 - `clients/orchestrator.py` — `create_pipeline()`, `count_active_runs()`
 - `scout.py` — `run_cycle()` + `scout_loop()`
+- `inbox.py` — caixa de entrada de links pelo ntfy: `inbox_loop()`, `handle_message()`, `handle_url()`
+- `clients/tts.py` — `TranscribeClient` (URL de vídeo → texto, via `tts_service POST /transcribe`)
 
 ## Comandos
 
@@ -38,6 +40,7 @@ alembic upgrade head
 - `DATABASE_URL` — asyncpg para o banco `content_scout`
 - `SCOUT_ENABLED` — `true`/`false` (default `true`): liga o loop periódico
 - `SCOUT_USER_AGENT` — User-Agent das requisições ao Reddit
+- `NTFY_INBOX_URL` — tópico ntfy **de entrada**, onde chegam os links compartilhados do celular. Vazio (o padrão) desliga o laço. **Tem que ser outro tópico**, não o do `NOTIFY_WEBHOOK_URL`
 
 Nenhuma chave de API é necessária aqui — o caminho RSS não autentica, e a moderação passa pelo `llm_service`, que detém as chaves.
 
@@ -280,6 +283,13 @@ Arquivo **idêntico** ao de `orchestrator/src/core/notify.py` — mesmo padrão 
 | ⚠️ Moderação fora do ar | warning | `_run_cycle`, no `ModerationError` |
 | 📊 Pesquisa concluída (contadores do ciclo) | debug | `scout_loop` |
 | ❌ Ciclo do scout falhou | error | `scout_loop` |
+| ⬇️ Baixando e transcrevendo | debug | `inbox.handle_url` |
+| 📥 Link virou roteiro (origem, título, chars, views) | info | `inbox.handle_url` |
+| 🚧 Link recusado — fila cheia | warning | `inbox.handle_url` |
+| ⚠️ Não consegui transcrever | warning | `inbox.handle_url` |
+| 🔁 História repetida | info | `inbox.handle_url` |
+| ✂️ Transcrição curta demais | warning | `inbox.handle_url` |
+| 📴 Caixa de entrada de links caiu | error | `inbox.inbox_loop` |
 
 **Por que o scout é o serviço que mais precisa disto.** Ele não tem run para ficar `failed`, não tem endpoint que passe a responder 500, e um loop morto é indistinguível de uma semana sem material bom. Os avisos são o único sinal de que o ciclo aconteceu — daí também o dead-man's switch `scout`, pingado ao fim de cada ciclo.
 
@@ -291,6 +301,78 @@ Config em `config.ini [monitoring]`. Em `debug` sai uma mensagem por ciclo mesmo
 
 - Testes: 5 em `tests/test_scout.py` (seção "notificação de operação") — ciclo anunciado, história submetida com origem e título, fila cheia, moderação fora do ar, e nada enfileirado sem destino configurado.
 - ⚠️ O fixture autouse `notify_off` (`conftest.py`) apaga as vars de destino: `bootstrap` chama `load_dotenv()`, então sem ele a suíte dispararia WhatsApp de verdade.
+
+### Caixa de entrada de links (`src/content_scout/inbox.py`)
+
+A **terceira porta de entrada** do sistema, ao lado do `POST /pipeline` manual e do ciclo
+automático. Você compartilha o link de um vídeo pelo celular e ele vira roteiro.
+
+**Por que existe.** O sinal que ela carrega não existe nas outras duas: o Reddit diz quantas
+pessoas votaram, e a visualização de um vídeo diz que a história **prendeu**. Quem escolhe é uma
+pessoa olhando o número; o trabalho do módulo é só não perder o link entre o celular e a fila.
+
+**Por que ntfy e não endpoint.** O ntfy já está no ar como destino das notificações que saem, o app
+já está no celular e ele aparece na aba de compartilhar do Android — o caminho é TikTok →
+Compartilhar → ntfy, sem digitar. Um endpoint HTTP exigiria estar na LAN de casa; um bot de
+Telegram exigiria token, dependência e um serviço a mais.
+
+**API pública:**
+- `inbox_loop()` — assina `{NTFY_INBOX_URL}/json` e trata cada mensagem. Iniciado no `lifespan`.
+- `handle_message(message) -> list[str]` — extrai as URLs e processa **uma de cada vez**.
+- `handle_url(url) -> str` — o desfecho: `submitted` / `duplicate_url` / `duplicate_video` /
+  `duplicate_story` / `too_short:{n}` / `too_long:{n}` / `no_capacity` / `transcribe_failed` /
+  `submit_failed`.
+- `extract_urls(message) -> list[str]` — puro.
+
+**Ordem das checagens, do barato ao caro** — a mesma lógica do ciclo:
+
+| Ordem | Checagem | Custo |
+|---|---|---|
+| 1 | Capacidade (`max_pending_runs`) | uma consulta HTTP |
+| 2 | Reenvio do mesmo link (`seen_items.url`) | uma consulta |
+| 3 | Transcrição (`tts_service POST /transcribe`) | **~70s de CPU** |
+| 4 | Dedup por `external_id` e por fingerprint | duas consultas |
+| 5 | `min_chars` / `max_chars` | grátis |
+
+⚠️ **A checagem 2 existe só para não pagar a 3.** O dedup de verdade é `external_id` +
+fingerprint, e os dois só ficam disponíveis **depois** de transcrever. Como reenviar o mesmo link é
+o engano mais provável de quem compartilha do celular, a consulta barata paga por si.
+
+⚠️ **O fingerprint cruza os dois caminhos.** Uma história que o scout já achou no Reddit é
+reconhecida quando chega pelo TikTok, e vice-versa — é a mesma coluna `content_fingerprint`.
+
+⚠️ **Falha de transcrição NÃO grava linha em `seen_items`.** Rate limit do TikTok é transitório;
+gravar aqui faria o dedup recusar o mesmo link no reenvio, que é exatamente o que a notificação
+pede para a pessoa fazer. Duplicado e filtrado gravam; falha de plataforma não.
+
+⚠️ **Não há fila de espera para `no_capacity`.** O link é recusado e quem mandou é avisado para
+reenviar. Guardá-lo exigiria uma tabela de pendências que não existe, e engolir a capacidade
+converteria o freio de memória do `blender_worker` em sugestão. É a limitação conhecida do módulo.
+
+⚠️ **Links da mesma mensagem são sequenciais, com pausa** (`delay_between_urls_seconds`). O rate
+limit do TikTok é por IP: duas transcrições em paralelo derrubariam as duas.
+
+⚠️ **Sem nota de storytelling e sem moderação.** A nota é sinal de **seleção** — ela ordena
+candidatos entre si, e aqui não há ordenação: uma pessoa já escolheu. A moderação continua valendo
+para o ciclo automático, onde ninguém leu o texto antes.
+
+⚠️ **O tópico de entrada é outro tópico.** No mesmo do `NOTIFY_WEBHOOK_URL` o serviço leria as
+próprias notificações de saída e tentaria achar link nelas.
+
+⚠️ **O laço é independente de `SCOUT_ENABLED`.** Desligar a busca automática e publicar só o que se
+escolhe à mão é modo de operação legítimo — provavelmente o mais usado numa semana em que a fila do
+Buffer está apertada. O estado dos **dois** laços vai na mensagem de boot.
+
+**A queda do stream é rotina, não falha.** O ntfy.sh recicla conexões ociosas; o laço reconecta em
+silêncio e só avisa depois de `failures_before_alert` quedas seguidas.
+
+**A regra de produto é automática aqui.** Tudo que passa pelo `POST /pipeline` passa pelo refino,
+então o texto transcrito **não tem como** virar roteiro final — que é a regra de `docs/vision.md`
+→ "Roteiro viral entra como matéria-prima". O módulo não poderia pular essa etapa nem se quisesse.
+
+Config em `config.ini [inbox]`: `enabled`, `transcribe_timeout` (900 — a transcrição roda a ~0.4x
+tempo real), `delay_between_urls_seconds`, `reconnect_delay_seconds`, `connect_timeout`,
+`failures_before_alert`. Serviço em `[services] tts_url`.
 
 ### Adicionando uma fonte nova (ex.: YouTube)
 
@@ -304,6 +386,7 @@ Nada mais muda: dedup, filtros, backpressure e orçamento tratam toda fonte igua
 ## Testing rules
 
 - `tests/test_reddit_source.py` (34), `tests/test_filters.py` (14) e `tests/test_story_quality.py` (34) — marcados `no_db`, rodam sem docker. O último usa `respx` para o cliente HTTP.
+- `tests/test_inbox.py` (19) — 9 puros (`no_db`: extração de URL e montagem do candidato) e 10 de integração, que exigem o banco. `TranscribeClient` e `OrchestratorClient` são mockados via `patch.object`.
 - `tests/test_scout.py` (78) — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
 - A fixture `length_cfg` (não-autouse) fixa `min_chars`/`max_chars` nos testes do teto de tamanho, para eles não dependerem do `config.ini` — subir `max_chars` em produção não pode quebrar a suíte.
 - ⚠️ **Nunca rodar a suíte com DB contra o banco vivo**: o fixture autouse `clean_db` apaga `seen_items` e `archive_cursors`, ou seja, o histórico de dedup inteiro — o scout voltaria a republicar tudo. Criar um banco descartável: `docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE content_scout_wt;"`, `alembic upgrade head` nele e rodar com `DATABASE_URL=…/content_scout_wt`.
