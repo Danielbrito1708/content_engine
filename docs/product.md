@@ -644,6 +644,22 @@ disponível. Um tropeço de rede não pode custar um vídeo que já passou pelo
 roteirista, pela narração e pela legendagem — mas você recebe um aviso no
 celular dizendo que aconteceu.
 
+### Alimentar a biblioteca de fundos pelo celular
+
+Antes, adicionar um vídeo novo à biblioteca de fundos exigia abrir o
+computador e rodar um comando. Agora existe um segundo tópico de ntfy — como o
+que já existia para mandar roteiros — dedicado a fundos: você compartilha o
+link de um vídeo de gameplay pelo celular e ele entra sozinho no catálogo,
+pronto para ser sorteado no próximo render.
+
+Nada é baixado na hora — só a duração do vídeo é consultada, para calcular em
+quantos pedaços de dois minutos ele se divide, do mesmo jeito que a playlist
+inteira foi catalogada. O download de fato só acontece quando um desses
+pedaços for sorteado para um vídeo, como já funciona para o resto da
+biblioteca. Mandar o mesmo link duas vezes não duplica nada, e um vídeo curto
+demais para virar fundo é recusado com aviso, em vez de entrar quebrado no
+catálogo.
+
 ## Fluxo completo resumido
 
 ```

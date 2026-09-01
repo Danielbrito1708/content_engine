@@ -530,6 +530,24 @@ Baixar tudo custaria ~100 GB medidos (0,39 a 0,73 MB por segundo de vídeo) num 
 
 ⚠️ **O manifesto vive fora de `background_prefix`.** `list_keys` devolve o prefixo inteiro, então um `.json` ali dentro entraria no sorteio e o render tentaria montar um JSON como movie strip. O `is_clip()` filtra por extensão como segunda linha de defesa, para qualquer arquivo solto que apareça ali depois.
 
+#### Caixa de entrada de fundos (`orchestrator/src/orchestrator/background_inbox.py`, 01/09/2026)
+
+Adicionar um clipe à biblioteca era terminal: subir um arquivo à mão sob `background_prefix`, ou rodar `build_background_manifest.py <playlist-url>` de uma máquina com o repo. Isto abre um segundo caminho, no mesmo padrão da caixa de entrada de roteiros do `content_scout` (`docs/vision.md` → "Roteiro viral entra como matéria-prima"): um link de vídeo compartilhado do celular vira entradas novas no manifesto, sem terminal.
+
+**Por que ntfy, de novo.** Os mesmos três motivos da caixa de roteiros: o app já está instalado, o ntfy aparece na aba de compartilhar do Android, e um endpoint HTTP exigiria estar na LAN de casa.
+
+**Por que no `orchestrator`, e não no `content_scout`.** O `content_scout` é dono do padrão de assinatura ntfy, mas não conhece nada de fundo — `plan_segments`, `segment_key` e o manifesto vivem no `orchestrator`, que é quem já materializa clipes sob demanda. Duplicar essa lógica noutro serviço criaria uma segunda fonte de verdade sobre como um segmento é cortado; a alternativa seria o `content_scout` fazer uma chamada HTTP nova ao `orchestrator` só para isso, o que exigiria um endpoint que hoje não existe e não serve a nada mais. Fica mais barato o `orchestrator` assinar seu próprio tópico.
+
+**Nenhum vídeo é baixado neste laço — só a duração.** `yt-dlp` com `download=False` lê metadados (id, duração, título); o download real do trecho continua acontecendo só quando `ensure_available` materializa o clipe sorteado, exatamente como já funciona para o resto da biblioteca. Isso também é o que torna o laço barato o bastante para não precisar de checagem de capacidade: não há LLM, não há Whisper, não há render — só uma consulta de metadado e um upload de JSON.
+
+**Um vídeo por mensagem, não uma playlist.** `noplaylist=True` faz um link de playlist virar só o primeiro vídeo. Suportar playlist pelo celular replicaria a lógica de `extract_flat` de `build_background_manifest.py` para um caso que já tem solução manual e mais barata — o ntfy resolve o caso comum ("achei um vídeo bom, quero usar"), a playlist continua sendo o script.
+
+**Dedup é reentrada no próprio manifesto, sem tabela nova.** Um vídeo já catalogado gera as mesmas chaves (`segment_key` é função de `(video_id, start)`), então mandar o mesmo link duas vezes não duplica nada: se todas as chaves já estão no manifesto, o desfecho é `duplicate` e nada é reenviado ao bucket. Isso evita precisar de uma tabela de "já visto" só para esta porta de entrada.
+
+**Falha de metadado (site fora do ar, vídeo removido, URL não suportada) e vídeo curto demais (`plan_segments` devolve lista vazia) são avisadas e descartadas — sem fila de retry.** Mesma postura da caixa de roteiros: sem fila de espera, quem mandou é avisado e decide se reenvia.
+
+Config em `config.ini [background_inbox]`: `enabled`, `reconnect_delay_seconds`, `connect_timeout`, `failures_before_alert` — mesmas chaves e mesmo motivo do `[inbox]` do `content_scout`. Tópico em `NTFY_BACKGROUND_INBOX_URL` (env), que **tem que ser diferente** de `NOTIFY_WEBHOOK_URL` e de `NTFY_INBOX_URL` — no mesmo tópico do primeiro o serviço leria as próprias notificações de saída como se fossem link.
+
 ---
 
 ## Cards de comentário (`blender_worker`)
