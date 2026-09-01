@@ -39,6 +39,7 @@ class OrchestratorEnvSettings(BaseModel):
     minio_secret_key: str
     minio_bucket: str
     r2_public_url: str
+    ntfy_background_inbox_url: str
 
     @model_validator(mode="before")
     @classmethod
@@ -55,6 +56,7 @@ class OrchestratorEnvSettings(BaseModel):
             "minio_secret_key": os.environ["MINIO_SECRET_KEY"],
             "minio_bucket": os.environ.get("MINIO_BUCKET", "blender-jobs"),
             "r2_public_url": os.environ.get("R2_PUBLIC_URL", ""),
+            "ntfy_background_inbox_url": os.environ.get("NTFY_BACKGROUND_INBOX_URL", "").strip(),
         }
 
 

@@ -19,9 +19,10 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `clients/http.py` — `request(method, url, *, timeout, attempts)`: política única de retry
 - `backgrounds.py` — `pick_background(keys, run_id, part_number)`, puro
 - `hook_text.py` — `opens_with_hook(script, hook) -> bool`, puro: se a parte já abre pela frase gancho
-- `storage/client.py` — `upload_bytes(...)` e `list_keys(bucket, prefix)` via boto3 (MinIO/R2)
+- `storage/client.py` — `upload_bytes(...)`, `get_bytes(...)` e `list_keys(bucket, prefix)` via boto3 (MinIO/R2)
+- `background_inbox.py` — caixa de entrada de fundos pelo ntfy: `background_inbox_loop()`, `handle_message()`, `handle_url()`
 - `worker.py` — `run_pipeline(run_id)` + `recover_interrupted_runs()`, `retry_pending_schedules()`, `maintenance_loop()`
-- `api/app.py` — `lifespan`: reconcilia runs órfãos antes de servir, depois sobe o `maintenance_loop`
+- `api/app.py` — `lifespan`: reconcilia runs órfãos antes de servir, depois sobe o `maintenance_loop` e (se configurada) a caixa de entrada de fundos
 
 ## Estado do PipelineRun
 
@@ -61,6 +62,7 @@ alembic upgrade head
 - `DATABASE_URL` — asyncpg para o banco `orchestrator`
 - `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` — credenciais MinIO/R2
 - `BLENDER_TEMPLATE_ID` — UUID do template pré-registrado no blender_worker (`POST /templates`)
+- `NTFY_BACKGROUND_INBOX_URL` — tópico ntfy **de entrada** para fundos: link de vídeo compartilhado do celular vira clipe no manifesto. Vazio (o padrão) desliga o laço. **Tem que ser outro tópico**, diferente de `NOTIFY_WEBHOOK_URL` e do `NTFY_INBOX_URL` do `content_scout`
 
 URLs dos serviços são configuradas em `config.ini [services]`.
 Assets estáticos (background + música) em `config.ini [template]`.
@@ -210,6 +212,28 @@ A biblioteca deixou de ser "arquivos no bucket" e passou a ser **manifesto + cac
 python scripts/build_background_manifest.py <url-da-playlist> [--dry-run]
 ```
 
+### Caixa de entrada de fundos (`src/orchestrator/background_inbox.py`)
+
+Segundo caminho para alimentar a biblioteca, ao lado do script manual acima: você compartilha o link de **um** vídeo pelo celular e ele vira entradas novas no manifesto, sem terminal. Mesmo padrão ntfy do `content_scout/inbox.py`, adaptado para outro alvo.
+
+**API pública:**
+- `background_inbox_loop()` — assina `{NTFY_BACKGROUND_INBOX_URL}/json` e trata cada mensagem. Iniciado no `lifespan`, só se `[background_inbox] enabled` e a env var estiverem setados.
+- `handle_message(message) -> list[str]` — extrai as URLs e processa **todas**, sem pausa entre elas (não há API de terceiro com rate limit aqui, só metadado do yt-dlp e upload para o próprio bucket).
+- `handle_url(url) -> str` — o desfecho: `submitted` / `duplicate` / `too_short` / `no_duration` / `metadata_failed`.
+- `extract_urls(message) -> list[str]` — puro, igual ao do `content_scout`.
+
+**Nenhum vídeo é baixado aqui — só a duração.** `_fetch_metadata` chama `yt-dlp` com `download=False` e `noplaylist=True`: um link de playlist vira só o primeiro vídeo, de propósito — suportar playlist pelo celular replicaria `extract_flat` para um caso que já tem solução manual. O download de fato só acontece quando `ensure_available` materializa o clipe sorteado, no render.
+
+**Dedup é reentrada no manifesto, sem tabela nova.** `segment_key` é função de `(video_id, start)`, então o mesmo vídeo mandado duas vezes gera as mesmas chaves — se todas já estão no manifesto, o desfecho é `duplicate` e nada sobe ao bucket. Se só parte das chaves existir (ex.: manifesto reconstruído com outro `segment_seconds` no meio do caminho), as que faltam são adicionadas.
+
+⚠️ **Vídeo curto demais não produz clipe.** `plan_segments` devolve lista vazia abaixo de `min_tail_seconds`, e o link é recusado com aviso — igual à regra que já valia para a playlist.
+
+⚠️ **O tópico é outro, de novo.** Nem o do `NOTIFY_WEBHOOK_URL`, nem o `NTFY_INBOX_URL` do `content_scout` — os três precisam ser tópicos distintos, ou o serviço lê as próprias mensagens (de saída, ou de outro serviço) como se fossem link.
+
+Config em `config.ini [background_inbox]`: `enabled`, `reconnect_delay_seconds`, `connect_timeout`, `failures_before_alert` — mesmas chaves e mesmo motivo do `[inbox]` do `content_scout`.
+
+- Testes: `tests/test_background_inbox.py` (11 — extração de URL, vídeo novo virando clipes, duplicado não reenvia o manifesto, vídeo curto, sem duração, falha do yt-dlp e múltiplas URLs numa mensagem). Todos puros/mockados: nenhum yt-dlp, nenhum bucket de verdade.
+
 ### Resiliência (`src/orchestrator/worker.py`)
 
 - **`BufferQueueFull` não é falha.** `_schedule` devolve `False`, o run fica em `scheduling` com os vídeos intactos, e o scout lê isso como capacidade ocupada (backpressure). `_schedule` é idempotente: parte com `scheduled_at` é pulada.
@@ -290,4 +314,6 @@ docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE orchestrato
 alembic upgrade head && python -m pytest -q
 ```
 
-184 testes em 13 arquivos: `test_pipeline.py` (6, API layer), `test_youtube_destination.py` (12 — o segundo destino de publicação), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (13 — inclui a rotação consultando o banco: clipe já usado não volta, e parte anterior à migration não conta; inclui também a regressão do `greenlet_spawn`: um run que falha não pode abortar os seguintes da mesma varredura), `test_backgrounds.py` (23 — o ciclo que esgota a biblioteca antes de repetir, o planejamento de segmentos e o filtro de extensão), `test_background_source.py` (11 — união dos candidatos, a queda quando o download falha e as três coisas que o despejo nunca apaga) e `test_http.py` (5).
+195 testes em 14 arquivos: `test_pipeline.py` (6, API layer), `test_youtube_destination.py` (12 — o segundo destino de publicação), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (13 — inclui a rotação consultando o banco: clipe já usado não volta, e parte anterior à migration não conta; inclui também a regressão do `greenlet_spawn`: um run que falha não pode abortar os seguintes da mesma varredura), `test_backgrounds.py` (23 — o ciclo que esgota a biblioteca antes de repetir, o planejamento de segmentos e o filtro de extensão), `test_background_source.py` (11 — união dos candidatos, a queda quando o download falha e as três coisas que o despejo nunca apaga), `test_background_inbox.py` (11 — extração de URL, vídeo novo virando clipes, duplicado, curto demais, sem duração e falha do yt-dlp) e `test_http.py` (5).
+
+⚠️ **`test_resilience.py::test_background_*` exigem `_load_background_manifest()` caindo em `{}`** — ou seja, `MINIO_ENDPOINT` sem acesso de verdade ao bucket de produção. Rodando com um `.env` que aponta para o R2 real e tem credenciais válidas, essas quatro checagens passam a ver o manifesto de ~1.677 clipes de verdade em vez do fixture sintético, e falham por picar um clipe real em vez de `bg_000.mp4`. Não é regressão: aponte `MINIO_ENDPOINT` para algo inalcançável (ex.: `http://127.0.0.1:1`) ao rodar a suíte fora de um `.env` de teste dedicado.
