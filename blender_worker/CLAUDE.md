@@ -519,6 +519,14 @@ stdout/stderr, mesmo padrão de `worker.py`) são tratamento de erro normal, nã
 **Não wired em `POST /jobs`.** Como a Fase 2, isto é ferramenta de edição — não muda nada que
 o pipeline de produção observa.
 
+**`api/app.py` ganhou `CORSMiddleware` aberto (`allow_origins=["*"]`, `allow_credentials=False`)**
+por causa desta seção — o `declarative_editor` (fora do monorepo) chama estas rotas direto do
+browser, e sem isso o navegador bloqueia a resposta em silêncio mesmo com a rota respondendo
+`200`. Vale pra API inteira, não só `/timelines/*`: não há como escopar `CORSMiddleware` por
+router no FastAPI. Seguro porque nada aqui é autenticado — não há cookie nem token pra vazar
+por um `allow_origins` amplo; `allow_credentials=False` é inclusive obrigatório junto de `"*"`
+pela spec de CORS.
+
 - Tests: `tests/test_probe.py` (4), `tests/test_preview.py` (9, inclui o par de testes que
   prova `preview_slot()` e `render_slot()` são independentes), `tests/test_timelines_preview_route.py`
   (9 — exige DB pelos fixtures `video`/`template`, não `no_db`; `assemble_preview` e a passada 2
