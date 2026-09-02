@@ -355,11 +355,17 @@ Optional `background.shadow` block in the guide: `enabled` (default `False`), `c
 
 - Tests: `tests/test_image_render.py` (5 tests; `load_font` and `get_s3_client` are monkeypatched — DB must be up for `clean_db` fixture, MinIO not required).
 
-### Declarative timeline resolver — Fases 1 e 2 (`src/blender_worker/timeline/` + `scripts/edit_video.py`)
+### VSEL — Declarative timeline resolver — Fases 1 e 2 (`src/blender_worker/timeline/` + `scripts/edit_video.py`)
 
-**Status: proposta, Fase 2 escrita e verificada contra Blender 4.2.20 real — não ligada a `worker.py`.** `template.json` no bucket é o que ainda renderiza de verdade; nada aqui é chamado pelo pipeline. See `docs/edicao_declarativa.md` for the full design; this entry only tracks what exists in code. Not yet in `docs/product.md`/`docs/vision.md` because it changes nothing a user or the pipeline can observe yet — that update lands when a `worker.py` change actually points a real job at this path, which is a separate, deliberately-not-yet-taken step (see "Não wired into worker.py" below).
+**VSEL** (*Video Sequence Edit Language*) is the name of the declarative YAML format this
+section implements — see `docs/edicao_declarativa.md` for the full design; this entry only
+tracks what exists in code.
 
-Resolves a YAML timeline (the format proposed in `docs/edicao_declarativa.md`) into absolute Blender-frame numbers, entirely without `bpy` — the point being that "editable by hand, previewable without a 12-minute render" starts with a resolver that runs in milliseconds outside Blender.
+**Status: Fase 2 escrita e verificada contra Blender 4.2.20 real — não ligada a `worker.py`.** `template.json` no bucket é o que ainda renderiza de verdade; nada aqui é chamado pelo pipeline. Not yet in `docs/product.md`/`docs/vision.md` because it changes nothing a user or the pipeline can observe yet — that update lands when a `worker.py` change actually points a real job at this path, which is a separate, deliberately-not-yet-taken step (see "Não wired into worker.py" below).
+
+Resolves a VSEL timeline into absolute Blender-frame numbers, entirely without `bpy` — the
+point being that "editable by hand, previewable without a 12-minute render" starts with a
+resolver that runs in milliseconds outside Blender.
 
 **`timeline/expr.py`** — the "tempo simbólico" mini-language: `parse(text)` / `evaluate(ast, ...)` / `resolve(text, ...)`. Literals (`"0.3s"`, `"4f"`), `$name` references, `after($input)`, `max(...)`/`min(...)`, `+`/`-`, and the `timeline_end` keyword (only valid while resolving bed tracks). Raises `ExprError` on bad syntax or an unresolved reference — a typo fails at resolution, not mid-render.
 
@@ -391,7 +397,7 @@ Resolves a YAML timeline (the format proposed in `docs/edicao_declarativa.md`) i
 
 **Status: implementado, ligado em `api/app.py`.** Não é o pipeline de produção — não toca DB,
 MinIO nem Blender, e não é a mesma superfície que `POST /jobs`. É ferramenta de dev/operador
-para iterar num template YAML sem renderizar (`docs/edicao_declarativa.md` § "Loop de preview",
+para iterar num template VSEL sem renderizar (`docs/edicao_declarativa.md` § "Loop de preview",
 nível 1). Não wired into `worker.py`: continua sendo a Fase 2 (`apply_payload`) quem decide se
 essa timeline algum dia executa de verdade — este endpoint só valida o texto.
 

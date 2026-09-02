@@ -1,8 +1,13 @@
-# Edição declarativa — proposta de formato
+# VSEL — edição declarativa
 
-**Status: proposta.** Nada aqui está implementado. O documento existe para que o formato seja
-discutido antes de existir código, e para que uma sessão futura não precise redescobrir por
-que o desenho é este.
+**VSEL** (*Video Sequence Edit Language*) é o nome do formato descrito neste documento — o
+YAML declarativo que substitui a montagem fixa de `edit_video.py`. Citado como "o formato"
+ou "VSEL" ao longo do texto; os dois termos são o mesmo objeto.
+
+**Status: nível 1, 2 e 3 de preview implementados** (ver "Fases" abaixo); nada disso está
+ligado ao pipeline de produção ainda. O documento existe para que o formato seja discutido
+antes/junto de existir código, e para que uma sessão futura não precise redescobrir por que
+o desenho é este.
 
 Data: 31/08/2026. Escrito contra o estado do repo nessa data — um `template.json` no bucket,
 um `main()` com a timeline cravada em `blender_worker/scripts/edit_video.py`.
@@ -67,7 +72,7 @@ está nas regras já validadas. O formato próprio é o único caminho que as pr
 
 ---
 
-## O formato
+## O formato — VSEL
 
 YAML, não JSON: aceita comentários, tem blocos multi-linha para texto, e não transforma uma
 vírgula esquecida em erro de sintaxe sem contexto. É o que torna "eu também edito à mão" real

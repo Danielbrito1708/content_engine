@@ -263,6 +263,15 @@ Decisão: o orchestrador **não lê o MinIO nem parseia `template.json`**. O `bl
 
 **Efeito na divisão em partes.** O limite é de fala, não de texto, e narração mais rápida encurta o áudio para o mesmo roteiro. O LLM decide o corte a partir do texto, sem conhecer o `rate`: `NARRATION_WPM` já embute o `+30%` do template publicado, então mudar `narration.rate` sem mexer nessa constante desloca o teto real de 30 minutos — as duas andam juntas (a subida de `+15%` para `+30%` levou a constante de 170 para 195). A deriva é irrelevante no uso normal — com o scout ingerindo até 6000 caracteres (~1000 palavras), nenhum roteiro chega perto das 5850 palavras do teto, e o `parts` de tamanho 1 é o resultado independentemente do rate.
 
+
+**Ferramenta de edição do template (fora deste caminho).** `blender_worker` também expõe
+`POST /timelines/validate` e `GET /timelines/schema` — validação de um template **VSEL**
+(`docs/edicao_declarativa.md`) sem precisar renderizar — mais
+`POST /timelines/preview/frame` e `POST /timelines/preview/clip`, que já rodam o Blender de
+verdade contra um `video_id` real pra devolver um frame ou um clipe curto de preview. São
+rotas de dev/operador, não parte de `POST /jobs` nem deste fluxo de `rate`: nenhum job real
+aponta pra esse formato ainda. Ver `blender_worker/CLAUDE.md` § "Fase 3, níveis 2/3" para a
+API completa.
 ---
 
 ## Voz da Narração
