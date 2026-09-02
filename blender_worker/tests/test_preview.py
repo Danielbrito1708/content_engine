@@ -167,6 +167,31 @@ async def test_image_input_is_not_probed(monkeypatch, real_tmpdir):
     assert not any("card" in p for p in probed_paths)
 
 
+async def test_subtitles_duration_mirrors_voice_instead_of_being_probed(monkeypatch, real_tmpdir):
+    """ffprobe has nothing to read from a `.srt` — a real one made this fail
+    in production (`ffprobe produced no duration for '...part_1.srt'`) before
+    this fix. Subtitles duration must mirror voice's, same approximation
+    resolver.py already documents for `duration: source`."""
+    monkeypatch.setattr(preview, "settings", _settings_with())
+    proc_ok = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    def fake_run(*_a, **_k):
+        open(os.path.join(real_tmpdir, "output.blend"), "w").close()
+        return proc_ok
+
+    with (
+        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
+        patch("src.blender_worker.timeline.preview.probe_duration_seconds",
+              new_callable=AsyncMock, return_value=12.0) as probe,
+        patch("src.blender_worker.timeline.preview.subprocess.run", side_effect=fake_run),
+    ):
+        await assemble_preview(video=_video(), template_blend_key="t.blend", doc=_doc(), flags={})
+
+    probed_paths = [call.args[0] for call in probe.await_args_list]
+    assert not any("subtitles" in p for p in probed_paths)
+    assert os.path.join(real_tmpdir, "voice_voice.mp3") in probed_paths
+
+
 async def test_successful_assemble_writes_payload_config(monkeypatch, real_tmpdir):
     monkeypatch.setattr(preview, "settings", _settings_with())
     video = _video()

@@ -92,6 +92,7 @@ async def assemble_preview(
 
         asset_paths: dict[str, str] = {}
         inputs: dict[str, int | None] = {}
+        srt_inputs: list[str] = []
 
         for name, spec in doc.inputs.items():
             field = _INPUT_TO_VIDEO_FIELD.get(name)
@@ -111,9 +112,19 @@ async def assemble_preview(
 
             if spec.type == "image":
                 inputs[name] = 0  # presence placeholder — a PNG has no duration
+            elif spec.type == "srt":
+                # ffprobe has nothing to read from a subtitle file — same
+                # "as long as the voice" approximation resolver.py's own
+                # docstring already documents for `duration: source` on a
+                # subtitles clip (see "Known Fase 1 simplification").
+                # Resolved in a second pass below, once "voice" is known.
+                srt_inputs.append(name)
             else:
                 seconds = await probe_duration_seconds(path, ffprobe_bin=ffprobe_bin)
                 inputs[name] = duration_seconds_to_frames(seconds, doc.canvas.fps)
+
+        for name in srt_inputs:
+            inputs[name] = inputs.get("voice")
 
         resolved = resolve_timeline(doc, inputs=inputs, flags=flags)
         payload = build_payload(doc, resolved, flags=flags)
