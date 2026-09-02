@@ -355,6 +355,101 @@ Optional `background.shadow` block in the guide: `enabled` (default `False`), `c
 
 - Tests: `tests/test_image_render.py` (5 tests; `load_font` and `get_s3_client` are monkeypatched — DB must be up for `clean_db` fixture, MinIO not required).
 
+### Declarative timeline resolver — Fases 1 e 2 (`src/blender_worker/timeline/` + `scripts/edit_video.py`)
+
+**Status: proposta, Fase 2 escrita e verificada contra Blender 4.2.20 real — não ligada a `worker.py`.** `template.json` no bucket é o que ainda renderiza de verdade; nada aqui é chamado pelo pipeline. See `docs/edicao_declarativa.md` for the full design; this entry only tracks what exists in code. Not yet in `docs/product.md`/`docs/vision.md` because it changes nothing a user or the pipeline can observe yet — that update lands when a `worker.py` change actually points a real job at this path, which is a separate, deliberately-not-yet-taken step (see "Não wired into worker.py" below).
+
+Resolves a YAML timeline (the format proposed in `docs/edicao_declarativa.md`) into absolute Blender-frame numbers, entirely without `bpy` — the point being that "editable by hand, previewable without a 12-minute render" starts with a resolver that runs in milliseconds outside Blender.
+
+**`timeline/expr.py`** — the "tempo simbólico" mini-language: `parse(text)` / `evaluate(ast, ...)` / `resolve(text, ...)`. Literals (`"0.3s"`, `"4f"`), `$name` references, `after($input)`, `max(...)`/`min(...)`, `+`/`-`, and the `timeline_end` keyword (only valid while resolving bed tracks). Raises `ExprError` on bad syntax or an unresolved reference — a typo fails at resolution, not mid-render.
+
+**`timeline/schema.py`** — Pydantic models for the format (`TimelineDoc`, `Canvas`, `Track`, and the four clip types `video`/`audio`/`image`/`subtitles`, discriminated on `type`). `extra="forbid"` on everything except visual-only clip properties (typography, colours) that this Fase doesn't interpret yet.
+
+**`timeline/resolver.py`** — `resolve_timeline(doc, inputs, flags) -> ResolvedTimeline`. Everything is computed in **relative frames** (timeline zero = 0) and the Blender `+1` origin is added exactly once, at the end — see the module's docstring for the commutativity argument that makes this equivalent to the legacy code's per-strip `+1`. Two passes: content tracks resolve first and decide `timeline_end`; bed tracks (background loop, music fade) resolve second, anchored to it — mirroring the order `scripts/edit_video.py`'s `main()` already follows, now enforced by the resolver rather than by comment.
+
+**Known Fase 1 gap** (documented in the module docstring, not silently patched): the shipped `templates_v2/default.yaml` branches its `card_end`/`narration_start` anchors on `hook_muted` only, calling `after($hook)` unconditionally in both branches — it cannot express the legacy "no hook at all" case (`intro_frames(..., hook_end=None)`), which needs a second conditional axis Fase 1 doesn't have. A template resolved without a `hook` input raises `TimelineResolutionError` rather than falling back.
+
+**`templates_v2/default.yaml`** — the current production template (`blender_worker/template.json` + the hardcoded layout in `edit_video.py`) rewritten in the new format. Pinned to the shipped `template.json`'s `frame_rate`/`frame_end`/`narration.tail_seconds` by `tests/test_timeline_resolver.py::test_default_template_matches_the_shipped_template_json`.
+
+- Fase 1 tests: `tests/test_timeline_expr.py` (15 tests) and `tests/test_timeline_resolver.py` (11 tests), both `no_db`. The resolver tests are an **equivalence proof**, not just unit tests: they load the real `intro_frames` / `content_end_frame` / `background_repeats` / `music_fade_start` from `scripts/edit_video.py` (same `importlib` trick as `tests/test_intro.py`) and assert the resolver produces the identical frame numbers, in both hook modes, for a synthetic scenario.
+
+**`timeline/payload.py`** — `build_payload(doc, resolved, flags) -> dict`. Fase 1's resolver deliberately only computes *time* (see its module docstring); this is what zips the frame numbers back with the non-timing properties (`volume`, `style`, `y_position`, ...) that `ResolvedClip.clip` still carries from the original schema object, producing the plain JSON dict a render actually needs — meant to sit next to `assets` in `job_config.json`, each clip's `source` being a name matched against an asset path exactly like `assets["video"]` works today. Includes `resolve_flag_ref` (in `resolver.py`) for the one non-time, non-expression field the format has: `AudioClip.muted`, which mirrors a flag (`$hook_muted`) rather than computing a position, so it deliberately bypasses `expr.py`.
+
+**`apply_payload(scene, vse, payload, assets)`** (`scripts/edit_video.py`) — the Fase 2 dispatcher: `main()`'s replacement, not yet wired in. Sets up the scene (fps, resolution) then runs in **two passes, `content` then `bed`** — not an arbitrary choice, see "Verified against a real render" below for why. `content` clips dispatch first; `scene.frame_end` is then re-derived from the real strips via `content_end_frame` (the same rule `main()` uses); only then do `bed` clips dispatch, with `_apply_video_clip`'s loop (`extend_background`) and `_apply_audio_clip`'s fade (`music_fade_start`) recomputed against that corrected value — not read off `payload`'s advisory `repeats`/`fade_start`/`fade_duration_frames`. Every handler still calls the *same* existing bpy helpers `main()` already calls (`add_movie_strip`, `add_sound_strip`, `add_card`, `import_subtitles`, `apply_volume_fade`, `extend_background`, `music_fade_start`, `content_end_frame`) — no new bpy logic, only new wiring. `add_movie_strip` gained an optional `min_frames` parameter (default unchanged) so the dispatcher can honour a payload's `min_frames` instead of only the module constant.
+
+**Não wired into `worker.py`.** `main()` is untouched and is still what every real render calls; `apply_payload` is dead code from the pipeline's point of view until something calls it. This is deliberate, not an oversight — wiring it in means deciding the `template.json` v1 coexistence question in `docs/edicao_declarativa.md`'s "Decisões em aberto" first (a `version` key, or a coordinated cutover on the shared bucket), and that is a production-facing, hard-to-reverse change that hasn't been asked for yet.
+
+**Verified against a real render — Blender 4.2.20 LTS, installed natively (no Docker Desktop available; the version matches the Dockerfile pin exactly).** Synthetic assets (`wave`+`array` tones for voice/hook/music, a 16-word `.srt`, a Pillow PNG card, a colour-strip background rendered through the VSE — same tricks as `project_render_verification_recipe`), `main()` and `apply_payload` run side by side in both hook modes, every strip's channel/frame/`blend_type`/volume/mute dumped and diffed.
+
+**First run found a real gap:** every strip matched except `scene.frame_end`, off by exactly 10 frames in both modes. Cause: `templates_v2/default.yaml`'s `subtitles` clip approximates its duration as the voice input's (Fase 1's resolver has no SRT parser — see its "Known Fase 1 simplification"), but a real SRT's last word, held `max_hold_seconds` past its own timestamp, legitimately ended 10 frames after the voice strip. **Fixed** by the two-pass architecture described above — re-verified after the fix: `scene.frame_end` matches exactly (236↔236 played, 146↔146 muted) and every strip still matches. Encoded as a permanent regression test that needs no Blender: `tests/test_apply_payload.py::test_apply_payload_extends_frame_end_when_the_real_subtitles_outlast_the_voice` fakes a subtitle strip ending past the voice and asserts `scene.frame_end` follows it.
+
+**What wasn't compared:** final MP4s render to completion with matching frame counts, but no dBFS mixdown or pixel diff was done — the strip-level match already implies it (same channel, same frame, same volume ⇒ the mixdown is the same by construction). The one remaining structural difference is `resolution_x`/`resolution_y`, and it's an artifact of the synthetic `.blend` used for verification (factory-default, landscape): `main()` never sets resolution, it inherits whatever the `.blend` already has; `apply_payload` sets it explicitly from `canvas`, which changes nothing in production (the real `.blend` is already 1080×1920).
+
+- Fase 2 tests: `tests/test_timeline_payload.py` (10 tests, `no_db`) for `build_payload`; `tests/test_apply_payload.py` (16 tests, `no_db`) for the dispatcher — per-handler tests with full VSE/strip fakes (including the live loop/fade recomputation), the content-before-bed pass-order guarantee, two end-to-end tests per hook mode running `templates_v2/default.yaml` through the real resolver/payload builder/dispatcher together, and the subtitle-overshoot regression test above.
+
+### Fase 3, nível 1 — validação sem Blender (`src/blender_worker/timeline/loader.py` + `api/routes/timelines.py`)
+
+**Status: implementado, ligado em `api/app.py`.** Não é o pipeline de produção — não toca DB,
+MinIO nem Blender, e não é a mesma superfície que `POST /jobs`. É ferramenta de dev/operador
+para iterar num template YAML sem renderizar (`docs/edicao_declarativa.md` § "Loop de preview",
+nível 1). Não wired into `worker.py`: continua sendo a Fase 2 (`apply_payload`) quem decide se
+essa timeline algum dia executa de verdade — este endpoint só valida o texto.
+
+**`timeline/loader.py`** — `load_timeline(text: str) -> TimelineDoc` e `TimelineLoadError`
+(`.errors: list[LoadIssue]`, cada um `{location, message}`). Único ponto de entrada de YAML cru
+para `TimelineDoc`: normaliza `yaml.YAMLError` (`location="<yaml>"`), um documento que não é um
+mapeamento (`location="<root>"`) e `pydantic.ValidationError` (`location` = o `loc` do erro,
+unido por `.`, ex. `"tracks.0.clips.0"`) num único tipo de exceção. Os três testes de Fase 1/2
+que faziam `TimelineDoc.model_validate(yaml.safe_load(...))` na mão continuam existindo — este
+módulo é para quem ainda não tem esse boilerplate, a partir de agora.
+
+**Atribuição de erro em `resolver.py`/`payload.py`.** Antes, `TimelineResolutionError` e
+`ExprError` diziam o tipo do clipe mas nunca a trilha (`"clip 'audio' on track has neither
+start nor sync_to"`). Agora `resolve_timeline` embrulha o loop de `anchors` e o corpo por-clipe
+de `_resolve_content_clips`/`_resolve_bed_clips` num `try/except` que reformata a mensagem como
+`"anchor 'nome': ..."` ou `"track 'nome', clip N (tipo): ..."`, preservando o tipo da exceção
+(`raise type(exc)(...) from exc`). `payload.py`'s `build_payload` ganhou o mesmo padrão em
+`_clip_payload_attributed`, porque `max_hold`/`fade`/`fade_out.duration` e o `$flag` de
+`AudioClip.muted` só são resolvidos ali — `resolve_timeline` nunca os toca (ver o docstring do
+módulo).
+
+**`ResolvedTimeline.warnings`** — lista de string, aditivo (`default_factory=list`), populada
+por `_clip_warnings` ao final de `resolve_timeline`. Hoje só um caso: um clipe `content` cujo
+`frame_end` resolvido é menor que `frame_start` ("termina antes de começar"). Fica **warning,
+não erro** — a duração `source` já é uma aproximação conhecida (Fase 2 achou uma divergência
+real de 10 frames contra um SRT de verdade), então travar aqui produziria falso-positivo que o
+operador não consegue corrigir editando o YAML. Só pode disparar em clipes `content` — clipes
+`bed` nunca têm `frame_end`.
+
+**`POST /timelines/validate`** (`schemas/timeline.py`, `TimelineValidateRequest`/
+`TimelineValidateResponse`) — corpo: `template` (texto YAML cru), `inputs` (dict nome→duração
+em **segundos**, convertido a frames pelo `canvas.fps` do próprio template antes de resolver;
+um asset sem duração própria, como uma imagem só referenciada por `until:`, ainda precisa de um
+valor-placeholder pra contar como "fornecido" — `0` serve), `flags` (merge por cima de
+`doc.flags`). Chama `load_timeline` → `resolve_timeline` → `build_payload` (o resultado do
+último é descartado — roda só pela validação extra que faz, de campos que `resolve_timeline`
+nunca resolve). **Sempre `200`**: erro de conteúdo do template vai em `ok`/`errors` no corpo,
+não em status HTTP — a rota é feita pra ser chamada a cada tecla digitada num editor, e tratar
+"seu YAML está inválido agora" como erro de transporte forçaria o cliente a ter um branch de
+exceção pra um estado normal e constante durante a edição. `422` continua existindo, só pra
+quando o próprio corpo da requisição não bate com `TimelineValidateRequest` (ex: falta o campo
+`template`).
+
+**`GET /timelines/schema`** — `TimelineDoc.model_json_schema()` cru, sem pós-processamento
+(esta versão do pydantic já usa `by_alias=True` por padrão, então `Conditional.else_` já sai
+como `"else"`). Limitação conhecida e aceita: todo campo de tempo (`start`, `until`, `$anchor`,
+`after(...)`) é tipado como `str` puro no schema — um editor não ganha autocomplete pra dentro
+da mini-linguagem de expressões só com isso.
+
+**O seam que os níveis 2/3 (frame único, preview de vídeo curto) vão reusar** — não
+implementados ainda: `load_timeline` é o loader que qualquer rota de preview futura reusa
+verbatim, e os erros de `resolver.py`/`payload.py` já saem atribuídos a uma trilha/clipe sem
+precisar de nenhum trabalho a mais lá.
+
+- Tests: `tests/test_timeline_loader.py` (6 tests), `tests/test_timeline_resolver.py` (+3),
+  `tests/test_timeline_payload.py` (+1), `tests/test_timelines_route.py` (7 tests) — todos
+  `no_db`.
+
 ## Testing rules
 
 - **Every new functionality must have tests.** No feature, route, model change, or worker behavior is complete without corresponding tests.

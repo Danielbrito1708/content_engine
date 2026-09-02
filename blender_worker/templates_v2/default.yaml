@@ -1,0 +1,126 @@
+# Fase 1 do formato descrito em docs/edicao_declarativa.md — reproduz, em
+# tempo (não em pixels), o que blender_worker/template.json hoje descreve
+# através de seis canais escondidos dentro de scripts/edit_video.py.
+#
+# tests/test_timeline_resolver.py prova que este arquivo resolve para os
+# mesmos números de frame que edit_video.intro_frames / content_end_frame /
+# background_repeats / music_fade_start produzem hoje, nos dois modos de
+# hook. Enquanto esse teste for verde, este arquivo é equivalente ao
+# template.json publicado — não a sua substituição em produção.
+
+version: 2
+
+canvas:
+  width: 1080
+  height: 1920
+  fps: 30
+  tail: 0.5s          # o último som precisa de espaço para terminar
+  fallback_end: 900   # só usado se nada de `content` existir na timeline
+
+inputs:
+  background: { type: video, required: true }
+  music:      { type: audio, required: true }
+  voice:      { type: audio, required: true }
+  subtitles:  { type: srt,   required: true }
+  hook:       { type: audio, required: false }
+  card:       { type: image, required: false }
+
+flags:
+  hook_muted: false   # o pipeline sobrescreve por parte
+
+anchors:
+  # piso do template: a narração nunca começa antes disto quando o hook é tocado
+  intro_floor: 3.0s
+
+  # o card sai da tela — sem cauda quando o hook é mudo, porque não há dois
+  # arquivos de áudio para separar
+  card_end:
+    when: hook_muted
+    then: after($hook)
+    else: max($intro_floor, after($hook) + 0.3s)
+
+  # a narração entra — com o vídeo quando o hook é mudo, depois dele quando não é
+  narration_start:
+    when: hook_muted
+    then: 0s
+    else: max($intro_floor, after($hook) + 0.3s)
+
+tracks:
+  - name: fundo
+    channel: 1
+    role: bed
+    clips:
+      - type: video
+        source: $background
+        start: 0s
+        loop: until_end     # repete o clipe até cobrir a timeline
+        min_frames: 2       # um arquivo sem trilha de vídeo carrega como 1 frame
+
+  - name: musica
+    channel: 2
+    role: bed
+    clips:
+      - type: audio
+        source: $music
+        start: 0s
+        volume: 0.2
+        filters:
+          - type: volume_fade
+            to: 0.0
+            duration: 1.5s
+            anchor: timeline_end   # contado do fim, nunca de um frame fixo
+
+  - name: hook
+    channel: 5
+    role: content
+    when_present: $hook
+    clips:
+      - type: audio
+        source: $hook
+        start: 0s
+        volume: 1.0
+        muted: $hook_muted   # mudo, não removido: é o que mede o card
+
+  - name: card
+    channel: 6
+    role: content
+    when_present: $card
+    clips:
+      - type: image
+        source: $card
+        start: 0s
+        until: $card_end
+        y_position: 0.5
+        fit: original        # o PNG é autorado na largura exata do frame
+        blend: alpha_over
+        filters:
+          - { type: fade_out, duration: 4f }   # sem fade in: ver nota abaixo
+
+  - name: voz
+    channel: 3
+    role: content
+    clips:
+      - type: audio
+        source: $voice
+        start: $narration_start
+        volume: 1.0
+
+  - name: legendas
+    channel: 4
+    role: content
+    clips:
+      - type: subtitles
+        source: $subtitles
+        sync_to: $narration_start
+        hide_before:
+          when: hook_muted
+          then: $card_end     # a narração roda sob o card; não imprimir duas vezes
+          else: 0s
+        max_hold: 0.4s
+        fade: 3f
+        rise: { frames: 4, offset: 0.025 }
+        style:
+          font_size: 100      # teto, não valor fixo — palavra longa é reduzida
+          y_position: 0.474
+          color: [1.0, 1.0, 1.0, 1.0]
+          outline: { color: [0.0, 0.0, 0.0, 1.0], width: 0.24 }
