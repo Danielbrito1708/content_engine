@@ -358,8 +358,9 @@ Optional `background.shadow` block in the guide: `enabled` (default `False`), `c
 ### VSEL — Declarative timeline resolver — Fases 1 e 2 (`src/blender_worker/timeline/` + `scripts/edit_video.py`)
 
 **VSEL** (*Video Sequence Edit Language*) is the name of the declarative YAML format this
-section implements — see `docs/edicao_declarativa.md` for the full design; this entry only
-tracks what exists in code.
+section implements — see `docs/edicao_declarativa.md` for the design rationale and
+**`docs/vsel.md` for the format reference** (every field, the expression grammar, known gaps);
+this entry only tracks what exists in code.
 
 **Status: Fase 2 escrita e verificada contra Blender 4.2.20 real — não ligada a `worker.py`.** `template.json` no bucket é o que ainda renderiza de verdade; nada aqui é chamado pelo pipeline. Not yet in `docs/product.md`/`docs/vision.md` because it changes nothing a user or the pipeline can observe yet — that update lands when a `worker.py` change actually points a real job at this path, which is a separate, deliberately-not-yet-taken step (see "Não wired into worker.py" below).
 
