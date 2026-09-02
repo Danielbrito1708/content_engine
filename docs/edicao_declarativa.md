@@ -330,13 +330,17 @@ não erro, porque a duração usada aqui já é uma aproximação conhecida (ver
 app web que vai consumir isso — editor de YAML + player de preview — é **projeto separado, fora
 deste monorepo**; não faz parte deste documento nem do que está implementado aqui.
 
-**2. Frame único** — `blender -b <blend> -f N` para um PNG. É a receita que já está registrada
-para conferir render de verdade; serve para layout, tipografia, posição do card. Segundos.
+**2. Frame único — status: implementado.** `POST /timelines/preview/frame` — `blender -b <blend>
+-o <prefix> -F PNG -f N` para um PNG, devolvido direto no corpo da resposta. Exige `video_id`
+real (diferente do nível 1): um asset sintético não mostra se o card está na posição certa, que
+é o propósito de olhar um frame de verdade. Ver `blender_worker/CLAUDE.md` § "Fase 3, níveis
+2/3".
 
-**3. Preview em baixa resolução** — `resolution_percentage` reduzido, opcionalmente com faixa
-de frames (`-s`/`-e`). O custo do VSE cai aproximadamente com a área de pixels, mas **o fator
-tem de ser medido, não presumido** — encode e áudio não escalam junto, e o número certo é o
-que decide se o preview é usável.
+**3. Preview em baixa resolução — status: implementado.** `POST /timelines/preview/clip` —
+`resolution_percentage` reduzido (opt-in, confirmado que o `--python-expr` que o define aplica
+antes do `-a` renderizar) com faixa de frames (`-s`/`-e`, `start_s`/`duration_s` no corpo, 15s
+por padrão). **O fator de speedup continua não medido** — o parâmetro existe, a decisão de
+quanto reduzir para ficar usável fica para quem for de fato operar o loop de edição.
 
 ---
 
@@ -417,11 +421,21 @@ trilha), e `ResolvedTimeline` ganhou um campo `warnings` para o caso "clipe term
 começar" — não fatal, de propósito. Novo módulo `timeline/loader.py` (YAML → `TimelineDoc`,
 uma exceção só) é o seam que um preview de frame único ou de clipe curto vai reusar.
 
-**Níveis 2 e 3 — não implementados.** Ficam para um plano seguinte: exigem decidir como uma
-duração de asset real chega ao resolvedor (hoje só aceita número informado à mão), que formato
-de saída o `edit_video.py` produz num modo de preview (hoje só sabe montar `.blend` +
-render completo via `main()`/`apply_payload`), e como isolar a concorrência de um preview
-interativo do semáforo de render de produção.
+**Níveis 2 e 3 — implementados.** `POST /timelines/preview/frame` e
+`POST /timelines/preview/clip`, exigindo `video_id` real (ao contrário do nível 1). As três
+decisões que ficaram em aberto na primeira versão deste documento:
+
+- **Duração real** vem de `ffprobe` (`timeline/probe.py`), não mais digitada — `ffmpeg` é
+  dependência nova do `Dockerfile`.
+- **Formato de saída** não é decisão do `edit_video.py`: `main_declarative()` (o dispatcher
+  Fase 2 chamado pela primeira vez) só monta a cena via `apply_payload` e para; frame vs clipe,
+  faixa de frames e `resolution_percentage` são flags da CLI da segunda chamada ao Blender, não
+  código dentro dela.
+- **Concorrência isolada**: `preview_slot()`, semáforo próprio, independente de
+  `worker.render_slot()` — um preview interativo nunca fica atrás de um render de produção de
+  ~12min na fila.
+
+`worker.py` e `POST /jobs` continuam **intocados** nos três níveis.
 
 ---
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from pydantic import BaseModel, Field
 
 
@@ -40,3 +42,29 @@ class TimelineValidateResponse(BaseModel):
     clips: list[ResolvedClipOut] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     errors: list[TimelineIssue] = Field(default_factory=list)
+
+
+class TimelinePreviewFrameRequest(BaseModel):
+    template: str
+    video_id: uuid.UUID
+    #: Only its `blend_key` is used — the timeline comes from `template`
+    #: above, not this row's (legacy) `json_key`.
+    template_id: uuid.UUID
+    #: Absolute Blender frame, not an expression — the caller is expected to
+    #: have already called `POST /timelines/validate` and picked a number
+    #: from its `anchors`/`clips[].frame_start`/`frame_end`.
+    frame: int
+    flags: dict[str, bool] = Field(default_factory=dict)
+
+
+class TimelinePreviewClipRequest(BaseModel):
+    template: str
+    video_id: uuid.UUID
+    template_id: uuid.UUID
+    start_s: float = 0.0
+    duration_s: float = 15.0
+    #: 1-100. `None` leaves the `.blend`'s own value (100) untouched — the
+    #: speedup from a lower value is unmeasured (docs/edicao_declarativa.md
+    #: § "Loop de preview"), so this is opt-in, not a smaller default.
+    resolution_percentage: int | None = None
+    flags: dict[str, bool] = Field(default_factory=dict)

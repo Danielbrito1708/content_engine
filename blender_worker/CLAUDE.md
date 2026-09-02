@@ -161,7 +161,7 @@ There is no closing segment: `scene.frame_end` is the end of the narration (see 
 
 **Template config** (the existing `narration` block, which the orchestrator already reads for `rate`):
 ```json
-"narration": { "rate": "+30%", "tail_seconds": 0.5 }
+"narration": { "rate": "+50%", "tail_seconds": 0.5 }
 ```
 Defaulted in code for the usual reason — `template.json` lives in the bucket, and the deployed one has no `tail_seconds` yet.
 
@@ -441,10 +441,88 @@ como `"else"`). Limitação conhecida e aceita: todo campo de tempo (`start`, `u
 `after(...)`) é tipado como `str` puro no schema — um editor não ganha autocomplete pra dentro
 da mini-linguagem de expressões só com isso.
 
-**O seam que os níveis 2/3 (frame único, preview de vídeo curto) vão reusar** — não
-implementados ainda: `load_timeline` é o loader que qualquer rota de preview futura reusa
-verbatim, e os erros de `resolver.py`/`payload.py` já saem atribuídos a uma trilha/clipe sem
-precisar de nenhum trabalho a mais lá.
+**O seam que os níveis 2/3 reusam** — `load_timeline` e a atribuição de erro descritas acima
+são exatamente o que a seção seguinte reaproveita sem nenhum trabalho a mais.
+
+### Fase 3, níveis 2/3 — preview de frame único e clipe curto (`timeline/probe.py` + `timeline/preview.py` + `scripts/edit_video.py::main_declarative` + `api/routes/timelines.py`)
+
+**Status: implementado, ligado em `api/app.py`.** Diferente do nível 1, estas rotas exigem um
+`video_id` real — um asset sintético responderia "a matemática da timeline fecha" mas não "o
+card está na posição certa", que é o propósito de olhar um frame de verdade
+(`docs/edicao_declarativa.md` § "Loop de preview", níveis 2 e 3).
+
+**`timeline/probe.py`** — `probe_duration_seconds(path, ffprobe_bin="ffprobe") -> float`
+(subprocess `ffprobe -show_entries format=duration`) e
+`duration_seconds_to_frames(seconds, frame_rate) -> int`. Existe porque o `blender_worker` não
+tinha (e continua sem) forma de ler duração de arquivo fora do Blender — que embute o próprio
+ffmpeg internamente, inacessível de fora. `ffmpeg` (que traz o binário `ffprobe` junto) é
+dependência nova do `Dockerfile`, mesmo padrão que `orchestrator/Dockerfile` já usa para o
+fundo sob demanda.
+
+**`timeline/preview.py`** — a peça central:
+- `preview_slot() -> asyncio.Semaphore` — gate **independente** de `worker.render_slot()`
+  (`config.ini [blender] max_concurrent_previews`, default 1). Um preview interativo não pode
+  esperar atrás de uma renderização de produção de ~12min — isso mataria a premissa do loop de
+  edição. `worker.py` continua absolutamente intocado.
+- `assemble_preview(video, template_blend_key, doc, flags) -> (output_blend_path, tmpdir, resolved)`
+  — baixa só os assets que `doc.inputs` declara **e** que a `video` de fato tem (um input
+  ausente e opcional é simplesmente pulado; um obrigatório ausente deixa `resolve_timeline`
+  levantar o erro de sempre, "required input 'x' was not supplied" — reaproveitado, não
+  duplicado), sonda a duração real de cada um via `ffprobe` (exceto tipo `image`, que usa `0`
+  como placeholder de presença — mesma convenção da Fase 1), resolve a timeline, monta o
+  payload e roda a Fase 1 do Blender (`-P scripts/edit_video.py`, só monta, não renderiza) sob
+  `preview_slot()`. Em qualquer falha, limpa o próprio `tmpdir` antes de relançar — quem chama
+  só precisa limpar no caminho de sucesso.
+- **Mapeamento fixo** de nome de input para coluna de `Video` (`background→video_file_key`,
+  `music→music_key`, `voice→voice_key`, `subtitles→subtitle_key`, `hook→hook_voice_key`,
+  `card→card_key`). Um input declarado no YAML fora desse conjunto não tem como saber qual
+  asset baixar — vira `TimelineResolutionError` explícito, não um `KeyError`. Limitação aceita:
+  só serve templates com esses seis nomes, que é o único template real que existe.
+
+**`scripts/edit_video.py::main_declarative()`** — o mesmo dispatcher da Fase 2 (`apply_payload`)
+que uma rota real de job usaria um dia, só que chamado agora pela primeira vez. `main()`
+continua **intocada**; o `if __name__ == "__main__":` decide entre as duas olhando se
+`job_config.json` tem a chave `"payload"` (novo formato) em vez de `"timing"` (legado), lendo o
+config antes de chamar qualquer uma. `main_declarative()` monta a cena e chama `apply_payload`
+— e para. Não sabe se o resultado vai virar frame, clipe ou (um dia) job real: formato de
+saída, frame/faixa de frames e resolução são todos flags de CLI da **segunda** chamada ao
+Blender, nunca código dentro dela — a mesma separação que `apply_payload` já traça entre
+"montar a cena" e "como ela é renderizada".
+
+**Passada 2 — só CLI:**
+- Frame: `blender -b output.blend -o <tmpdir>/frame_ -F PNG -f N` → produz
+  `<tmpdir>/frame_0001.png` (confirmado contra o Blender 4.2.20 local — 4 dígitos, zero-padded).
+  O código faz `glob.glob(prefix + "*.png")` em vez de assumir o nome exato.
+- Clipe: `blender -b output.blend [--python-expr "...resolution_percentage = N"] -o <tmpdir>/clip.mp4 -s START -e END -a`
+  — `--python-expr` **antes** de `-o`/`-s`/`-e`/`-a`, confirmado contra o Blender 4.2.20 local
+  que a ordem realmente aplica o resize antes do render (arquivo a 50% saiu com ~26% do
+  tamanho do arquivo a 100%, na mesma cena — consistente com ¼ da área de pixel).
+  `resolution_percentage` só entra na linha quando o caller passa um valor (o fator de
+  speedup continua não medido — `docs/edicao_declarativa.md` § "Loop de preview" — então é
+  opt-in, não um padrão menor).
+
+**`POST /timelines/preview/frame`** / **`POST /timelines/preview/clip`**
+(`schemas/timeline.py`: `TimelinePreviewFrameRequest`/`TimelinePreviewClipRequest`) — corpo:
+`template` (YAML cru), `video_id`, `template_id` (só o `blend_key` é usado — o `json_key`
+legado é ignorado, a timeline inteira vem do YAML), e por rota `frame` (int absoluto — o
+caller já rodou `/validate` antes e sabe os números) ou `start_s`/`duration_s`/
+`resolution_percentage`. **Devolve os bytes direto** (`image/png` / `video/mp4`), sem upload
+no bucket — o preview é visto uma vez; um app web (futuro, fora deste monorepo) cria um
+blob/object URL a partir da resposta.
+
+**Erro vira status HTTP de verdade aqui — diferente do nível 1.** `/validate` é sempre `200`
+porque é chamado a cada tecla digitada; estas rotas são uma ação explícita ("gerar preview"),
+então `404` (video/template incógnitos), `422` (template ou range de clipe inválido, mesmo
+formato `{location, message}` do nível 1) e `502` (falha do Blender, log estruturado com
+stdout/stderr, mesmo padrão de `worker.py`) são tratamento de erro normal, não exceção.
+
+**Não wired em `POST /jobs`.** Como a Fase 2, isto é ferramenta de edição — não muda nada que
+o pipeline de produção observa.
+
+- Tests: `tests/test_probe.py` (4), `tests/test_preview.py` (9, inclui o par de testes que
+  prova `preview_slot()` e `render_slot()` são independentes), `tests/test_timelines_preview_route.py`
+  (9 — exige DB pelos fixtures `video`/`template`, não `no_db`; `assemble_preview` e a passada 2
+  são mockados, nenhum Blender real).
 
 - Tests: `tests/test_timeline_loader.py` (6 tests), `tests/test_timeline_resolver.py` (+3),
   `tests/test_timeline_payload.py` (+1), `tests/test_timelines_route.py` (7 tests) — todos

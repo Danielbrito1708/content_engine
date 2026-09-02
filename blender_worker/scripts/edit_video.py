@@ -991,5 +991,57 @@ def main():
     bpy.ops.wm.save_as_mainfile(filepath=config["output_path"])
 
 
+def main_declarative():
+    """Fase 2 dispatcher entrypoint — assembles a `TimelineDoc`-resolved
+    `payload` via `apply_payload` instead of `main()`'s hardcoded layout.
+    Used by `timeline/preview.py` (Fase 3, níveis 2/3); no real production
+    job points here yet — see `blender_worker/CLAUDE.md` § "Declarative
+    timeline resolver".
+
+    Deliberately does not know about "frame" vs "clip" vs a future real job:
+    output format, frame range and resolution are the caller's problem,
+    applied as CLI flags on the *second* Blender invocation (this function
+    only ever runs the assembly pass, never renders) — the same separation
+    `apply_payload` already draws between "build the scene" and "how it gets
+    rendered".
+    """
+    import bpy
+
+    config_path = parse_args()
+    with open(config_path) as f:
+        config = json.load(f)
+
+    payload, assets = config["payload"], config["assets"]
+
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    scene.render.fps = payload["frame_rate"]
+    scene.render.fps_base = 1.0
+
+    vse = setup_vse(scene)
+    for strip in vse.sequences_all:
+        strip.select = False
+
+    apply_payload(scene, vse, payload, assets)
+
+    # Same encoder settings main() sets — pass 2's `-F PNG` (frame preview)
+    # overrides file_format for that invocation regardless, and pass 2's
+    # clip preview wants exactly this container/codec anyway.
+    scene.render.image_settings.file_format = "FFMPEG"
+    scene.render.ffmpeg.format = "MPEG4"
+    scene.render.ffmpeg.codec = "H264"
+    scene.render.ffmpeg.audio_codec = "AAC"
+    scene.render.ffmpeg.audio_bitrate = 192
+    scene.render.filepath = config["render_output_path"]
+
+    bpy.ops.wm.save_as_mainfile(filepath=config["output_path"])
+
+
 if __name__ == "__main__":
-    main()
+    _config_path = parse_args()
+    with open(_config_path) as _f:
+        _config = json.load(_f)
+    if "payload" in _config:
+        main_declarative()
+    else:
+        main()

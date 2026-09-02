@@ -5,7 +5,11 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# System deps for Blender headless + Python build
+# System deps for Blender headless + Python build.
+# ffmpeg entra pelo ffprobe: as rotas de preview da timeline declarativa
+# (POST /timelines/preview/frame|clip) sondam a duração real de cada asset com
+# ele, porque o Blender embute o próprio ffmpeg internamente, inacessível de
+# fora. Mesmo raciocínio do orchestrator/Dockerfile para o fundo sob demanda.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     xz-utils \
@@ -22,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libice6 \
     libxkbcommon0 \
     fonts-dejavu-core \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Blender 4.2 LTS (headless)
