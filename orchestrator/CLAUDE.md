@@ -61,7 +61,7 @@ alembic upgrade head
 - `DEBUG` — `true` ou `false`
 - `DATABASE_URL` — asyncpg para o banco `orchestrator`
 - `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` — credenciais MinIO/R2
-- `BLENDER_TEMPLATE_ID` — UUID do template pré-registrado no blender_worker (`POST /templates`)
+- `BLENDER_TEMPLATE_ID` — UUID do template pré-registrado no blender_worker (`POST /templates`). Default quando um run não pede outro via `PipelineCreate.template_id` — ver "Template por vídeo" abaixo
 - `NTFY_BACKGROUND_INBOX_URL` — tópico ntfy **de entrada** para fundos: link de vídeo compartilhado do celular vira clipe no manifesto. Vazio (o padrão) desliga o laço. **Tem que ser outro tópico**, diferente de `NOTIFY_WEBHOOK_URL` e do `NTFY_INBOX_URL` do `content_scout`
 
 URLs dos serviços são configuradas em `config.ini [services]`.
@@ -122,11 +122,21 @@ O mesmo vídeo passou a ser publicado também no YouTube, pelo mesmo Buffer. **O
 
 - Testes: `tests/test_youtube_destination.py` (12 — o título persistido no refino, a omissão do campo, o mesmo título em toda a série, o ID de volta, o poster antigo sem os campos novos, e o aviso disparando na falha e **não** disparando no destino desligado).
 
+### Template por vídeo (`template_id`)
+
+`PipelineCreate.template_id` (opcional) sobrescreve o `BLENDER_TEMPLATE_ID` default só para aquele run — `PipelineRun.template_id` (migration `009`, nullable, exposto em `PipelineResponse`) guarda a escolha. `None` é o caso comum: o run se comporta exatamente como antes.
+
+`_template_id_for(run) -> uuid.UUID` = `run.template_id or uuid.UUID(settings.env.blender_template_id)` — único ponto de resolução, chamado tanto por `_narration_rate` quanto por `_run_render`. Os dois **têm que concordar**: divergir faria a narração sair na velocidade de um template enquanto o render usa outro. Só o disparo manual manda `template_id` hoje — o `content_scout` nunca preenche o campo, então todo vídeo automático continua no default. Detalhes e motivação em `docs/vision.md` → "Escolher o template por vídeo, não só pela conta inteira".
+
+⚠️ Requer a migration `009` aplicada.
+
+- Testes: `tests/test_template_selection.py` (schema aceitando/omitindo o campo, fallback pro default, o valor chegando ao `POST /jobs` e ao `GET /templates/{id}/config`, e exposição na API).
+
 ### Velocidade da narração (`_narration_rate`)
 
 A velocidade da narração é definida no `template.json`, no bloco `narration.rate`. Como o TTS roda muito antes do render, o orchestrador precisa ler o template **antes** de chamar o `tts_service`:
 
-1. `GET blender_worker/templates/{BLENDER_TEMPLATE_ID}/config` → `template.json` parseado
+1. `GET blender_worker/templates/{template_id}/config` → `template.json` parseado (`template_id` = `_template_id_for(run)`, acima)
 2. Extrai `narration.rate` (ex.: `"+30%"`)
 3. Repassa como `rate` no `POST tts_service/generate`
 
@@ -139,7 +149,7 @@ O orchestrador **não valida o formato** do rate — quem valida é o `tts_servi
 **`_run_render`**:
 1. Usa `part.srt_key` — legenda word-level já transcrita e subida pelo `tts_service` em `subs/{run_id}/part_{n}.srt`. O orchestrador não gera SRT.
 2. `POST blender_worker/videos` com `background_video_key` + `music_key` (do config.ini) + `voice_key` (audio do TTS) + `subtitle_key` + `card_key`/`hook_voice_key` (a intro, nullable)
-3. `POST blender_worker/jobs` com `video_id` + `BLENDER_TEMPLATE_ID`
+3. `POST blender_worker/jobs` com `video_id` + `_template_id_for(run)`
 4. Polling via `poll_job()` até `completed` ou `failed`
 5. Salva `video_key = output_key` na part
 

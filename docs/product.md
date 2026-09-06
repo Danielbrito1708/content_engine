@@ -368,7 +368,7 @@ O sistema é configurável em vários aspectos sem precisar alterar o código:
 
 **Modelo de LLM:** qual modelo de linguagem usar para refinar os roteiros. A troca de modelo não afeta o fluxo — só a qualidade e o custo do refinamento.
 
-**Template de vídeo:** qual template Blender usar para montar os vídeos. Múltiplos templates podem coexistir — a escolha é feita por configuração.
+**Template de vídeo:** qual template Blender usar para montar os vídeos. Múltiplos templates podem coexistir, e agora a escolha pode ser feita vídeo a vídeo, não só uma vez para a conta inteira — ver Feature 12.
 
 ---
 
@@ -399,6 +399,18 @@ Nas outras partes da série a frase não está na narração, então lá a narra
 Se a frase de abertura não corresponder ao começo do roteiro (o texto foi reescrito, por exemplo), a parte volta a abrir com a narração separada. De um jeito ou de outro a frase é dita uma vez.
 
 **Se faltar alguma peça, o vídeo sai mesmo assim.** Se a narração do gancho falhar, ou se o card não puder ser gerado, o vídeo é montado sem a abertura, exatamente como era antes — nenhuma das duas peças vale perder o vídeo inteiro, que é o que o sistema existe para entregar.
+
+---
+
+## Feature 12 — Escolher o template vídeo a vídeo
+
+Até aqui todo vídeo produzido usava exatamente o mesmo template de montagem — trocar de visual era trocar para a conta inteira de uma vez, sem meio-termo. Agora cada vídeo pode escolher o seu, na hora de submeter o roteiro.
+
+**Pra que serve.** Duas coisas que antes não davam para fazer ao mesmo tempo: voltar para o formato antigo a qualquer momento — o template antigo nunca deixa de existir, é só pedir ele de novo — e testar um formato novo aos poucos. Por exemplo, produzir 1 vídeo no formato experimental e mais 2 no formato de sempre, no mesmo dia, para comparar lado a lado em vez de trocar tudo de uma vez e só descobrir depois que não funcionou.
+
+**Quem escolhe o quê.** Ao submeter um roteiro manualmente, dá para pedir um template específico. Quando é o sistema quem encontra a história sozinho (a busca automática no Reddit), ele continua usando o template de sempre — ainda não existe uma regra que escolha automaticamente entre formatos; isso fica para quando houver um critério pronto para decidir.
+
+**Nada muda para quem não pede nada.** Sem indicar um template, o vídeo sai exatamente como sempre saiu.
 
 ---
 

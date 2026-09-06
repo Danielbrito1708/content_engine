@@ -14,6 +14,7 @@ content_engine/
     servidor.md             ← como acessar a máquina por SSH + estado verificado dela
     multi_account.md        ← proposta: operar N contas (TikTok+YouTube) reaproveitando roteiro
     aquecimento.md          ← proposta: rampa de publicação + rotina manual para conta nova/parada
+    edicao_declarativa.md   ← VSEL: timeline em YAML editável no lugar da montagem fixa do main()
   orchestrator/             ← coordenação do pipeline (FastAPI + DB próprio)
   blender_worker/           ← montagem VSE + renderização (FastAPI + Blender 4.2)
   llm_service/              ← refinamento e classificação de roteiros

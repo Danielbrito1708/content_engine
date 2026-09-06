@@ -347,14 +347,14 @@ def check_movie_strip(strip, path, min_frames=MIN_MOVIE_FRAMES):
     return strip
 
 
-def add_movie_strip(vse, path, channel, frame_start):
+def add_movie_strip(vse, path, channel, frame_start, min_frames=MIN_MOVIE_FRAMES):
     strip = vse.sequences.new_movie(
         name=os.path.basename(path),
         filepath=path,
         channel=channel,
         frame_start=frame_start,
     )
-    return check_movie_strip(strip, path)
+    return check_movie_strip(strip, path, min_frames)
 
 
 def add_sound_strip(vse, path, channel, frame_start):
@@ -723,6 +723,134 @@ def import_subtitles(
     return len(specs)
 
 
+def apply_payload(scene, vse, payload, assets):
+    """Fase 2 dispatcher for the format in `docs/edicao_declarativa.md` —
+    the replacement for `main()`'s hardcoded six-channel assembly.
+
+    `payload` is what `timeline/payload.py`'s `build_payload` produces. Each
+    clip's `type` picks the same bpy helper the legacy `main()` already
+    calls (`add_movie_strip`, `add_sound_strip`, `add_card`,
+    `import_subtitles`), so a payload built from `templates_v2/default.yaml`
+    produces the same strips `main()` does from the current `template.json`.
+    Not wired into `main()` or `worker.py` yet — see
+    `docs/edicao_declarativa.md`'s "Decisões em aberto" for the
+    `template.json` v1 coexistence question that has to be settled first.
+
+    **Two passes, `content` then `bed`** — this is not an arbitrary choice,
+    it is what makes the result match `main()`. `content` clips are created
+    first; `scene.frame_end` is then *re-derived from those real strips*
+    with `content_end_frame`, the same rule `main()` uses, instead of
+    trusting `payload["timeline_end"]`. Only then are `bed` clips created,
+    with their loop/fade geometry computed against this corrected value
+    rather than `payload`'s advisory `repeats`/`fade_start`. See
+    `timeline/payload.py`'s module docstring for why: a real-Blender
+    verification run measured the Fase 1 resolver's `timeline_end` landing
+    10 frames early, because it approximates `subtitles` duration as the
+    voice's, and a real SRT's last word can hold past that. Every other
+    strip matched exactly; this is the one number that cannot be known
+    without either parsing the SRT in the (deliberately `bpy`-free) resolver
+    or re-deriving it here, against what was actually created. This does.
+
+    `assets` maps each clip's `source` name to a downloaded file path —
+    `job_config["assets"]` already has this shape, just keyed by the new
+    format's input names (e.g. `"background"` instead of `"video"`).
+    """
+    frame_rate = payload["frame_rate"]
+    scene.frame_start = 1
+    # See main()'s comment on fps_base: must be reset to match frame_rate.
+    scene.render.fps = frame_rate
+    scene.render.fps_base = 1.0
+    scene.render.resolution_x = payload["canvas"]["width"]
+    scene.render.resolution_y = payload["canvas"]["height"]
+
+    dispatch = {
+        "video": _apply_video_clip,
+        "audio": _apply_audio_clip,
+        "image": _apply_image_clip,
+        "subtitles": _apply_subtitles_clip,
+    }
+    content_clips = [c for c in payload["clips"] if c["role"] == "content"]
+    bed_clips = [c for c in payload["clips"] if c["role"] == "bed"]
+
+    for clip in content_clips:
+        _dispatch_clip(dispatch, scene, vse, clip, assets, frame_rate)
+
+    bed_channels = {c["channel"] for c in bed_clips}
+    fallback = payload["timeline_end"] - payload["tail_frames"]
+    content_end = content_end_frame(vse.sequences_all, bed_channels, fallback)
+    scene.frame_end = content_end + payload["tail_frames"]
+
+    for clip in bed_clips:
+        _dispatch_clip(dispatch, scene, vse, clip, assets, frame_rate)
+
+
+def _dispatch_clip(dispatch, scene, vse, clip, assets, frame_rate):
+    handler = dispatch.get(clip["type"])
+    if handler is None:
+        raise ValueError(f"unknown clip type {clip['type']!r}")
+    handler(scene, vse, clip, assets, frame_rate)
+
+
+def _apply_video_clip(scene, vse, clip, assets, frame_rate):
+    path = assets[clip["source"]]
+    min_frames = clip.get("min_frames", MIN_MOVIE_FRAMES)
+    strip = add_movie_strip(vse, path, clip["channel"], clip["frame_start"], min_frames)
+    if clip.get("loop"):
+        # Recomputed against the real scene.frame_end (set from the real
+        # content strips just before bed clips run) rather than trusting
+        # `repeats` — see apply_payload's docstring.
+        extend_background(vse, path, clip["channel"], strip, scene.frame_end)
+
+
+def _apply_audio_clip(scene, vse, clip, assets, frame_rate):
+    path = assets[clip["source"]]
+    strip = add_sound_strip(vse, path, clip["channel"], clip["frame_start"])
+    strip.volume = clip.get("volume", 1.0)
+    # Muted, not skipped: same reason as the legacy hook — the strip still
+    # carries the duration something else (the card) was measured against.
+    strip.mute = clip.get("muted", False)
+    if clip.get("fade_duration_frames") is not None:
+        # Recomputed against the real scene.frame_end, same reason as the
+        # background loop above — see apply_payload's docstring.
+        fade_start = music_fade_start(scene.frame_end, clip["fade_duration_frames"], clip["frame_start"])
+        if fade_start is not None:
+            apply_volume_fade(
+                strip,
+                start_frame=clip["frame_start"],
+                fade_start_frame=fade_start,
+                end_frame=scene.frame_end,
+                start_volume=clip.get("volume", 1.0),
+            )
+
+
+def _apply_image_clip(scene, vse, clip, assets, frame_rate):
+    path = assets[clip["source"]]
+    config = {"y_position": clip.get("y_position", DEFAULT_CARD_Y)}
+    if "fade_frames" in clip:
+        config["fade_frames"] = clip["fade_frames"]
+    add_card(
+        scene, vse, path, clip["channel"],
+        clip["frame_start"], clip["frame_end"], config,
+        scene.render.resolution_y,
+    )
+
+
+def _apply_subtitles_clip(scene, vse, clip, assets, frame_rate):
+    path = assets[clip["source"]]
+    style = resolve_subtitle_style(clip.get("style"))
+    import_subtitles(
+        scene, vse, path, clip["channel"], frame_rate,
+        frame_offset=clip["frame_start"],
+        fade_frames=clip.get("fade_frames", DEFAULT_FADE_FRAMES),
+        max_hold_seconds=clip.get("max_hold_seconds", DEFAULT_MAX_HOLD_SECONDS),
+        rise_frames=clip.get("rise_frames", DEFAULT_RISE_FRAMES),
+        rise_offset=clip.get("rise_offset", DEFAULT_RISE_OFFSET),
+        style=style,
+        frame_width=scene.render.resolution_x,
+        hide_before=clip.get("hide_before", 0),
+    )
+
+
 def main():
     import bpy
 
@@ -863,5 +991,57 @@ def main():
     bpy.ops.wm.save_as_mainfile(filepath=config["output_path"])
 
 
+def main_declarative():
+    """Fase 2 dispatcher entrypoint — assembles a `TimelineDoc`-resolved
+    `payload` via `apply_payload` instead of `main()`'s hardcoded layout.
+    Used by `timeline/preview.py` (Fase 3, níveis 2/3); no real production
+    job points here yet — see `blender_worker/CLAUDE.md` § "Declarative
+    timeline resolver".
+
+    Deliberately does not know about "frame" vs "clip" vs a future real job:
+    output format, frame range and resolution are the caller's problem,
+    applied as CLI flags on the *second* Blender invocation (this function
+    only ever runs the assembly pass, never renders) — the same separation
+    `apply_payload` already draws between "build the scene" and "how it gets
+    rendered".
+    """
+    import bpy
+
+    config_path = parse_args()
+    with open(config_path) as f:
+        config = json.load(f)
+
+    payload, assets = config["payload"], config["assets"]
+
+    scene = bpy.context.scene
+    scene.frame_start = 1
+    scene.render.fps = payload["frame_rate"]
+    scene.render.fps_base = 1.0
+
+    vse = setup_vse(scene)
+    for strip in vse.sequences_all:
+        strip.select = False
+
+    apply_payload(scene, vse, payload, assets)
+
+    # Same encoder settings main() sets — pass 2's `-F PNG` (frame preview)
+    # overrides file_format for that invocation regardless, and pass 2's
+    # clip preview wants exactly this container/codec anyway.
+    scene.render.image_settings.file_format = "FFMPEG"
+    scene.render.ffmpeg.format = "MPEG4"
+    scene.render.ffmpeg.codec = "H264"
+    scene.render.ffmpeg.audio_codec = "AAC"
+    scene.render.ffmpeg.audio_bitrate = 192
+    scene.render.filepath = config["render_output_path"]
+
+    bpy.ops.wm.save_as_mainfile(filepath=config["output_path"])
+
+
 if __name__ == "__main__":
-    main()
+    _config_path = parse_args()
+    with open(_config_path) as _f:
+        _config = json.load(_f)
+    if "payload" in _config:
+        main_declarative()
+    else:
+        main()

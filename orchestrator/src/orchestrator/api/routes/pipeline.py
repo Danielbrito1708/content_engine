@@ -20,7 +20,11 @@ async def create_pipeline(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
-    run = PipelineRun(raw_script=body.script, input_metadata=body.metadata or None)
+    run = PipelineRun(
+        raw_script=body.script,
+        input_metadata=body.metadata or None,
+        template_id=body.template_id,
+    )
     session.add(run)
     await session.commit()
     await session.refresh(run)

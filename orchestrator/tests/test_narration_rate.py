@@ -56,57 +56,81 @@ async def test_client_fetches_template_config():
 # ── _narration_rate ──────────────────────────────────────────────
 
 @respx.mock
-async def test_narration_rate_from_template():
+async def test_narration_rate_from_template(session):
+    run = await _make_run(session)
     respx.get(CONFIG_URL).mock(
         return_value=Response(200, json={"narration": {"rate": "+25%"}})
     )
-    assert await _narration_rate() == "+25%"
+    assert await _narration_rate(run) == "+25%"
 
 
 @respx.mock
-async def test_narration_rate_accepts_negative():
+async def test_narration_rate_accepts_negative(session):
+    run = await _make_run(session)
     respx.get(CONFIG_URL).mock(
         return_value=Response(200, json={"narration": {"rate": "-10%"}})
     )
-    assert await _narration_rate() == "-10%"
+    assert await _narration_rate(run) == "-10%"
 
 
 @respx.mock
-async def test_narration_rate_none_without_narration_block():
+async def test_narration_rate_none_without_narration_block(session):
     """A template predating the block keeps the tts_service default."""
+    run = await _make_run(session)
     respx.get(CONFIG_URL).mock(return_value=Response(200, json={"frame_rate": 30}))
-    assert await _narration_rate() is None
+    assert await _narration_rate(run) is None
 
 
 @respx.mock
-async def test_narration_rate_none_when_block_has_no_rate():
+async def test_narration_rate_none_when_block_has_no_rate(session):
+    run = await _make_run(session)
     respx.get(CONFIG_URL).mock(return_value=Response(200, json={"narration": {}}))
-    assert await _narration_rate() is None
+    assert await _narration_rate(run) is None
 
 
 @respx.mock
-async def test_narration_rate_none_when_narration_is_null():
+async def test_narration_rate_none_when_narration_is_null(session):
+    run = await _make_run(session)
     respx.get(CONFIG_URL).mock(return_value=Response(200, json={"narration": None}))
-    assert await _narration_rate() is None
+    assert await _narration_rate(run) is None
 
 
 @respx.mock
-async def test_narration_rate_degrades_on_http_error():
+async def test_narration_rate_degrades_on_http_error(session):
     """Narration speed is cosmetic — a 502 must not fail the run."""
+    run = await _make_run(session)
     respx.get(CONFIG_URL).mock(return_value=Response(502, json={"detail": "boom"}))
-    assert await _narration_rate() is None
+    assert await _narration_rate(run) is None
 
 
 @respx.mock
-async def test_narration_rate_degrades_on_404():
+async def test_narration_rate_degrades_on_404(session):
+    run = await _make_run(session)
     respx.get(CONFIG_URL).mock(return_value=Response(404, json={"detail": "not found"}))
-    assert await _narration_rate() is None
+    assert await _narration_rate(run) is None
 
 
 @respx.mock
-async def test_narration_rate_degrades_when_service_unreachable():
+async def test_narration_rate_degrades_when_service_unreachable(session):
+    run = await _make_run(session)
     respx.get(CONFIG_URL).mock(side_effect=ConnectionError("blender_worker down"))
-    assert await _narration_rate() is None
+    assert await _narration_rate(run) is None
+
+
+@respx.mock
+async def test_narration_rate_uses_run_template_override(session):
+    """A run with its own template_id reads *that* template's rate, not the default."""
+    override_id = uuid.uuid4()
+    run = PipelineRun(raw_script="Roteiro.", template_id=override_id)
+    session.add(run)
+    await session.commit()
+    await session.refresh(run)
+
+    respx.get(f"http://blender_worker:8000/templates/{override_id}/config").mock(
+        return_value=Response(200, json={"narration": {"rate": "+50%"}})
+    )
+
+    assert await _narration_rate(run) == "+50%"
 
 
 # ── TTSClient payload ────────────────────────────────────────────
