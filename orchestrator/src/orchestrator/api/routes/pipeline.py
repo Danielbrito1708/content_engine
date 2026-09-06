@@ -24,6 +24,7 @@ async def create_pipeline(
         raw_script=body.script,
         input_metadata=body.metadata or None,
         template_id=body.template_id,
+        account_id=body.account_id,
     )
     session.add(run)
     await session.commit()

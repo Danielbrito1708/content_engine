@@ -28,33 +28,113 @@ Serviço de refinamento e classificação de roteiros via LLM. Expõe `POST /ref
 - `metadata` (dict, opcional) — dados extras (ex: `{"source": "reddit"}`)
 
 **Response** (`RefineResponse`):
-- `parts` (list[str]) — partes do roteiro refinado (1 ou mais)
+- `parts` (list[str]) — o roteiro refinado. **Sempre exatamente um elemento** (ver abaixo)
 - `hook` (str) — a frase gancho, isolada. **Sempre preenchida** (ver abaixo)
 - `narrator_gender` (str) — `male` / `female` / `unknown`. Quem narra, não o público (ver abaixo)
 - `youtube_title` (str) — título do vídeo no YouTube, até 100 chars. **Sempre preenchido** (ver abaixo)
+- `mood` (str) — `sad` / `tense` / `hopeful` / `neutral`. Escolhe a trilha sonora, não é leitura de audiência (ver abaixo)
 - `classification.content_type` — drama / comédia / motivacional / educativo / entretenimento / suspense
 - `classification.tone` — suspenseful / funny / emotional / educational / inspirational / shocking
 - `classification.target_audience` — `{age_range, gender, interests}`
-- `classification.cta_per_part` — CTA para cada parte, **só para a legenda do post** (ver abaixo)
+- `classification.cta_per_part` — a pergunta que **fecha o texto narrado**, copiada literal (ver abaixo)
+- `classification.binary_cta` — pergunta de **escolha binária para a legenda**, texto novo e independente de `cta_per_part` (ver abaixo). `""` quando a história não tem dois lados claros
 - `classification.hashtag_hints` — 5–8 hashtags sugeridas
-- `classification.split_rationale` — razão do corte ou `null`
+- `classification.split_rationale` — vestigial: sempre `null` no formato curto, e o rastro de auditoria quando o modelo desobedece e a guarda junta as partes
 
 Erros: `502` se o LLM retornar JSON inválido ou se a chamada à API falhar.
 
-### Política de divisão do roteiro (`src/llm_service/prompts/refine.py`)
+### Formato: uma história completa em 10–40s (`src/llm_service/prompts/refine.py`)
 
-O padrão é **uma parte só**: a história completa num vídeo. Dividir é exceção e só acima de 30 minutos de fala.
+**Sempre uma parte.** A história é *recontada condensada* para caber na janela; não existe
+mais divisão nem cliffhanger de continuação.
 
 **API pública** (constantes exportadas):
-- `MAX_PART_MINUTES = 30` — teto de duração de um vídeo
-- `NARRATION_WPM = 195` — voz neural pt-BR (~150 wpm) acelerada pelo `narration.rate` do template (`+30%`). **Anda junto com o rate**: mexer num sem o outro desloca o teto real de 30 minutos
-- `MAX_PART_WORDS = MAX_PART_MINUTES * NARRATION_WPM` (5850) — o número que vai no prompt, porque palavra é o que o modelo conta
+- `TARGET_MIN_SECONDS = 10` / `TARGET_MAX_SECONDS = 40` — a banda do formato
+- `NARRATION_WPM = 225` — voz neural pt-BR (~150 wpm) acelerada pelo `narration.rate` do
+  template (`+50%`). ⚠️ **Anda junto com o rate publicado no bucket**: mexer num sem o outro
+  desloca a banda inteira sem erro nenhum
+- `TARGET_MIN_WORDS` (37) / `TARGET_MAX_WORDS` (150) — derivados de segundos × wpm, porque
+  palavra é o que o modelo conta
 
-O prompt anterior cortava em 600 palavras (~1 min), o que fatiava uma história de 6000 caracteres em seis vídeos. O prompt também proíbe **resumir para caber** — sem isso o modelo troca a divisão por perda de conteúdo, que é pior e invisível.
+Substituiu `MAX_PART_MINUTES = 30` / `MAX_PART_WORDS = 5850`, e **inverteu a regra de
+conservação**: o prompt dizia *"Não resuma, não encurte"* e agora manda `RECONTAR a história
+condensada`. A regra antiga existia porque o modo de falha de então era resumir em vez de
+dividir; sem divisão, resumir virou o trabalho. O que a substituiu não é "resuma", é uma
+instrução sobre **o que** cortar (preserva conflito, detalhe concreto e virada; corta
+personagem secundário e contexto que não muda o julgamento).
 
-**Não há guarda determinística.** Reunir partes devolvidas contra a regra exigiria remover os "Na parte anterior..." e os CTAs de meio de história — reescrita, não validação. A obediência é auditável em `parts` e `split_rationale`.
+**Agora há guarda determinística** — `RefineResponse._collapse_to_single_part` (ver abaixo).
 
-`tests/test_split_policy.py` (8) fixa o teto, sua derivação a partir de minutos e as cláusulas do prompt.
+`tests/test_split_policy.py` (17) fixa a banda, sua derivação e a guarda.
+
+### Uma parte só, garantida no schema (`schemas/refine.py`)
+
+`RefineResponse._collapse_to_single_part` — validator `mode="after"`, **definido antes de
+todos os outros**: junta qualquer `parts` de tamanho N>1 num elemento só e descarta os
+brancos.
+
+⚠️ **Junta, nunca descarta o excedente.** Os dois modos de falha não se equivalem: vídeo
+longo demais é ruim, visível na hora e auditável em `split_rationale`; vídeo sem o fim da
+história é produto quebrado e ninguém repara até assistir. O corte de tamanho é do prompt,
+não daqui — no validator não há como cortar sem partir frase ao meio.
+
+A mecânica de série a jusante (`PipelinePart`, rótulo "(Parte n/N)", `follows_at`) não foi
+removida: com `parts` sempre de tamanho 1 ela não dispara, e é o que sustenta esta guarda
+quando o modelo desobedece.
+
+### A narração termina numa pergunta em primeira pessoa
+
+A última frase do texto narrado é a decisão em aberto da história, feita por quem narra:
+*"devo me separar?"*, *"devo processar meu ex-marido?"*. O modelo copia a mesma frase,
+literal, em `classification.cta_per_part` — mesmo padrão do `hook`, que também é cópia
+identificada de um trecho que continua dentro do roteiro.
+
+⚠️ **Reverte a decisão de 27/08/2026**, que tirou o CTA do texto narrado. Aquela regra
+existia por um motivo específico: o CTA era genérico ("Comenta o que você faria 👇") e vinha
+*depois* do desfecho. A pergunta agora não fecha o vídeo — ela **é** onde a história para.
+Daí a cláusula que exige a decisão `AINDA ESTÁ ABERTA`: perguntar "devo me separar?" numa
+história já terminada na separação é incoerente, e é o modo de falha a vigiar.
+
+**O que foi removido em 27/08 continua removido**: despedida, moral, "e é isso",
+like/follow/inscrição. O prompt também proíbe a pergunta genérica que serviria para qualquer
+vídeo, e exige a que cita o que aconteceu ali.
+
+⚠️ **A pergunta não vai na legenda** — `compose_caption` no `tiktok_poster` deixou de
+escrever o `cta`. Ver `tiktok_poster/CLAUDE.md`.
+
+### CTA de votação binária na legenda (`classification.binary_cta`, 02/09/2026)
+
+Campo novo dentro de `classification`, ao lado de `cta_per_part` — e **independente** dele.
+Existe para tentar aumentar o volume de comentários sem reabrir a REGRA DO FECHAMENTO: a
+pergunta que fecha a narração continua nunca indo para a legenda, mas a legenda pode levar
+uma pergunta *diferente*, pensada só para quem lê antes de assistir.
+
+O prompt pede uma **escolha entre duas opções** sobre o dilema da história — "quem errou
+mais: o marido ou a sogra?", "comenta 1 se perdoaria, 2 se terminava na hora" — nunca sobre o
+desfecho. Escolher entre duas coisas custa menos atrito do que formular uma opinião do zero,
+que é a aposta por trás do campo (ver `docs/comentarios.md` — Frente 1).
+
+**API pública** (`schemas/refine.py`):
+- `MAX_BINARY_CTA_CHARS = 100` — teto do campo, porque ele abre a legenda do TikTok e só os
+  primeiros ~50–80 caracteres aparecem antes do corte de "...mais"
+- `truncate_binary_cta(text) -> str` — corta em `MAX_BINARY_CTA_CHARS` sem partir palavra,
+  mesmo padrão de `truncate_title`
+- `Classification._truncate_binary_cta` — validator `mode="after"` em `Classification`, não em
+  `RefineResponse`: o campo não depende de nenhum outro (ao contrário do `hook`/`youtube_title`,
+  que se derivam um do outro), então não precisa de ordem entre validators
+
+**Vazio é resultado normal, não falha.** Sem dois lados claros para escolher entre, o prompt
+manda deixar `""` — a legenda segue só com hashtags, como já era antes deste campo existir.
+Não há fallback derivado do roteiro, ao contrário de `hook`/`youtube_title`: forçar uma
+pergunta binária numa história sem dilema produziria pergunta artificial, o exato problema que
+a REGRA DO FECHAMENTO já evita do lado da narração.
+
+⚠️ **`classification` trafega opaco.** O `tiktok_poster` lê o dict inteiro sem schema próprio
+e o orchestrador não remapeia campo a campo — então este campo não exigiu mudança nenhuma no
+orchestrador nem migração de banco. Ver `tiktok_poster/CLAUDE.md` → "CTA de votação binária".
+
+Testes: `tests/test_binary_cta.py` (15 — truncamento, independência de `cta_per_part`, vazio
+por padrão, as cláusulas do prompt e o campo na rota).
 
 ### Idioma de saída do refino
 
@@ -113,17 +193,24 @@ O prompt manda deduzir do texto — concordância (`"fiquei cansada"`, `"eu esta
 
 - Testes: `tests/test_narrator.py` (24 — normalização, default do schema, as cláusulas do prompt, o campo no exemplo de JSON fora de `classification`, e o endpoint).
 
-### O texto narrado não tem finalização (`prompts/refine.py`)
+### Mood da história (`mood`)
 
-O prompt pedia que **cada parte terminasse com um CTA** ("Comenta o que você faria 👇"). As partes vão literais para o TTS (`text=part.script` no orchestrador), então esse CTA era **falado no vídeo**, depois do desfecho da história. Regra removida, junto com qualquer outra forma de finalização — despedida, moral, "e é isso", pedido de like/follow. A última frase narrada é a última coisa que acontece na história.
+Campo de topo do `RefineResponse`, ao lado do `hook` e do `narrator_gender` — não entra em `classification`. É o clima emocional da história, e é o que o orchestrador usa para escolher a trilha sonora do vídeo.
 
-`cta_per_part` **continua existindo como campo**: quem o consome é o `tiktok_poster` em `compose_caption()`, na legenda do post. São dois artefatos com o mesmo nome, e só um deles estava no lugar errado. O prompt agora diz isso explicitamente, e o exemplo de JSON no user prompt marca o campo como "só para a legenda".
+**API pública** (`schemas/refine.py`):
+- `MOODS = ("sad", "tense", "hopeful", "neutral")`
+- `normalize_mood(value) -> str` — qualquer entrada para um desses quatro
+- `RefineResponse._normalize_mood` — validator `mode="after"`; campo ausente é `"neutral"`
 
-**O prompt também diz o que o CTA deve pedir.** Quando a história tem alguém claramente errado — que é o caso da maioria delas, por construção da seleção —, o CTA pede o **veredito** do espectador sobre essa pessoa ("ela tava errada de perdoar?"): tomar partido é o que faz alguém parar para escrever, e é o mesmo sinal pelo qual o `content_scout` escolheu a história. A regra proíbe xingamento e mandar odiar — a pergunta é o convite, a raiva é de quem responde. História sem vilão leva CTA normal, sobre o que se faria no lugar de quem viveu aquilo.
+**Por que existe.** Até 01/09/2026 todo vídeo saía com a mesma trilha, história triste ou de final feliz. A música precisa combinar com o clima da história, e como este serviço já é quem lê o roteiro inteiro para deduzir `narrator_gender`, é aqui que o clima também é lido — nenhum outro ponto do pipeline vê o texto completo.
 
-O corte com cliffhanger não foi afetado — um corte no meio da tensão é parte da história.
+⚠️ **Não é `classification.tone`.** `tone` (`suspenseful`/`funny`/`emotional`/`educational`/`inspirational`/`shocking`) informa hashtag e edição, e mistura registros que não mapeiam para música — `emotional` cobre tanto luto quanto reconciliação, climas opostos para uma trilha. `mood` responde só "que cama sonora combina com isto".
 
-- Testes: `tests/test_refine.py` — dois testes de prompt, um garantindo que a regra do CTA no texto narrado não voltou, outro que o campo continua sendo pedido.
+**Na dúvida, `neutral`** — mesma lógica do `unknown` do narrador: errar o mood põe a música errada debaixo da história, e `neutral` é o chão seguro (a trilha que todo vídeo já usava antes deste campo existir).
+
+**Normaliza em vez de rejeitar**, pela mesma razão dos outros campos de topo: o valor sai de um modelo, e um `"feliz"` fora do contrato não pode derrubar o refino de um roteiro correto.
+
+- Testes: `tests/test_mood.py` (22 — normalização, default do schema, a distinção de `classification.tone`, as cláusulas do prompt, o campo no exemplo de JSON fora de `classification`, e o endpoint).
 
 ### Endpoint de moderação (`src/llm_service/api/routes/moderate.py`)
 
@@ -186,7 +273,7 @@ Modelo configurado por `LLM_MODEL` (padrão: `anthropic/claude-3.5-sonnet`). `ge
 
 ## Testes
 
-116 testes: `tests/test_refine.py` (11), `tests/test_moderate.py` (12), `tests/test_story.py` (28), `tests/test_split_policy.py` (8 — teto de 30 min e as cláusulas do prompt), `tests/test_narrator.py` (24 — o gênero de quem narra), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo), `tests/test_youtube_title.py` (18 — corte em 100 chars, fallback pelo gancho, a ordem dos validators e as cláusulas do prompt). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
+165 testes: `tests/test_refine.py` (14 — inclui as cláusulas da pergunta final), `tests/test_moderate.py` (12), `tests/test_story.py` (28), `tests/test_split_policy.py` (17 — a banda de 10–40s, sua derivação e a guarda de parte única), `tests/test_narrator.py` (24 — o gênero de quem narra), `tests/test_mood.py` (22 — o clima da história, que escolhe a trilha), `tests/test_hook.py` (15 — derivação do gancho, teto de 200 chars, decimal que não quebra frase, fallback quando o modelo omite o campo), `tests/test_youtube_title.py` (18 — corte em 100 chars, fallback pelo gancho, a ordem dos validators e as cláusulas do prompt), `tests/test_binary_cta.py` (15 — o CTA de votação binária na legenda, independente de `cta_per_part`). LLM é sempre mockado — não há chamadas reais à API. Sem DB, sem MinIO.
 
 ```bash
 poetry run pytest

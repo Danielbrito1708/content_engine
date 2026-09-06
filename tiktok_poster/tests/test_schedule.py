@@ -49,7 +49,7 @@ async def test_schedule_returns_429_when_queue_full(client):
     assert resp.json()["detail"]["error"] == "buffer_queue_full"
 
 
-async def test_schedule_uses_correct_cta_for_part(client):
+async def test_schedule_caption_labels_the_part_without_the_cta(client):
     with (
         patch("src.tiktok_poster.api.routes.schedule.BufferClient") as mock_buf,
         patch("src.tiktok_poster.api.routes.schedule.generate_presigned_url",
@@ -65,7 +65,8 @@ async def test_schedule_uses_correct_cta_for_part(client):
         )
 
     caption = create_mock.call_args[0][1]
-    assert "Segue para o final" in caption
+    # O CTA é narrado no vídeo, não escrito aqui — ver `test_hashtags.py`.
+    assert "Segue para o final" not in caption
     assert "Parte 2/2" in caption
 
 
@@ -83,6 +84,49 @@ async def test_single_part_caption_has_no_part_label(client):
         await client.post("/schedule", json=SAMPLE_REQUEST)
 
     assert "Parte" not in create_mock.call_args[0][1]
+
+
+async def test_schedule_caption_carries_the_binary_cta(client):
+    """`classification.binary_cta` (novo no `llm_service`) chega até a legenda."""
+    from tests.conftest import SAMPLE_CLASSIFICATION
+
+    with (
+        patch("src.tiktok_poster.api.routes.schedule.BufferClient") as mock_buf,
+        patch("src.tiktok_poster.api.routes.schedule.generate_presigned_url",
+              new_callable=AsyncMock, return_value="https://r2.example.com/video.mp4"),
+    ):
+        mock_buf.return_value.get_pending_posts = AsyncMock(return_value=[])
+        create_mock = AsyncMock(return_value=BUFFER_CREATE_RESPONSE)
+        mock_buf.return_value.create_post = create_mock
+
+        await client.post(
+            "/schedule",
+            json={
+                **SAMPLE_REQUEST,
+                "classification": {**SAMPLE_CLASSIFICATION, "binary_cta": "Quem errou mais: ele ou ela?"},
+            },
+        )
+
+    caption = create_mock.call_args[0][1]
+    assert "Quem errou mais: ele ou ela?" in caption
+
+
+async def test_schedule_caption_has_no_binary_cta_when_field_is_absent(client):
+    """Compatível com um orchestrador antigo, que ainda não manda o campo novo."""
+    with (
+        patch("src.tiktok_poster.api.routes.schedule.BufferClient") as mock_buf,
+        patch("src.tiktok_poster.api.routes.schedule.generate_presigned_url",
+              new_callable=AsyncMock, return_value="https://r2.example.com/video.mp4"),
+    ):
+        mock_buf.return_value.get_pending_posts = AsyncMock(return_value=[])
+        create_mock = AsyncMock(return_value=BUFFER_CREATE_RESPONSE)
+        mock_buf.return_value.create_post = create_mock
+
+        await client.post("/schedule", json=SAMPLE_REQUEST)
+
+    caption = create_mock.call_args[0][1]
+    assert "#drama" in caption
+    assert not caption.startswith("\n")
 
 
 async def test_part_label_ignores_stale_classification_parts(client):

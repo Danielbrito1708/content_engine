@@ -1,6 +1,13 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
-from src.tiktok_poster.buffer.scheduler import continuation_slot, next_available_slot
+from src.tiktok_poster.buffer.scheduler import (
+    _parse_time,
+    _slots_for_day,
+    continuation_slot,
+    next_available_slot,
+    parse_warmup_steps,
+    warmup_cap_for_day,
+)
 
 TIMES = ["08:00", "20:00"]
 
@@ -120,3 +127,96 @@ def test_continuation_gap_is_configurable():
     slot = continuation_slot(follows_at, 90, [], queue_limit=10, now=now)
 
     assert slot == follows_at + timedelta(minutes=90)
+
+
+# --- rampa de aquecimento: funções puras ------------------------------------
+
+
+def test_parse_warmup_steps():
+    assert parse_warmup_steps("1x7,2x7,3") == [(1, 7), (2, 7), (3, None)]
+
+
+def test_parse_warmup_steps_tolerates_spaces_and_empty_entries():
+    assert parse_warmup_steps(" 1x7 , , 2 ") == [(1, 7), (2, None)]
+
+
+def test_warmup_cap_for_day_first_step():
+    started = date(2026, 9, 1)
+    assert warmup_cap_for_day(started, "1x7,2x7,3", date(2026, 9, 1), default_cap=3) == 1
+    assert warmup_cap_for_day(started, "1x7,2x7,3", date(2026, 9, 7), default_cap=3) == 1
+
+
+def test_warmup_cap_for_day_second_step():
+    started = date(2026, 9, 1)
+    assert warmup_cap_for_day(started, "1x7,2x7,3", date(2026, 9, 8), default_cap=3) == 2
+    assert warmup_cap_for_day(started, "1x7,2x7,3", date(2026, 9, 14), default_cap=3) == 2
+
+
+def test_warmup_cap_for_day_permanent_step_never_ends():
+    started = date(2026, 9, 1)
+    assert warmup_cap_for_day(started, "1x7,2x7,3", date(2026, 9, 15), default_cap=99) == 3
+    assert warmup_cap_for_day(started, "1x7,2x7,3", date(2028, 1, 1), default_cap=99) == 3
+
+
+def test_warmup_cap_for_day_falls_back_to_default_without_permanent_step():
+    """Todos os degraus com dias finitos, esgotados: config incompleta não
+    pode travar o agendamento — cai no teto de regime cheio."""
+    started = date(2026, 9, 1)
+    assert warmup_cap_for_day(started, "1x7,2x7", date(2026, 9, 20), default_cap=5) == 5
+
+
+def test_warmup_cap_for_day_empty_steps_falls_back_to_default():
+    assert warmup_cap_for_day(date(2026, 9, 1), "", date(2026, 9, 1), default_cap=3) == 3
+
+
+def test_warmup_cap_for_day_before_start_clamps_to_day_zero():
+    """`started_on` no futuro (relógio dessincronizado, ou dado incorreto) não
+    pode gerar `elapsed` negativo — trata como o primeiro dia da rampa."""
+    started = date(2026, 9, 10)
+    assert warmup_cap_for_day(started, "1x7,2x7,3", date(2026, 9, 1), default_cap=3) == 1
+
+
+# --- rampa aplicada em next_available_slot -----------------------------------
+
+
+def test_next_available_slot_accepts_a_plain_int_unchanged():
+    """Retrocompatibilidade: todo chamador antigo passa `int`, e o resultado
+    não pode mudar com a introdução do `Callable`."""
+    slot = next_available_slot([], posts_per_day=2, preferred_times=TIMES, queue_limit=10)
+    assert slot is not None
+    assert slot.hour in (8, 20)
+
+
+def test_next_available_slot_reduced_cap_via_callable_limits_the_day():
+    from datetime import time as time_cls
+
+    today = datetime.now(tz=timezone.utc).date()
+
+    def _ts(d: date, h: int) -> int:
+        return int(datetime.combine(d, time_cls(h, 0), tzinfo=timezone.utc).timestamp())
+
+    # Um post já sai hoje às 08:00 — com teto reduzido a 1/dia, o próximo
+    # slot livre não pode ser 20:00 de hoje (isso exigiria cap >= 2).
+    posts = [_make_post(_ts(today, 8))]
+    slot = next_available_slot(posts, posts_per_day=lambda _day: 1, preferred_times=TIMES, queue_limit=10)
+    assert slot is not None
+    assert slot.date() > today
+
+
+def test_slots_for_day_rotates_across_days():
+    """Mesmo teto (1) em dois dias sucessivos não pode escolher sempre o
+    mesmo horário — senão vira a assinatura fixa que hashtags já corrigiram."""
+    slot_times = [_parse_time(t) for t in ["08:00", "14:00", "20:00"]]
+    day_a = date(2026, 9, 1)
+    day_b = day_a + timedelta(days=1)
+
+    assert _slots_for_day(slot_times, cap=1, rotation_index=day_a.toordinal()) != _slots_for_day(
+        slot_times, cap=1, rotation_index=day_b.toordinal()
+    )
+
+
+def test_slots_for_day_full_cap_returns_everything_unrotated():
+    """Sem redução de teto (o caso de sempre), a lista sai inteira e na
+    ordem original — nenhuma rotação é acionada."""
+    slot_times = [_parse_time(t) for t in TIMES]
+    assert _slots_for_day(slot_times, cap=2, rotation_index=999) == slot_times

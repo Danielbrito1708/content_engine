@@ -7,6 +7,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Alinhado com o Poetry de desenvolvimento (2.3.3). A incompatibilidade entre as
@@ -26,4 +27,11 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "src.tiktok_poster.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# `alembic upgrade head` antes do uvicorn, como no orchestrator e no
+# content_scout. Sem isto o `up -d --build` sobe o código novo e deixa o banco
+# para trás em silêncio — o container fica `Up`, o `/health` responde 200 (ele
+# só fala com o Buffer, não confere a versão do schema), e a quebra só aparece
+# quando alguém tenta cadastrar ou usar uma conta extra. O `&&` é a parte que
+# importa: migration que falha tem que derrubar o boot, não servir com o
+# schema errado.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn src.tiktok_poster.api.app:app --host 0.0.0.0 --port 8000"]

@@ -45,11 +45,24 @@ class TikTokEnvSettings(BaseModel):
     minio_secret_key: str
     minio_bucket: str
     r2_public_url: str
+    #: Banco `tiktok_poster`, dono da tabela `account_credentials` (Fase 1 do
+    #: multi-account — ver docs/multi_account.md). Obrigatório como os demais
+    #: serviços com banco próprio.
+    database_url: str
+    #: Chave Fernet para cifrar o token de contas extras. `None` só é aceitável
+    #: enquanto nenhuma conta além da default (env vars acima) for cadastrada —
+    #: a validação de verdade acontece ao cifrar/decifrar, não no boot, para não
+    #: quebrar quem só usa a conta de sempre.
+    account_credentials_key: str | None
 
     @model_validator(mode="before")
     @classmethod
     def _from_env(cls, _data: Any) -> dict:
-        required = ["BUFFER_ACCESS_TOKEN", "BUFFER_PROFILE_ID", "MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY"]
+        required = [
+            "BUFFER_ACCESS_TOKEN", "BUFFER_PROFILE_ID",
+            "MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY",
+            "DATABASE_URL",
+        ]
         missing = [k for k in required if not os.environ.get(k)]
         if missing:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
@@ -63,6 +76,8 @@ class TikTokEnvSettings(BaseModel):
             "minio_secret_key": os.environ["MINIO_SECRET_KEY"],
             "minio_bucket": os.environ.get("MINIO_BUCKET", "blender-jobs"),
             "r2_public_url": os.environ.get("R2_PUBLIC_URL", ""),
+            "database_url": os.environ["DATABASE_URL"],
+            "account_credentials_key": os.environ.get("ACCOUNT_CREDENTIALS_KEY"),
         }
 
 

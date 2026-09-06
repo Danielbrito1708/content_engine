@@ -1,11 +1,15 @@
 # Multi-conta — proposta de arquitetura
 
-**Status: proposta.** Nada aqui está implementado. O documento existe para que a decisão
-seja tomada com os números na mesa, e para que uma sessão futura não precise redescobrir
-por que o desenho é este.
+**Status: Fase 1 implementada em 06/09/2026** (ver `docs/vision.md` → "Contas de
+publicação — Fase 1 do multi-account"). As Fases 2 e 3 abaixo continuam proposta — nada
+delas está implementado. O documento existe para que a decisão de quando avançar seja
+tomada com os números na mesa, e para que uma sessão futura não precise redescobrir por
+que o desenho é este.
 
 Data: 26/08/2026. Escrito contra o estado do repo nessa data — uma conta do Buffer
 (`vozes.do.reddit7`), um canal de TikTok, um canal de YouTube, tudo em variável de ambiente.
+Esse estado já não é mais o estado atual (ver Fase 1, abaixo) — mas o resto do documento
+segue descrevendo as Fases 2 e 3, que ainda não existem.
 
 ---
 
@@ -245,18 +249,24 @@ entre ambientes. Template por conta significa **objetos separados no bucket**, u
 
 ## Fases
 
-### Fase 1 — a conta vira dado (2–5 contas)
+### Fase 1 — a conta vira dado (2–5 contas) ✅ implementada em 06/09/2026
 
-Tabela `accounts`, credenciais no poster, `account_id` em `pipeline_runs`. **Sem** split de
-`stories`/`renders`/`publications`: o modelo atual continua, com uma coluna a mais.
+Tabela `accounts` no orchestrador, `account_credentials` (cifrada) num banco novo do
+`tiktok_poster`, `account_id` em `pipeline_runs`. **Sem** split de
+`stories`/`renders`/`publications`: o modelo atual continua, com uma coluna a mais. Detalhes
+de implementação em `docs/vision.md` → "Contas de publicação — Fase 1 do multi-account".
 
-Roda em cima do que existe, é pouca migration, e valida a parte que tem risco de verdade —
-as contas sobrevivem? A resposta a essa pergunta muda tudo o que vem depois, e não custa
-nada obtê-la antes de reescrever o modelo.
+**O que ficou de fora de propósito, por decisão deste ciclo:** o `content_scout` ainda não
+escolhe conta — toda descoberta automática publica na conta default, e a conta extra só
+recebe run por disparo manual (`account_id` no `POST /pipeline`). Round-robin com
+backpressure por conta (ver "Do pipeline ao planner", abaixo) é o próximo passo natural,
+revisitável quando fizer sentido operar mais de uma conta em produção simultaneamente.
 
-⚠️ **A migration precisa rodar no boot.** O `content_scout` é o serviço cujo `Dockerfile`
-não roda `alembic upgrade head` no `CMD`, e um container `Up` e saudável com o banco
-atrasado é o modo de falha mais caro que já apareceu aqui. Conferir antes de subir a Fase 1.
+⚠️ **A correção abaixo, sobre o `content_scout` não rodar migration no boot, estava
+desatualizada já antes desta Fase 1** — conferido no código em 06/09/2026, o `Dockerfile`
+dele roda `alembic upgrade head && uvicorn ...` desde 26/08/2026, igual ao `orchestrator`. O
+`tiktok_poster` passou a seguir o mesmo padrão agora que ganhou banco próprio pela primeira
+vez.
 
 ### Fase 2 — o roteiro deixa de ser do run (10–30 contas)
 
@@ -308,3 +318,10 @@ divisão acima, e é ele que diz quanto risco de fingerprint a operação está 
 - **Notificação em escala** — evento a evento não sobrevive a 20 contas. Resumo por conta
   por dia, ou só exceções? A regra que vale hoje ("um alarme que toca sempre é um alarme que
   ninguém lê") aponta para só exceções.
+- **Validar roteiro numa conta pequena antes da principal** — nota de 06/09/2026, ainda não
+  avaliada: publicar primeiro numa conta pequena/secundária e só promover para a principal
+  (`vozes.do.reddit7`) o que performar. Reduziria o risco de gastar o slot da conta principal
+  num roteiro fraco, mas é o oposto do desenho acima (reuso simultâneo com variação por
+  conta) — aqui a mesma história sairia em sequência, numa conta e depois na outra, o que
+  reabre a pergunta do cooldown/fingerprint entre reusos. Falta decidir se isso é uma
+  variante do fluxo de "conta pequena = warming" já proposto, ou algo separado.

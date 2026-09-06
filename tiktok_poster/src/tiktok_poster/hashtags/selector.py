@@ -55,8 +55,25 @@ def select_hashtags(
     return result
 
 
-def compose_caption(cta: str, hashtags: list[str], part_number: int, total_parts: int) -> str:
-    """Builds the full TikTok post caption."""
-    parts_label = f" (Parte {part_number}/{total_parts})" if total_parts > 1 else ""
+def compose_caption(
+    cta: str, hashtags: list[str], part_number: int, total_parts: int, binary_cta: str = ""
+) -> str:
+    """Builds the full TikTok post caption.
+
+    ⚠️ **`cta` não entra no texto.** É a pergunta que fecha a *narração* ("devo
+    me separar?") — repeti-la na legenda faria o espectador ler agora o que vai
+    ouvir em 30 segundos, e entrega o desfecho antes da história. O parâmetro
+    continua na assinatura porque `_schedule_youtube` ainda o usa como fallback
+    de título, e porque tirá-lo mudaria a chamada em dois destinos para não
+    mudar nada no resultado.
+
+    **`binary_cta` é texto diferente, e por isso pode entrar.** É a pergunta de
+    escolha binária do `llm_service` (`classification.binary_cta`) — sobre o
+    dilema da história, não sobre o desfecho —, escrita para quem só lê a
+    legenda antes de assistir. Vai primeiro, porque é o que precisa caber antes
+    do corte de "...mais" do TikTok.
+    """
+    cta_line = f"{binary_cta}\n\n" if binary_cta else ""
+    parts_label = f"(Parte {part_number}/{total_parts})\n\n" if total_parts > 1 else ""
     tags_str = " ".join(hashtags)
-    return f"{cta}{parts_label}\n\n{tags_str}"
+    return f"{cta_line}{parts_label}{tags_str}"

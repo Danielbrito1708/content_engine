@@ -1,13 +1,24 @@
 import json
-from datetime import datetime
+import uuid
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
 from src.core import settings
+from src.tiktok_poster.accounts.crypto import decrypt_token
+from src.tiktok_poster.accounts.repository import get_credentials
 from src.tiktok_poster.buffer.client import BufferClient, BufferRateLimited, BufferRejected
-from src.tiktok_poster.buffer.scheduler import continuation_slot, next_available_slot
+from src.tiktok_poster.buffer.scheduler import (
+    continuation_slot,
+    next_available_slot,
+    timing_bucket,
+    warmup_cap_for_day,
+)
+from src.tiktok_poster.db.engine import get_session
+from src.tiktok_poster.db.models import AccountCredentials, Publication
 from src.tiktok_poster.hashtags.selector import compose_caption, select_hashtags
 from src.tiktok_poster.schemas.schedule import ScheduleRequest, ScheduleResponse
 from src.tiktok_poster.storage.client import generate_presigned_url
@@ -15,6 +26,65 @@ from src.tiktok_poster.youtube.metadata import build_metadata, compose_title, yo
 
 router = APIRouter()
 log = get_logger(__name__)
+
+
+async def _resolve_account(body: ScheduleRequest, session: AsyncSession) -> AccountCredentials | None:
+    """Credenciais da conta pedida, ou `None` para cair na conta default.
+
+    `account_id` ausente é o caso comum (todo orchestrador anterior à Fase 1 do
+    multi-account, e a maioria dos runs hoje). `account_id` presente mas sem
+    credencial cadastrada é falha de operador, não estado normal — mas também
+    não pode derrubar a publicação: cai na conta default com um aviso, em vez
+    de perder um vídeo já renderizado. Ver docs/multi_account.md.
+    """
+    if not body.account_id:
+        return None
+    try:
+        account_uuid = uuid.UUID(body.account_id)
+    except ValueError:
+        log.warning("account_id inválido, usando conta default", account_id=body.account_id)
+        return None
+    credentials = await get_credentials(session, account_uuid)
+    if credentials is None:
+        log.warning("account_id sem credencial cadastrada, usando conta default", account_id=body.account_id)
+    return credentials
+
+
+def _warmup_started_on(account: AccountCredentials | None, platform: str) -> date | None:
+    """Data de início da rampa deste canal, ou `None` (ritmo cheio, sem rampa).
+
+    Conta extra: coluna do banco, cadastrada em `POST /accounts`. Conta
+    default (`account is None`): `config.ini [warmup]` — ela nunca ganhou
+    linha em `account_credentials` na Fase 1 do multi-account, e não é o caso
+    que está mudando aqui. Ver docs/vision.md → "Rampa de publicação".
+    """
+    if account is not None:
+        return account.tiktok_warmup_started_on if platform == "tiktok" else account.youtube_warmup_started_on
+    warmup_cfg = getattr(settings.CONFIG, "warmup", None)
+    raw = str(getattr(warmup_cfg, f"{platform}_started_on", "") or "") if warmup_cfg is not None else ""
+    return date.fromisoformat(raw) if raw else None
+
+
+def _warmup_steps() -> str:
+    """Degraus da rampa (`"1x7,2x7,3"`) — compartilhados entre contas e
+    canais, é política e não dado por conta (ver `docs/aquecimento.md`)."""
+    warmup_cfg = getattr(settings.CONFIG, "warmup", None)
+    return str(getattr(warmup_cfg, "steps", "") or "") if warmup_cfg is not None else ""
+
+
+def _same_day_count(posts: list[dict], day: date) -> int:
+    """Quantos `posts` (do formato de `BufferClient.get_pending_posts`) caem
+    no mesmo dia UTC que `day` — usado para conferir o teto de aquecimento de
+    um canal específico contra a fila que só ele enxerga."""
+    count = 0
+    for post in posts:
+        try:
+            post_day = datetime.fromtimestamp(int(post.get("due_at", 0)), tz=timezone.utc).date()
+        except (TypeError, ValueError, OSError):
+            continue
+        if post_day == day:
+            count += 1
+    return count
 
 
 def _load_hashtag_config() -> dict:
@@ -95,6 +165,40 @@ def _youtube_channel_id() -> str:
     return settings.env.buffer_youtube_channel_id
 
 
+async def _record_publication(
+    session: AsyncSession,
+    *,
+    body: ScheduleRequest,
+    channel: str,
+    buffer_post_id: str,
+    scheduled_at: datetime,
+    hashtag_variant: str,
+    bucket: str,
+) -> None:
+    """Grava a publicação bem-sucedida — a base do teste A/B por variante.
+
+    Chamada só depois de `create_post` ter devolvido um id de verdade: um
+    `BufferRejected`/`BufferRateLimited` sai da rota antes de chegar aqui, e o
+    caminho de "sem id" do YouTube (`_schedule_youtube`) também retorna antes.
+    Sem linha, sem publicação — é o que torna `publications` confiável como
+    fonte para `GET /analytics/variants`.
+    """
+    session.add(
+        Publication(
+            series_id=uuid.UUID(body.series_id),
+            part_number=body.part_number,
+            channel=channel,
+            buffer_post_id=buffer_post_id,
+            scheduled_at=scheduled_at,
+            hashtag_variant=hashtag_variant,
+            timing_bucket=bucket,
+            template_id=body.template_id,
+            tts_voice=body.tts_voice,
+        )
+    )
+    await session.commit()
+
+
 async def _schedule_youtube(
     body: ScheduleRequest,
     video_url: str,
@@ -103,6 +207,12 @@ async def _schedule_youtube(
     hints: list[str],
     pool: list[str],
     max_total: int,
+    binary_cta: str,
+    account: AccountCredentials | None = None,
+    *,
+    session: AsyncSession,
+    timing_bucket_label: str,
+    default_cap: int,
 ) -> tuple[str | None, str | None, bool]:
     """Agenda a mesma parte no canal do YouTube.
 
@@ -114,10 +224,18 @@ async def _schedule_youtube(
     retry reagendaria o TikTok e a parte sairia duas vezes lá. Todo desfecho
     ruim vira string de erro, que sobe no `youtube_error` da resposta e vira
     aviso de degradação no orchestrador.
+
+    ``account`` são as credenciais resolvidas em `_resolve_account` — `None`
+    cai no canal/config default de sempre, exatamente como antes de existirem
+    contas extras.
+
+    ``default_cap`` é o teto de regime cheio (`posts_per_day`), repassado só
+    para a rampa de aquecimento ter um piso quando os degraus se esgotam sem
+    um regime permanente configurado.
     """
     cfg = settings.CONFIG
     yt_cfg = getattr(cfg, "youtube", None)
-    channel_id = _youtube_channel_id()
+    channel_id = account.youtube_channel_id if account is not None else _youtube_channel_id()
 
     if yt_cfg is not None and not getattr(yt_cfg, "enabled", True):
         return None, "youtube desligado no config", False
@@ -133,11 +251,12 @@ async def _schedule_youtube(
     try:
         mandatory = _split_csv(getattr(cfg.hashtags, "youtube_mandatory", ""))
         # Seed com prefixo próprio: o mesmo vídeo nos dois destinos não pode
-        # sair com a mesma cauda de hashtags nos dois.
-        hashtags = select_hashtags(
-            hints, mandatory, pool, max_total, seed=f"youtube:{body.series_id}:{body.part_number}"
-        )
-        description = compose_caption(cta, hashtags, body.part_number, body.total_parts)
+        # sair com a mesma cauda de hashtags nos dois. Guardada numa variável
+        # (em vez de só passada inline) porque `_record_publication` precisa
+        # dela depois — é o `hashtag_variant` desta publicação.
+        hashtag_seed = f"youtube:{body.series_id}:{body.part_number}"
+        hashtags = select_hashtags(hints, mandatory, pool, max_total, seed=hashtag_seed)
+        description = compose_caption(cta, hashtags, body.part_number, body.total_parts, binary_cta)
         title = compose_title(raw_title, body.part_number, body.total_parts)
 
         metadata = build_metadata(
@@ -152,7 +271,37 @@ async def _schedule_youtube(
             ai_disclosed=bool(getattr(yt_cfg, "ai_disclosed", True)),
         )
 
-        youtube = BufferClient(channel_id=channel_id)
+        if account is not None:
+            youtube = BufferClient(
+                channel_id=channel_id,
+                access_token=decrypt_token(account.buffer_token_enc),
+                org_id=account.buffer_org_id,
+            )
+        else:
+            youtube = BufferClient(channel_id=channel_id)
+
+        # Rampa de aquecimento — só para posts de história nova (unidade =
+        # história, não post): uma continuação de série nunca é limitada por
+        # ela, mesma exceção que `continuation_slot` já faz para
+        # `preferred_times`/`posts_per_day` no TikTok. O YouTube tem fila
+        # própria — o teto do dia é contado contra ela, não contra a do
+        # TikTok, porque os dois canais podem estar em fases de rampa
+        # diferentes (ver docs/vision.md → "Rampa de publicação").
+        if body.follows_at is None:
+            yt_started_on = _warmup_started_on(account, "youtube")
+            if yt_started_on is not None:
+                cap = warmup_cap_for_day(yt_started_on, _warmup_steps(), slot.date(), default_cap)
+                pending_yt = await youtube.get_pending_posts()
+                if _same_day_count(pending_yt, slot.date()) >= cap:
+                    log.info(
+                        "youtube em rampa: post fora do teto do dia",
+                        series_id=body.series_id,
+                        part=body.part_number,
+                        cap=cap,
+                        dia=slot.date().isoformat(),
+                    )
+                    return None, "fora do teto de aquecimento do dia", True
+
         data = await youtube.create_post(video_url, description, slot, metadata=metadata)
         update_id = str(data.get("updates", [{}])[0].get("id", ""))
     except Exception as exc:  # noqa: BLE001 — destino secundário não derruba o principal
@@ -166,12 +315,22 @@ async def _schedule_youtube(
 
     if not update_id:
         return None, "buffer não devolveu id do post no youtube", True
+
+    await _record_publication(
+        session,
+        body=body,
+        channel="youtube",
+        buffer_post_id=update_id,
+        scheduled_at=slot,
+        hashtag_variant=hashtag_seed,
+        bucket=timing_bucket_label,
+    )
     return update_id, None, True
 
 
 @router.post("/schedule", response_model=ScheduleResponse, status_code=201)
-async def schedule(body: ScheduleRequest) -> ScheduleResponse:
-    log.info("schedule request", series_id=body.series_id, part=body.part_number)
+async def schedule(body: ScheduleRequest, session: AsyncSession = Depends(get_session)) -> ScheduleResponse:
+    log.info("schedule request", series_id=body.series_id, part=body.part_number, account_id=body.account_id)
 
     cfg = settings.CONFIG
     posting_cfg = cfg.posting
@@ -185,7 +344,15 @@ async def schedule(body: ScheduleRequest) -> ScheduleResponse:
     mandatory: list[str] = _split_csv(hashtag_cfg.mandatory)
     max_total: int = hashtag_cfg.max_total
 
-    buffer = BufferClient()
+    account = await _resolve_account(body, session)
+    if account is not None:
+        buffer = BufferClient(
+            channel_id=account.tiktok_channel_id,
+            access_token=decrypt_token(account.buffer_token_enc),
+            org_id=account.buffer_org_id,
+        )
+    else:
+        buffer = BufferClient()
 
     # O slot sai da fila do TikTok e vale para os dois destinos: é o TikTok que
     # dita o ritmo de publicação, e a mesma história em dois lugares no mesmo
@@ -199,20 +366,35 @@ async def schedule(body: ScheduleRequest) -> ScheduleResponse:
     if body.follows_at is not None:
         slot = continuation_slot(body.follows_at, gap_minutes, pending, queue_limit)
     else:
-        slot = next_available_slot(pending, posts_per_day, preferred_times, queue_limit)
+        # Rampa de aquecimento (unidade = história): só se aplica aqui, no
+        # único ramo que decide o slot de uma história nova. Uma continuação
+        # de série (ramo acima) nunca passa por ela — mesma exceção que
+        # `continuation_slot` já faz para `preferred_times`.
+        tiktok_started_on = _warmup_started_on(account, "tiktok")
+        if tiktok_started_on is not None:
+            steps = _warmup_steps()
+            cap_for_day = (
+                lambda day, _s=tiktok_started_on, _st=steps, _d=posts_per_day: warmup_cap_for_day(_s, _st, day, _d)
+            )
+        else:
+            cap_for_day = posts_per_day
+        slot = next_available_slot(pending, cap_for_day, preferred_times, queue_limit)
     if slot is None:
         raise _queue_full(len(pending), queue_limit)
 
     hashtag_data = _load_hashtag_config()
     pool: list[str] = hashtag_data.get("pool", [])
     hints: list[str] = body.classification.get("hashtag_hints", [])
-    hashtags = select_hashtags(
-        hints, mandatory, pool, max_total, seed=f"tiktok:{body.series_id}:{body.part_number}"
-    )
+    # Guardada numa variável, e não só passada inline: é o `hashtag_variant`
+    # gravado em `Publication` pela `_record_publication` mais abaixo — hoje
+    # calculada e descartada, agora vira o rótulo dessa variante no teste A/B.
+    tiktok_hashtag_seed = f"tiktok:{body.series_id}:{body.part_number}"
+    hashtags = select_hashtags(hints, mandatory, pool, max_total, seed=tiktok_hashtag_seed)
 
     cta_list: list[str] = body.classification.get("cta_per_part", [])
     cta = cta_list[body.part_number - 1] if body.part_number <= len(cta_list) else ""
-    caption = compose_caption(cta, hashtags, body.part_number, body.total_parts)
+    binary_cta: str = body.classification.get("binary_cta", "")
+    caption = compose_caption(cta, hashtags, body.part_number, body.total_parts, binary_cta)
 
     bucket = cfg.storage.bucket
     video_url = await generate_presigned_url(bucket, body.video_key, ttl)
@@ -247,8 +429,22 @@ async def schedule(body: ScheduleRequest) -> ScheduleResponse:
 
     update_id: str = str(data.get("updates", [{}])[0].get("id", ""))
 
+    # Rótulo de horário — o mesmo `slot` vale para os dois destinos (ver
+    # "uma decisão de ritmo só" acima), então o rótulo também é um só.
+    bucket_label = timing_bucket(slot, preferred_times)
+    await _record_publication(
+        session,
+        body=body,
+        channel="tiktok",
+        buffer_post_id=update_id,
+        scheduled_at=slot,
+        hashtag_variant=tiktok_hashtag_seed,
+        bucket=bucket_label,
+    )
+
     youtube_id, youtube_error, youtube_enabled = await _schedule_youtube(
-        body, video_url, slot, cta, hints, pool, max_total
+        body, video_url, slot, cta, hints, pool, max_total, binary_cta, account=account,
+        session=session, timing_bucket_label=bucket_label, default_cap=posts_per_day,
     )
 
     log.info(

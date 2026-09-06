@@ -132,6 +132,23 @@ async def test_unrecognised_gender_does_not_fail_the_request(client):
     assert mock_factory.call_args.kwargs["voice"] == settings.env.tts_voice
 
 
+async def test_response_includes_the_resolved_voice(client):
+    """O orchestrador precisa saber qual voz narrou, para guardar no run e
+    repassar ao tiktok_poster como variante de teste A/B."""
+    from tests.test_generate import _mock_transcription
+
+    factory_p, upload_p = _patched_endpoint()
+    transcribe, upload_srt = _mock_transcription()
+    with factory_p as mock_factory, upload_p, transcribe, upload_srt:
+        mock_factory.return_value.generate = AsyncMock(return_value=FAKE_MP3)
+        resp = await client.post(
+            "/generate", json={**SAMPLE_REQUEST, "narrator_gender": "male"}
+        )
+
+    assert resp.status_code == 201
+    assert resp.json()["voice"] == settings.env.tts_voice_male
+
+
 async def test_gender_and_rate_travel_together(client):
     """As duas decisões da narração saem na mesma chamada: gancho e partes têm de
     bater em voz *e* em ritmo, senão soam como dois narradores."""

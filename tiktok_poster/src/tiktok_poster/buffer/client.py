@@ -56,12 +56,24 @@ class BufferClient:
     vídeo passou a ir para dois destinos (TikTok e YouTube), cada um com sua
     fila e seu ID. Sem argumento, cai no canal do TikTok — o destino que já
     existia e que continua sendo o principal.
+
+    ``access_token``/``org_id`` são a mesma ideia aplicada à conta inteira
+    (Fase 1 do multi-account, ver docs/multi_account.md): quando uma conta
+    extra manda as próprias credenciais, elas sobrescrevem o `settings.env` da
+    conta default. Toda chamada existente (`BufferClient()`,
+    `BufferClient(channel_id=...)`) continua idêntica, porque os dois
+    parâmetros novos caem no mesmo fallback de sempre quando omitidos.
     """
 
-    def __init__(self, channel_id: str | None = None):
-        self._token = settings.env.buffer_access_token
+    def __init__(
+        self,
+        channel_id: str | None = None,
+        access_token: str | None = None,
+        org_id: str | None = None,
+    ):
+        self._token = access_token or settings.env.buffer_access_token
         self._channel_id = channel_id or settings.env.buffer_profile_id
-        self._org_id: str | None = settings.env.buffer_org_id
+        self._org_id: str | None = org_id if org_id is not None else settings.env.buffer_org_id
 
     def _headers(self) -> dict:
         return {
@@ -182,6 +194,34 @@ class BufferClient:
         if not post_id:
             raise RuntimeError(f"Buffer createPost returned no post id: {data}")
         return {"updates": [{"id": post_id}]}
+
+    async def get_post_metrics(self, post_id: str) -> dict | None:
+        """Métricas de performance de um post já publicado (views, likes, ...).
+
+        Confirmado contra a doc real do Buffer
+        (https://developers.buffer.com/guides/post-metrics.html): métricas têm
+        **~24h de atraso** — um post recém-publicado responde sem `metrics`,
+        o que é normal e não erro, daí devolver `None` em vez de levantar.
+        `POST /metrics/sync` já filtra por idade antes de chamar isto, mas o
+        `None` aqui é a segunda linha de defesa (ex.: o Buffer atrasar mais que
+        as 24h documentadas).
+        """
+        data = await self._graphql(
+            """
+            query GetPostMetrics($id: PostId!) {
+                post(input: { id: $id }) {
+                    id
+                    metrics { type name value unit }
+                    metricsUpdatedAt
+                }
+            }
+            """,
+            {"id": post_id},
+        )
+        post = data.get("data", {}).get("post")
+        if not post or not post.get("metrics"):
+            return None
+        return {"metrics": post["metrics"], "metrics_updated_at": post.get("metricsUpdatedAt")}
 
     async def verify_connection(self) -> bool:
         try:

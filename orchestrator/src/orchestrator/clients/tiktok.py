@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 
 import httpx
@@ -57,6 +58,9 @@ class TikTokClient:
         total_parts: int = 1,
         follows_at: datetime | None = None,
         youtube_title: str | None = None,
+        account_id: str | None = None,
+        template_id: uuid.UUID | None = None,
+        tts_voice: str | None = None,
     ) -> dict:
         """Agenda a parte nos destinos do poster (TikTok e, se houver, YouTube).
 
@@ -70,6 +74,15 @@ class TikTokClient:
 
         ``youtube_title`` é o título do vídeo lá. Omitido do payload quando
         vazio (não vai `null`), como o `narrator_gender` no `tts_service`.
+
+        ``account_id`` identifica a conta de publicação (ver
+        docs/multi_account.md, Fase 1). Omitido quando `None` — o poster cai na
+        conta default, comportamento de sempre.
+
+        ``template_id`` e ``tts_voice`` não mudam nada no agendamento — são
+        repassados para o poster guardar como variante de teste A/B (ver
+        docs/vision.md). Omitidos quando `None`, mesmo contrato dos demais
+        campos opcionais.
         """
         payload: dict = {
             "video_key": video_key,
@@ -82,6 +95,12 @@ class TikTokClient:
             payload["follows_at"] = follows_at.isoformat()
         if youtube_title:
             payload["youtube_title"] = youtube_title
+        if account_id:
+            payload["account_id"] = account_id
+        if template_id is not None:
+            payload["template_id"] = str(template_id)
+        if tts_voice:
+            payload["tts_voice"] = tts_voice
 
         try:
             resp = await request(

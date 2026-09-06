@@ -22,6 +22,7 @@ from src.orchestrator.clients.tts import TTSClient
 from src.orchestrator.db.engine import AsyncSessionLocal
 from src.orchestrator.db.models import PartStatus, PipelinePart, PipelineRun, PipelineStatus
 from src.orchestrator.hook_text import opens_with_hook
+from src.orchestrator.music import is_track, pick_music
 from src.orchestrator.storage.client import get_bytes, list_keys
 
 log = get_logger(__name__)
@@ -60,6 +61,7 @@ async def run_pipeline(run_id: uuid.UUID) -> None:
             rate = await _narration_rate(run)
             await _run_hook_tts(session, run, rate)
             await _render_card(session, run)
+            await _pick_music(session, run)
             await _process_all_parts(session, run, rate)
             await _schedule(session, run)
         except Exception as exc:
@@ -92,6 +94,7 @@ async def _refine(session, run: PipelineRun) -> None:
     run.hook = result.hook or None
     run.narrator_gender = result.narrator_gender
     run.youtube_title = result.youtube_title or None
+    run.mood = result.mood
     run.classification = result.classification
     run.parts_count = len(result.parts)
     run.status = PipelineStatus.refined
@@ -108,6 +111,7 @@ async def _refine(session, run: PipelineRun) -> None:
         hook=bool(run.hook),
         narrator=run.narrator_gender,
         title=bool(run.youtube_title),
+        mood=run.mood,
     )
     notify(
         "Roteiro refinado",
@@ -115,6 +119,7 @@ async def _refine(session, run: PipelineRun) -> None:
         run=short_id(run.id),
         partes=run.parts_count,
         narrador=run.narrator_gender,
+        mood=run.mood,
         gancho=(run.hook or "")[:120] or None,
     )
 
@@ -146,7 +151,7 @@ async def _run_hook_tts(session, run: PipelineRun, rate: str | None = None) -> N
     )
 
     try:
-        audio_key, srt_key = await TTSClient().generate(
+        audio_key, srt_key, voice = await TTSClient().generate(
             text=run.hook,
             run_id=str(run.id),
             label=HOOK_LABEL,
@@ -169,6 +174,8 @@ async def _run_hook_tts(session, run: PipelineRun, rate: str | None = None) -> N
 
     run.hook_audio_key = audio_key
     run.hook_srt_key = srt_key
+    if run.tts_voice is None:
+        run.tts_voice = voice
     await session.commit()
     log.info("hook audio ready", run_id=str(run.id), audio=audio_key, srt=srt_key)
     notify("Gancho narrado", level="debug", icon="🎙️", run=short_id(run.id))
@@ -210,6 +217,46 @@ async def _render_card(session, run: PipelineRun) -> None:
     await session.commit()
     log.info("card ready", run_id=str(run.id), card=card_key)
     notify("Card da intro pronto", level="debug", icon="🖼️", run=short_id(run.id))
+
+
+async def _pick_music(session, run: PipelineRun) -> None:
+    """Escolhe a trilha pelo mood da história (`sad`/`tense`/`hopeful`/`neutral`).
+
+    Candidatos vivem sob `{prefix}{mood}/` — um por mood, subindo arquivo, sem
+    manifesto: ao contrário do fundo, a biblioteca de música não depende de
+    baixar e cortar nada, então não há o que materializar sob demanda.
+
+    **Nunca falha o run e nunca é aviso.** Trilha errada é decisão estética, a
+    mesma categoria do `narration.rate` — mas ao contrário dele, uma pasta de
+    mood vazia é o estado inicial esperado, não uma falha: a biblioteca começa
+    com só a faixa neutra, e cada mood passa a ter trilha própria conforme
+    alguém sobe o arquivo, sem mexer em código. Só a listagem em si falhar (bucket
+    fora do ar) é degradação de verdade, e essa continua avisando.
+    """
+    template = settings.CONFIG.template
+    prefix = str(getattr(settings.CONFIG.music, "prefix", "") or "")
+    default_key = str(getattr(settings.CONFIG.music, "default_key", "") or template.music_key)
+    mood = run.mood or "neutral"
+
+    try:
+        candidates = [k for k in await list_keys(settings.CONFIG.storage.bucket, f"{prefix}{mood}/")
+                      if is_track(k)] if prefix else []
+    except Exception as exc:
+        log.warning("could not list music library, using default track", run_id=str(run.id), error=str(exc))
+        notify(
+            "Biblioteca de música ilegível — vídeo sai com a trilha default",
+            level="warning",
+            icon="⚠️",
+            run=short_id(run.id),
+            erro=str(exc)[:200],
+        )
+        run.music_key = default_key
+        await session.commit()
+        return
+
+    run.music_key = pick_music(candidates, str(run.id)) if candidates else default_key
+    await session.commit()
+    log.info("music picked", run_id=str(run.id), mood=mood, music=run.music_key, library_size=len(candidates))
 
 
 def _template_id_for(run: PipelineRun) -> uuid.UUID:
@@ -272,7 +319,7 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | No
     part.status = PartStatus.tts_running
     await session.commit()
 
-    audio_key, srt_key = await TTSClient().generate(
+    audio_key, srt_key, voice = await TTSClient().generate(
         text=part.script,
         run_id=str(run.id),
         part_number=part.part_number,
@@ -284,6 +331,11 @@ async def _run_tts(session, part: PipelinePart, run: PipelineRun, rate: str | No
     part.audio_key = audio_key
     part.srt_key = srt_key
     part.status = PartStatus.tts_done
+    # Capturada aqui também, e não só no gancho: nem todo run tem gancho
+    # (`_run_hook_tts` sai sem chamar o TTS quando `run.hook` é vazio), e sem
+    # isso esses runs ficariam com `tts_voice` nulo apesar de terem narração.
+    if run.tts_voice is None:
+        run.tts_voice = voice
     await session.commit()
     log.info("audio ready", run_id=str(run.id), part=part.part_number, audio=audio_key, srt=srt_key)
     notify(
@@ -486,7 +538,9 @@ async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
     blender = BlenderClient()
     video_id = await blender.create_video(
         video_file_key=background_key,
-        music_key=settings.CONFIG.template.music_key,
+        # `_pick_music` roda antes de qualquer render e nunca deixa nulo; o
+        # fallback aqui é só para runs criados antes deste campo existir.
+        music_key=run.music_key or settings.CONFIG.template.music_key,
         voice_key=part.audio_key,
         subtitle_key=part.srt_key,
         # A intro abre todas as partes, não só a primeira: é ela que dá a mesma
@@ -573,6 +627,9 @@ async def _schedule(session, run: PipelineRun) -> bool:
                 total_parts=len(parts),
                 follows_at=previous_slot,
                 youtube_title=run.youtube_title,
+                account_id=str(run.account_id) if run.account_id else None,
+                template_id=_template_id_for(run),
+                tts_voice=run.tts_voice,
             )
         except BufferQueueFull as exc:
             # Not a failure: the run keeps its rendered videos and stays in

@@ -44,17 +44,26 @@ def test_adds_hash_prefix_if_missing():
 
 def test_compose_caption_single_part():
     tags = ["#fyp", "#drama"]
-    caption = compose_caption("Segue para mais! 🔥", tags, part_number=1, total_parts=1)
-    assert "Segue para mais! 🔥" in caption
+    caption = compose_caption("devo me separar?", tags, part_number=1, total_parts=1)
     assert "#fyp" in caption
     assert "Parte" not in caption
 
 
+def test_caption_does_not_repeat_the_narrated_question():
+    """A pergunta é a última frase falada no vídeo.
+
+    Imprimi-la na legenda faz o espectador ler agora o que vai ouvir em 30
+    segundos — entrega o desfecho antes da história.
+    """
+    caption = compose_caption("devo me separar?", ["#fyp"], part_number=1, total_parts=1)
+    assert "devo me separar?" not in caption
+
+
 def test_compose_caption_multi_part():
     tags = ["#fyp"]
-    caption = compose_caption("Comenta 👇", tags, part_number=1, total_parts=2)
+    caption = compose_caption("devo me separar?", tags, part_number=1, total_parts=2)
     assert "Parte 1/2" in caption
-    assert "Comenta 👇" in caption
+    assert "#fyp" in caption
 
 
 def test_compose_caption_part2():
@@ -106,3 +115,37 @@ def test_no_mandatory_still_produces_a_caption():
     resultado = select_hashtags(["#drama"], [], ["#p1", "#p2", "#p3"], 4, seed="tiktok:x:1")
     assert resultado[0] == "#drama"
     assert len(resultado) == 4
+
+
+def test_compose_caption_without_binary_cta_is_unchanged():
+    """Sem o campo (histórias sem dilema claro), a legenda continua como antes."""
+    caption = compose_caption("devo me separar?", ["#fyp"], part_number=1, total_parts=1)
+    assert caption == "#fyp"
+
+
+def test_compose_caption_leads_with_the_binary_cta():
+    """Vai primeiro: é o texto que precisa caber antes do corte de "...mais" do TikTok."""
+    caption = compose_caption(
+        "devo me separar?", ["#fyp"], part_number=1, total_parts=1,
+        binary_cta="Quem errou mais: ele ou ela?",
+    )
+    assert caption.startswith("Quem errou mais: ele ou ela?")
+    assert "#fyp" in caption
+
+
+def test_compose_caption_binary_cta_is_not_the_narrated_question():
+    """`binary_cta` é texto novo — não é `cta` (a pergunta que fecha a narração),
+    que continua fora da legenda mesmo com o campo novo presente."""
+    caption = compose_caption(
+        "devo me separar?", ["#fyp"], part_number=1, total_parts=1,
+        binary_cta="Quem errou mais: ele ou ela?",
+    )
+    assert "devo me separar?" not in caption
+
+
+def test_compose_caption_binary_cta_before_the_part_label():
+    caption = compose_caption(
+        "Segue 🔥", ["#fyp"], part_number=1, total_parts=2,
+        binary_cta="Comenta 1 se perdoaria, 2 se terminava",
+    )
+    assert caption.index("Comenta 1") < caption.index("Parte 1/2")

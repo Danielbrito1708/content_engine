@@ -7,3 +7,6 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'orchestrator')\gexec
 
 SELECT 'CREATE DATABASE content_scout'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'content_scout')\gexec
+
+SELECT 'CREATE DATABASE tiktok_poster'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'tiktok_poster')\gexec

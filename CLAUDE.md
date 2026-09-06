@@ -15,6 +15,7 @@ content_engine/
     multi_account.md        ← proposta: operar N contas (TikTok+YouTube) reaproveitando roteiro
     aquecimento.md          ← proposta: rampa de publicação + rotina manual para conta nova/parada
     edicao_declarativa.md   ← VSEL: timeline em YAML editável no lugar da montagem fixa do main()
+    comentarios.md          ← proposta: seis frentes para aumentar volume de comentários
   orchestrator/             ← coordenação do pipeline (FastAPI + DB próprio)
   blender_worker/           ← montagem VSE + renderização (FastAPI + Blender 4.2)
   llm_service/              ← refinamento e classificação de roteiros
@@ -127,6 +128,13 @@ curl -s localhost:8001/templates/$BLENDER_TEMPLATE_ID/config | python -m json.to
 
 O bucket R2 é **compartilhado entre ambientes**, então republicar afeta todos de uma vez.
 
+⚠️ **Pendente desde 31/08/2026: o `+50%` só existe no repo.** A mudança de `narration.rate`
+de `+30%` para `+50%` está em `blender_worker/template.json`, que **não é o que roda**. Até o
+objeto ser republicado no bucket, o pipeline continua narrando a `+30%` — e como
+`NARRATION_WPM` já foi para 225, os roteiros de 150 palavras sairão com ~46s em vez de 40.
+Sem erro em lugar nenhum. Conferir com o `curl` acima antes de julgar a duração do formato
+novo.
+
 ⚠️ **`BLENDER_TEMPLATE_ID` também é uma linha na tabela `templates`** do banco do
 `blender_worker`, não só um objeto no bucket. Num banco novo ela não existe e o endpoint
 acima responde `404 Template not found` — que parece erro de credencial do R2 e não é.
@@ -136,7 +144,7 @@ acima responde `404 Template not found` — que parece erro de credencial do R2 
 **Os seis serviços estão implementados** e o pipeline fecha de ponta a ponta.
 
 - `blender_worker` — API, DB, Blender pipeline, image compositor, semáforo de render
-- `orchestrator` — pipeline completo, rotação de background, recuperação de runs órfãos, retry de agendamento, notificação
+- `orchestrator` — pipeline completo, rotação de background, trilha sonora escolhida pelo mood da história, recuperação de runs órfãos, retry de agendamento, notificação
 - `llm_service` — `/refine`, `/moderate`, `/story-quality` (OpenRouter / Anthropic / Chutes)
 - `tts_service` — providers `edge`/`azure`, corte de silêncio + normalização de loudness, transcrição word-level, **`POST /transcribe`** (URL de vídeo → texto, para roteiro viral virar matéria-prima)
 - `tiktok_poster` — agendamento via Buffer, slots, séries, hashtags e caption; **dois destinos** (TikTok + YouTube) no mesmo slot
@@ -173,6 +181,19 @@ O que falta **não é código de feature** — é monitoramento: os três checks
 Healthchecks.io, o cron do disco (script pronto, falta agendar) e o Uptime Kuma. Ver também
 o TODO de backup/retenção em `docs/deploy.md` → "O que continua em aberto", adiado por
 decisão e mais urgente agora que se sabe que cada MP4 pesa ~270 MB.
+
+Decisões tomadas em 31/08/2026 — **mudança de formato**:
+
+| Decisão | Escolha |
+|---|---|
+| Duração do vídeo | **10 a 40 segundos**, mirando perto do teto. `TARGET_MIN/MAX_SECONDS` em `llm_service/prompts/refine.py` |
+| Como encurtar | **Condensar, não cortar.** O LLM reconta a história em 37–150 palavras. Inverte a regra de 14/08 ("não resuma, não encurte"), que existia quando o modo de falha era resumir em vez de dividir |
+| Divisão em partes | **Eliminada.** `parts` tem sempre um elemento; `_collapse_to_single_part` junta o que o modelo devolver dividido. A mecânica de série ficou dormente, não foi removida |
+| Se o modelo desobedecer | **Junta, nunca descarta.** Vídeo longo demais é ruim e auditável; vídeo sem o fim da história é quebrado e invisível |
+| `narration.rate` | **`+30%` → `+50%`** (~225 wpm). `NARRATION_WPM` e `TTS_RATE` andam junto — os três num valor só |
+| CTA | **Narrado, e só narrado.** A última frase é uma pergunta em primeira pessoa ("devo me separar?") sobre a decisão em aberto. Reverte a decisão de 27/08; sai da legenda, que vira só hashtags |
+| Onde a história para | **No ponto da decisão**, não depois dele — senão a pergunta final é incoerente |
+| Isto é fix de alcance? | **Não.** A queda de agosto foi medida e duração não era o discriminador (0:56 a 6:10 no mesmo período bom). É decisão de formato |
 
 ## Decisões em aberto
 
@@ -218,3 +239,12 @@ Decisão tomada em 27/08/2026:
 | Fila cheia na caixa de entrada | **Recusa com aviso**, não enfileira. Guardar exigiria tabela de pendências; engolir a capacidade converteria o freio de memória do `blender_worker` em sugestão |
 | Minerar TikTok automaticamente | **Não.** O rate limit é por IP e adaptativo. Volume é papel do scout no Reddit; a caixa de entrada é para o punhado de histórias que já provaram reter |
 | Subreddits em inglês no scout | **Próximo passo, não implementado.** Os vídeos medidos eram AITA/antiwork traduzidos — o concorrente resolve a escassez de material pt-BR traduzindo, não transcrevendo |
+
+Decisão tomada em 06/09/2026:
+
+| Decisão | Escolha |
+|---|---|
+| Escopo da análise de variantes/teste A/B | **Conta única** (`vozes.do.reddit7`). Multi-conta continua só na Fase 1 do `multi_account.md`, dimensão separada |
+| Fonte de métricas de performance | **API do Buffer** (`post(id).metrics`), não TikTok/YouTube direto — já é a mesma conta e o mesmo token, sem OAuth novo por plataforma |
+| Rigor da comparação entre variantes | **Descritiva** (média/contagem por grupo), sem teste de significância — com ~3 posts/dia o volume não sustenta uma alegação de confiança estatística |
+| Gatilho da sincronização de métricas | **Endpoint + cron externo no servidor**, 1x/dia (o Buffer só atualiza métricas nesse ritmo) — nenhum loop novo dentro do `tiktok_poster` |

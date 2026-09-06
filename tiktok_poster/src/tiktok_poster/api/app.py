@@ -2,9 +2,11 @@ from src.core import settings  # noqa: F401 — triggers bootstrap before any ot
 
 from fastapi import FastAPI
 
-from src.tiktok_poster.api.routes import health, schedule
+from src.tiktok_poster.api.routes import accounts, health, metrics, schedule
 
 app = FastAPI(title="tiktok_poster", version="0.1.0")
 
 app.include_router(health.router)
 app.include_router(schedule.router)
+app.include_router(accounts.router)
+app.include_router(metrics.router)

@@ -56,12 +56,32 @@ class PipelineRun(Base):
     #: uma história dividida é a mesma história, e o que distingue as partes é o
     #: rótulo "(Parte n/N)", que o poster acrescenta por saber `total_parts`.
     youtube_title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    #: Clima emocional da história (`sad` / `tense` / `hopeful` / `neutral`),
+    #: vindo do refino. `None` só num run criado antes deste campo existir.
+    mood: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: Trilha escolhida para o mood acima. Do run, não da parte, pela mesma
+    #: razão do `card_key`: é a mesma cara para a série inteira. `None` até
+    #: `_pick_music` rodar; nunca fica nulo depois, mesmo sem faixa para o mood
+    #: (cai na trilha default do config.ini).
+    music_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     #: Sobrescreve o BLENDER_TEMPLATE_ID default só para este run. `None` é o
     #: caso comum — a maioria dos runs não pede template específico e usa o
     #: default do deploy. Lido por `_narration_rate` e `_run_render`, que têm
     #: de concordar no mesmo template ou a narração sai na velocidade errada
     #: para o corte que o render de fato usa.
     template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    #: Voz resolvida pelo `tts_service` para este run (ex.: `pt-BR-AntonioNeural`),
+    #: vinda da resposta do primeiro `POST /generate` bem-sucedido. É um fato do
+    #: run, não da parte — mesma razão de `mood`/`card_key`: a série inteira usa a
+    #: mesma pessoa narrando. `None` até o primeiro TTS responder, ou num run
+    #: criado antes deste campo existir. Repassada ao `tiktok_poster` como
+    #: variante de teste A/B — ver docs/vision.md.
+    tts_voice: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Conta de publicação dona deste run. `None` é o caso comum — o run publica
+    #: na conta default (credenciais globais do tiktok_poster), exatamente como
+    #: antes desta coluna existir. Preenchido só por disparo manual hoje; o
+    #: scout não escolhe conta (ver docs/multi_account.md, Fase 1).
+    account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     parts_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[PipelineStatus] = mapped_column(Enum(PipelineStatus), nullable=False, default=PipelineStatus.pending)
@@ -70,6 +90,34 @@ class PipelineRun(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     parts: Mapped[list["PipelinePart"]] = relationship("PipelinePart", back_populates="run", order_by="PipelinePart.part_number")
+
+
+class Account(Base):
+    """Uma conta de publicação (TikTok + YouTube via um Buffer próprio).
+
+    As credenciais do Buffer **não moram aqui** — ficam cifradas no banco
+    próprio do `tiktok_poster` (`account_credentials`), na mesma linha `id`.
+    Esta tabela guarda só o que o orchestrador precisa para rotear e produzir:
+    identidade legível (`slug`), estado operacional e overrides de produção.
+    Sem FK entre bancos de propósito — são serviços diferentes.
+    """
+
+    __tablename__ = "accounts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    #: warming / active / paused / banned. String, não Enum de DB — mesmo
+    #: padrão pragmático de `mood`: o conjunto de valores ainda pode mudar.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    #: Template default desta conta, se distinto do BLENDER_TEMPLATE_ID global.
+    #: `None` é o caso comum. Um run também pode sobrescrever via
+    #: `PipelineRun.template_id`, que tem prioridade sobre este campo.
+    template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    banned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ban_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class PipelinePart(Base):
