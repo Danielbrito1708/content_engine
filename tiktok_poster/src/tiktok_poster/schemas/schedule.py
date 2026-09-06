@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,19 @@ class ScheduleRequest(BaseModel):
     #: tem título e um orchestrador antigo não manda o campo — nesse caso o
     #: poster cai no CTA da parte, que é o único texto que sobra.
     youtube_title: str | None = None
+    #: Conta de publicação dona deste post (Fase 1 do multi-account, ver
+    #: docs/multi_account.md). `None` — o caso comum, e todo orchestrador
+    #: anterior a este campo — publica na conta default (env vars).
+    account_id: str | None = None
+    #: Template VSEL/Blender usado no render desta parte (ver
+    #: `orchestrator/CLAUDE.md` → "Template por vídeo"). Guardado em
+    #: `Publication.template_id` para o teste A/B por variante; `None` quando
+    #: um orchestrador antigo não manda o campo.
+    template_id: UUID | None = None
+    #: Voz do narrador usada no TTS desta parte (`tts_service`'s
+    #: `GenerateResponse.voice`, repassada pelo orchestrador). `None` pela
+    #: mesma razão que `template_id`.
+    tts_voice: str | None = None
 
 
 class ScheduleResponse(BaseModel):

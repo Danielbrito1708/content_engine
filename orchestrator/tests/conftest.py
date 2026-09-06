@@ -10,7 +10,7 @@ from sqlalchemy import delete
 from src.core import notify as notify_module
 from src.orchestrator.api.app import app  # triggers bootstrap
 from src.orchestrator.db.engine import AsyncSessionLocal
-from src.orchestrator.db.models import PipelinePart, PipelineRun
+from src.orchestrator.db.models import Account, PipelinePart, PipelineRun
 
 #: Todo destino que o notify conhece. Listado uma vez para o fixture abaixo e
 #: para os testes que precisam ligar um deles de propósito.
@@ -76,4 +76,5 @@ async def clean_db():
     async with AsyncSessionLocal() as s:
         await s.execute(delete(PipelinePart))
         await s.execute(delete(PipelineRun))
+        await s.execute(delete(Account))
         await s.commit()

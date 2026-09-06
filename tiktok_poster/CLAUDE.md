@@ -7,12 +7,15 @@ Serviço de agendamento e publicação de vídeos via Buffer. Recebe `POST /sche
 ## Arquitetura
 
 - `api/routes/schedule.py` — endpoint principal; `_schedule_youtube()` é o segundo destino
+- `api/routes/metrics.py` — `POST /metrics/sync` (coleta métricas do Buffer) e `GET /analytics/variants` (teste A/B por variante)
 - `api/routes/health.py` — `GET /health`, verifica conexão com Buffer
-- `buffer/client.py` — `BufferClient(channel_id=None)`: `get_pending_posts()`, `create_post()`, `verify_connection()`; exceção `BufferRejected`
-- `buffer/scheduler.py` — `next_available_slot()`: calcula próximo horário livre respeitando limite de fila
+- `api/routes/accounts.py` — `POST /accounts`, `GET /accounts` (Fase 1 do multi-account)
+- `buffer/client.py` — `BufferClient(channel_id=None, access_token=None, org_id=None)`: `get_pending_posts()`, `create_post()`, `get_post_metrics()`, `verify_connection()`; exceções `BufferRejected`/`BufferRateLimited`
+- `buffer/scheduler.py` — `next_available_slot()`: calcula próximo horário livre respeitando limite de fila; `continuation_slot()`; `timing_bucket()`: rotula um horário agendado pelo slot da grade mais próximo
 - `storage/client.py` — `generate_presigned_url()`: gera URL pré-assinada do MinIO/R2 para o Buffer baixar o vídeo
 - `hashtags/selector.py` — `select_hashtags()` + `compose_caption()`
 - `youtube/metadata.py` — `youtube_category_id()`, `compose_title()`, `build_metadata()`; puro
+- `db/engine.py` / `db/models.py` — engine async + `AccountCredentials`, `Publication`, `PostMetric`
 - `schemas/schedule.py` — `ScheduleRequest`, `ScheduleResponse`
 - `hashtags.json` — pool configurável de hashtags + obrigatórias
 
@@ -24,12 +27,14 @@ Serviço de agendamento e publicação de vídeos via Buffer. Recebe `POST /sche
 
 **Request** (`ScheduleRequest`):
 - `video_key` (str) — MinIO/R2 key do vídeo renderizado
-- `classification` (dict) — objeto de classificação do orchestrador (com `hashtag_hints`, `cta_per_part`, `content_type`)
+- `classification` (dict) — objeto de classificação do orchestrador (com `hashtag_hints`, `cta_per_part`, `binary_cta`, `content_type`). ⚠️ `cta_per_part` **não vai mais para a legenda** — ver "A legenda não repete a pergunta narrada". `binary_cta`, quando presente, vai — ver "CTA de votação binária na legenda"
 - `part_number` (int) — número da parte (1, 2, ...)
 - `series_id` (str) — UUID do pipeline run (usado para log e rastreamento)
 - `total_parts` (int, default 1) — quantas partes a história tem ao todo
 - `follows_at` (datetime, opcional) — horário já agendado da parte anterior; presente só em partes 2+
 - `youtube_title` (str, opcional) — título do vídeo no YouTube, vindo do refino
+- `template_id` (UUID, opcional) — template VSEL/Blender usado no render desta parte, vindo do orchestrador; guardado em `Publication.template_id` para o teste A/B por variante — ver "Persistência de publicações" abaixo
+- `tts_voice` (str, opcional) — voz do narrador usada no TTS desta parte (`tts_service`'s `GenerateResponse.voice`, repassada pelo orchestrador); guardado em `Publication.tts_voice`
 
 **Response** (`ScheduleResponse`):
 - `scheduled_at` (datetime) — horário UTC agendado no Buffer, o mesmo nos dois canais
@@ -130,7 +135,263 @@ O **mesmo vídeo**, no **mesmo slot**, pelo **mesmo Buffer** — só o canal mud
 
 ⚠️ `hashtags.json` ainda tem uma chave `"mandatory"` — **não é lida**. Só `"pool"` é. Quem define obrigatórias é o `config.ini`.
 
-**O YouTube tem outras obrigatórias** (`[hashtags] youtube_mandatory`, padrão `#historiasreais,#reddit`): `#tiktokbrasil` e `#fyp` não significam nada lá — hashtag de YouTube é busca, não distribuição. `#shorts` **não** está na lista: a política de divisão permite vídeo de até 30 minutos e Short é só até 3, então marcar como Short um vídeo que não é engana o espectador sem mudar a distribuição.
+**O YouTube tem outras obrigatórias** (`[hashtags] youtube_mandatory`, padrão `#historiasreais,#reddit`): `#tiktokbrasil` e `#fyp` não significam nada lá — hashtag de YouTube é busca, não distribuição. `#shorts` **não** está na lista — mas a razão caducou: ela era que a política de divisão permitia vídeo de até 30 minutos contra os 3 do teto de Short. ⚠️ Com o formato de 10–40s, **todo vídeo é Short de fato**. Entrar é edição de `config.ini`, sem código; está pendente de decisão.
+
+### A legenda não repete a pergunta narrada (31/08/2026)
+
+`compose_caption(cta, hashtags, part_number, total_parts, binary_cta="")` **não escreve o
+`cta`**. `cta` é a pergunta que fecha a *narração* ("devo me separar?", vinda de
+`classification.cta_per_part`) — ela nunca vai para a legenda.
+
+**Por quê.** Com o formato curto, essa pergunta passou a ser a última frase narrada no vídeo —
+ver `llm_service/CLAUDE.md`. Imprimi-la também no post faz o espectador **ler agora o que vai
+ouvir em 30 segundos**: entrega o desfecho antes da história, no único texto que o TikTok
+mostra antes do play.
+
+⚠️ **O parâmetro `cta` continua na assinatura, de propósito.** `_schedule_youtube` ainda o usa
+como fallback de `title` quando um orchestrador antigo não manda `youtube_title`
+(`schedule.py:129`) — e sem título o Buffer recusa a criação do post inteiro. Tirar o
+argumento mudaria a chamada nos dois destinos para não mudar nada no resultado.
+
+O rótulo de parte virou linha própria (antes era colado no fim do CTA). ⚠️ Na prática ele
+**não dispara**: `total_parts` é sempre 1 desde que a divisão saiu do refino.
+
+### CTA de votação binária na legenda (`binary_cta`, 02/09/2026)
+
+`compose_caption` ganhou um quinto parâmetro, `binary_cta`, que é texto **diferente** de
+`cta`: vem de `classification.binary_cta` (novo campo do `llm_service`, ver
+`llm_service/CLAUDE.md`), uma pergunta de escolha entre duas opções sobre o *dilema* da
+história — nunca sobre o desfecho —, pensada para quem só lê a legenda antes de assistir.
+Quando presente, abre a legenda, antes do rótulo de parte e das hashtags: é o trecho que
+precisa caber antes do corte de "...mais" do TikTok.
+
+`schedule.py` lê `body.classification.get("binary_cta", "")` e passa para os dois destinos
+(TikTok e YouTube) — mesmo padrão de `cta_list`/`hints`, já lidos do mesmo dict opaco.
+`""` (padrão quando o campo está ausente, incl. em requests de um orchestrador antigo) faz
+`compose_caption` se comportar exatamente como antes deste campo existir.
+
+⚠️ **Não é o retorno da regra de 31/08.** `binary_cta` nunca é o texto narrado — é um campo
+próprio, com sua própria regra no prompt do `llm_service` (nunca entregar o desfecho). Ver
+`docs/comentarios.md` (Frente 1) para a proposta original e as tensões consideradas antes de
+implementar.
+
+### Banco de credenciais por conta (`account_credentials`) — Fase 1 do multi-account
+
+O serviço ganhou banco próprio (`db/engine.py`, `db/models.py`, `alembic/`) — não tinha
+nenhum até 06/09/2026. Guarda uma tabela só, `account_credentials`: `account_id` (mesmo UUID
+da linha `accounts` do orchestrador, sem FK — bancos diferentes), `slug`, `buffer_token_enc`
+(Fernet), `buffer_org_id`, `tiktok_channel_id`, `youtube_channel_id`. Ver
+`docs/multi_account.md` e `docs/vision.md` → "Contas de publicação — Fase 1 do
+multi-account".
+
+**Cadastro é endpoint, não `.env`.** `POST /accounts` (`api/routes/accounts.py`, upsert por
+`account_id`) cifra o token na hora com `accounts/crypto.py::encrypt_token` (Fernet, chave em
+`ACCOUNT_CREDENTIALS_KEY`) — o token cru nunca é persistido nem devolvido em nenhuma resposta.
+`GET /accounts` lista as contas cadastradas sem decifrar nada. Trocar um token expirado é o
+mesmo `POST`, sem endpoint de edição separado.
+
+**`BufferClient` ganhou `access_token`/`org_id` opcionais** (`buffer/client.py`), ao lado do
+`channel_id` que já existia. Omitidos, caem no `settings.env` de sempre — toda chamada
+existente continua idêntica. `ScheduleRequest.account_id` (opcional) é o gatilho:
+`_resolve_account` (`api/routes/schedule.py`) busca a credencial, decifra o token e monta o
+`BufferClient` com ela, para o TikTok e (se a conta tiver canal) para o `_schedule_youtube`
+também.
+
+⚠️ **`account_id` desconhecido ou inválido nunca derruba o `/schedule`.** O vídeo já está
+renderizado quando o request chega — cai na conta default com um `log.warning`, mesmo
+espírito das degradações silenciosas do orchestrador (ver `orchestrator/CLAUDE.md`), só que
+aqui é falha de operador (id errado), não estado normal esperado.
+
+⚠️ **`/health` é a exceção — aqui uma conta desconhecida É erro.** Sem vídeo em jogo, cair
+silenciosamente na conta default enganaria quem está diagnosticando justamente a conta que
+pediu. `account_id` presente e não encontrado devolve `404`.
+
+⚠️ **Requer a migration `001` deste serviço aplicada** — primeira vez que o `tiktok_poster`
+tem migration; o `Dockerfile` passou a rodar `alembic upgrade head && uvicorn ...` no `CMD`,
+mesmo padrão do orchestrator e do content_scout.
+
+- Testes: `tests/test_account_credentials.py` — cifra/decifra puro, o token nunca aparecendo
+  em nenhuma resposta (cifrado ou não), upsert por `account_id`, `/schedule` usando a conta
+  certa quando `account_id` é conhecido, caindo no default quando não é, e `/health` com
+  conta desconhecida devolvendo `404`. Os que tocam o banco exigem `DATABASE_URL` para um
+  Postgres de verdade — mesma convenção do orchestrator/content_scout.
+
+  ⚠️ **Desde a persistência de `Publication` (06/09/2026, ver abaixo), isso deixou de ser
+  "os demais testes continuam sem depender de banco".** `POST /schedule` grava uma linha em
+  todo caminho de sucesso, então qualquer teste que chega até um `create_post` bem-sucedido —
+  a maior parte de `test_schedule.py`/`test_youtube.py`/`test_queue_backpressure.py` — agora
+  também exige Postgres de verdade. Só o que nunca chama a rota (`test_hashtags.py`,
+  `test_scheduler.py`, `test_posting_window.py`, e os testes de função pura dentro dos
+  arquivos acima) continua livre de banco.
+
+### Persistência de publicações e o teste A/B por variante (`db/models.py`, 06/09/2026)
+
+O serviço passou a gravar **qual variante** cada parte publicada usou — hashtag, horário,
+template de edição, voz do narrador —, base para comparar desempenho entre elas. Antes disso o
+serviço era "agenda e esquece": nada registrava que hashtags saíram, em que slot, ou com qual
+template/voz, e não havia como responder "a variante X performa melhor que a Y". Duas tabelas
+novas (migration `002`, ao lado de `account_credentials` da Fase 1 do multi-account):
+
+- **`Publication`** — uma parte publicada com sucesso, num canal: `series_id`/`part_number`
+  (a parte do orchestrador), `channel` (`tiktok`/`youtube`), `buffer_post_id` (único — o ID do
+  post no Buffer), `scheduled_at`, `hashtag_variant` (a seed usada em
+  `select_hashtags(..., seed=...)`, ex. `tiktok:{series_id}:{part}` — guardada como string
+  porque é a seed, não o resultado: duas publicações com a mesma seed tiveram a mesma cauda de
+  hashtags, mesmo que o pool tenha mudado desde então), `timing_bucket` (ver abaixo),
+  `template_id`/`tts_voice` (nullable — vêm prontos do `ScheduleRequest`, ver acima).
+- **`PostMetric`** — um snapshot de uma métrica do Buffer (`metric_type`, `value`, `unit`,
+  `metrics_updated_at`) para uma `Publication`, num instante (`fetched_at`). **Snapshot, não
+  valor único**: `POST /metrics/sync` roda repetidamente e cada chamada grava uma linha nova,
+  em vez de sobrescrever — permite ver evolução; a análise usa só a mais recente.
+
+**Gravada só no caminho de sucesso.** `api/routes/schedule.py::_record_publication` é chamada
+depois de `create_post` devolver um id de verdade — para o TikTok, na rota principal; para o
+YouTube, dentro de `_schedule_youtube`, só depois do `if not update_id` que já existia. Um
+`BufferRejected`/`BufferRateLimited` sai do fluxo antes de chegar lá, e o caminho de "sem id"
+do YouTube também retorna antes: sem linha, sem publicação. Isso é o que torna `publications` a
+fonte confiável para `/analytics/variants` — uma linha ali é uma publicação que de fato saiu.
+
+`timing_bucket(scheduled_at, preferred_times, tolerance_minutes=15) -> str`
+(`buffer/scheduler.py`) rotula o horário agendado em BRT pelo slot mais próximo de
+`[posting] preferred_times` — `"11h"`/`"15h"`/`"19h"` na grade atual, ou `"other"` fora da
+tolerância. **A tolerância (15 min) é menor que `series_gap_minutes` (30) de propósito**:
+`next_available_slot` sempre devolve o horário exato da grade (sem jitter), então qualquer
+tolerância menor que o intervalo de continuação de série já basta para não confundir "pendurou
+30 min depois do slot" com "é o slot" — uma continuação sempre cai em `"other"`. Pura: recebe
+`preferred_times` já lidos do config, para reusar a mesma lista que `next_available_slot` já lê
+e não exigir `config.ini` nos testes.
+
+⚠️ **Requer a migration `002` deste serviço aplicada** — mesmo `CMD` do Dockerfile
+(`alembic upgrade head && uvicorn ...`) já cobre isto no boot.
+
+- Testes: `tests/test_publications.py` — a linha gravada nos dois destinos, a seed batendo com
+  a hashtag realmente escolhida, `template_id`/`tts_voice` chegando à linha, `timing_bucket`
+  para cada horário da grade e para uma continuação de série, e nenhuma escrita quando o Buffer
+  recusa ou a fila está cheia.
+
+### Sincronização de métricas (`POST /metrics/sync`, `api/routes/metrics.py`)
+
+Busca métricas no Buffer (views, likes, shares, ...) para publicações elegíveis e grava um
+`PostMetric` por tipo devolvido. **Elegível** = `scheduled_at` há mais de 24h (o atraso
+documentado pelo Buffer para computar métricas — ver
+[developers.buffer.com/guides/post-metrics.html](https://developers.buffer.com/guides/post-metrics.html))
+**e** sem `PostMetric` gravado nas últimas 20h (não re-sondar dentro da mesma janela do cron).
+
+**Pensado para ser chamado 1x/dia por cron externo no servidor** — mesma decisão do cron de
+disco pendente em `docs/deploy.md`. Nenhum loop novo dentro do processo.
+
+`limit` (query param, default 50) protege a cota de 250 chamadas/dia do Buffer (ver "A cota da
+API do Buffer" acima): este endpoint não pode competir com `/schedule` pela mesma cota.
+
+**Uma falha (rede/HTTP) numa publicação não aborta o lote** — conta em `failed` e a varredura
+segue para a próxima. `BufferClient.get_post_metrics(post_id)` devolve `None` quando o Buffer
+ainda não tem métricas para aquele post (documentado como normal, não erro) — tratado como "sem
+nada a gravar ainda", nunca como falha.
+
+**Resposta**: `{synced, metrics_written, failed, skipped}` — `synced` conta publicações com
+pelo menos uma métrica gravada nesta chamada; `skipped` conta as que eram velhas o bastante mas
+já tinham `PostMetric` recente (fora do cooldown de re-sync, não é erro).
+
+- Testes: `tests/test_metrics_sync.py` — publicação nova demais não é sincronizada, uma
+  elegível e nunca sincronizada é sincronizada, uma já sincronizada há menos de 20h é pulada, um
+  erro numa publicação não impede as demais do lote, e `get_post_metrics` devolvendo `None` não
+  quebra nada.
+
+### Análise por variante (`GET /analytics/variants`, `api/routes/metrics.py`)
+
+Compara o desempenho médio das publicações agrupadas por uma dimensão: `dimension`
+(`hashtag_variant`/`timing_bucket`/`template_id`/`tts_voice`, obrigatório), `metric_type`
+(default `views`), `channel` (opcional, `tiktok`/`youtube`).
+
+**Só entram publicações com pelo menos uma `PostMetric` do `metric_type` pedido.** Ausência de
+métrica não é a mesma coisa que métrica zero — contar como zero enviesaria a média para baixo
+exatamente nas variantes menos sincronizadas (as mais recentes), não nas piores. O snapshot usado
+por publicação é sempre o **mais recente** (`ROW_NUMBER() OVER (PARTITION BY publication_id
+ORDER BY fetched_at DESC)`), já que `PostMetric` guarda um histórico, não um valor só.
+
+**Descritivo, sem teste de significância estatística** — decisão já tomada (conta única,
+comparação por média/contagem). Resposta: lista de `{variant, sample_size, avg, min, max, sum}`,
+ordenada por `sample_size` decrescente. `variant` é `"none"` quando a coluna era nula
+(`template_id`/`tts_voice` em publicações de antes desses campos existirem).
+
+`dimension` inválido, ausente, ou `metric_type`/`channel` fora do esperado devolvem `422` — só
+validação de schema (`Literal`/`Query(min_length=1)`), sem lógica própria.
+
+- Testes: `tests/test_analytics.py` — agregação por cada dimensão, filtro por canal, uma
+  publicação sem a métrica pedida excluída da agregação (não contada como zero), só o snapshot
+  mais recente contando quando há vários ao longo do tempo, valor nulo virando `"none"`, e
+  `dimension`/`metric_type`/`channel` inválidos devolvendo `422`.
+
+### Rampa de publicação — aquecimento de conta (`buffer/scheduler.py`, 06/09/2026)
+
+Canal novo ou parado publicando no ritmo cheio desde o primeiro dia é o padrão que queima
+conta (ver `docs/aquecimento.md`). A rampa reduz o teto de posts/dia em degraus crescentes,
+por canal — a **Parte 1** (software) da proposta; a Parte 2 (rotina manual de uso real,
+perfil completo, sem automação de engajamento) continua sendo trabalho humano, documentado
+lá, e não pede código.
+
+**Onde a data de início mora**, e por quê os dois lugares:
+- **Conta extra** (Fase 1 do multi-account): `account_credentials.tiktok_warmup_started_on`
+  / `.youtube_warmup_started_on` (migration `003`, `Date` nullable) — cadastradas pelo mesmo
+  `POST /accounts` de sempre.
+- **Conta default** (env vars, sem `account_id`): `config.ini [warmup] tiktok_started_on`
+  / `youtube_started_on` — ela nunca ganhou linha em `account_credentials` na Fase 1, e não
+  é o caso que está mudando aqui. `[warmup] steps` (`"1x7,2x7,3"`, degrau final sem `xN` =
+  regime permanente) é compartilhado entre contas e canais — é política, não dado por conta.
+  Sem medição própria por trás; editável sem deploy.
+- `_warmup_started_on(account, platform)` / `_warmup_steps()` (`api/routes/schedule.py`)
+  resolvem qual dos dois vale.
+
+**`next_available_slot` ganhou suporte a teto por dia, não só fixo.** A varredura já anda
+dia a dia internamente; um `int` calculado uma vez na rota acertaria só o primeiro dia
+examinado e erraria ao cruzar um degrau da rampa no meio da varredura. Agora
+`posts_per_day` aceita `int` **ou** `Callable[[date], int]` — `warmup_cap_for_day(started_on,
+steps, day, default_cap)` é essa função quando a conta está em rampa.
+**Retrocompatível**: todo chamador com `int` (a suíte de testes inteira, antes desta
+mudança) sempre tinha `cap == len(preferred_times)`, então a rotação abaixo nunca era
+acionada e o resultado não muda.
+
+**O horário sob teto reduzido roda por dia, não fixa no primeiro.** Com teto 1 e três
+horários possíveis, `_slots_for_day` escolhe um subconjunto rotacionado por
+`check_day.toordinal()` — senão a conta publicaria sempre no mesmo horário todo dia de
+rampa, a mesma assinatura de conta automatizada que a rotação de hashtags já corrigiu
+(28/08/2026).
+
+**Unidade do teto = história, não post.** Uma continuação de série (`follows_at` presente)
+nunca é limitada pela rampa — mesma exceção que `continuation_slot` já faz para
+`preferred_times`/`posts_per_day`. Por isso o teto só entra no ramo de `next_available_slot`
+(exclusivo de parte 1) e, no YouTube, só quando `body.follows_at is None`.
+
+**O YouTube tem teto próprio, contado contra a fila própria dele.** TikTok e YouTube da
+mesma conta podem estar em fases de rampa diferentes — `_schedule_youtube` conta quantos
+posts o **canal do YouTube** já tem agendados no dia do `slot` (via o `BufferClient`
+específico dele, que a função já constrói) e pula, sem falhar, quando o teto do dia já foi
+atingido: `youtube_enabled=True`, `youtube_error="fora do teto de aquecimento do dia"` —
+mesmo padrão de toda degradação do YouTube já documentada acima.
+
+⚠️ **Correção incluída, motivada por isto.** `upsert_credentials` sobrescrevia
+`buffer_org_id`/`youtube_channel_id` com `None` sempre que `POST /accounts` os omitia — um
+bug latente que passaria a apagar a rampa em andamento também, já que trocar só o token é o
+caso de uso documentado do endpoint. Agora a rota manda só os campos que vieram de verdade
+no corpo (`body.model_fields_set`), e `upsert_credentials` só sobrescreve o que foi
+explicitamente enviado — `null` explícito ainda apaga, omissão não.
+
+⚠️ **Aviso de canal trocado sem data de rampa — só para contas extras.** `POST /accounts`
+já tem a linha antiga e a nova à mão no upsert: se `tiktok_channel_id`/`youtube_channel_id`
+mudou e não veio `warmup_started_on` nem já havia um, loga `warning`. Para a conta default
+isso exigiria persistir "qual canal era antes" em algum estado novo — o `config.ini` não
+guarda histórico —, e ficou deliberadamente de fora (`docs/aquecimento.md` deixa essa parte
+em aberto).
+
+⚠️ Requer a migration `003` deste serviço aplicada.
+
+- Testes: `tests/test_scheduler.py` (`parse_warmup_steps`, `warmup_cap_for_day` — degraus,
+  regime permanente, fallback sem permanente e com `steps` vazio, `elapsed` negativo — e
+  `next_available_slot`/`_slots_for_day` com `Callable`, incluindo a retrocompatibilidade
+  com `int`) e `tests/test_account_credentials.py` (datas persistindo por conta, upsert não
+  apagando campo omitido vs. `null` explícito apagando de propósito, `next_available_slot`
+  recebendo `Callable` só quando a conta está em rampa, e o YouTube pulando — ou não, numa
+  continuação — quando o teto do dia já foi atingido).
 
 ### Storage e URL pré-assinada (`src/tiktok_poster/storage/client.py`)
 
@@ -160,9 +421,20 @@ O bucket deve ser o mesmo configurado nos demais serviços (`blender-jobs`).
 
 ## Testes
 
-78 testes em 6 arquivos: `test_queue_backpressure.py` (9 — a recusa do Buffer que é teto vira pausa, a que não é continua erro, a recontagem que falha não mascara a recusa, e a cota estourada virando espera na contagem e na criação), `test_hashtags.py` (14 — inclui a cauda que varia entre posts, a reprodutibilidade no reagendamento e as seeds dos dois destinos divergindo), `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim e o rótulo de parte) e `test_youtube.py` (26 — mapa de categorias, título com rótulo protegido, metadata, os dois destinos no mesmo slot, a mutation com e sem `metadata`, e cada caminho de degradação). Buffer e MinIO são sempre mockados.
+85 testes em 6 arquivos: `test_queue_backpressure.py` (9 — a recusa do Buffer que é teto vira pausa, a que não é continua erro, a recontagem que falha não mascara a recusa, e a cota estourada virando espera na contagem e na criação), `test_hashtags.py` (19 — inclui a legenda sem a pergunta narrada, o CTA de votação binária abrindo a legenda antes do rótulo de parte, a cauda que varia entre posts, a reprodutibilidade no reagendamento e as seeds dos dois destinos divergindo), `test_scheduler.py` (inclui 6 do `continuation_slot`), `test_schedule.py` (inclui o encadeamento fim-a-fim, o rótulo de parte e o `binary_cta` chegando até a legenda) e `test_youtube.py` (26 — mapa de categorias, título com rótulo protegido, metadata, os dois destinos no mesmo slot, a mutation com e sem `metadata`, e cada caminho de degradação). Buffer e MinIO são sempre mockados.
 
 ⚠️ O destino do YouTube é ligado nos testes pelo fixture `youtube_on`, que troca `_youtube_channel_id`. A função existe para ser essa costura: `settings.env` é um modelo congelado e não aceita `monkeypatch.setattr`.
+
+Três arquivos novos para a persistência/teste A/B (06/09/2026): `test_publications.py` (10 —
+`Publication` gravada nos dois destinos, a seed batendo com a hashtag real, `template_id`/
+`tts_voice` chegando à linha, `timing_bucket` puro para cada slot da grade e para continuação
+de série, e nenhuma escrita quando o Buffer recusa ou a fila está cheia), `test_metrics_sync.py`
+(6 — elegibilidade por idade e cooldown, erro numa publicação não aborta o lote, `None` do
+Buffer tratado sem erro, `limit` respeitado) e `test_analytics.py` (11 — agregação por
+dimensão, filtro por canal, métrica ausente excluída da agregação, só o snapshot mais recente
+contando, valor nulo virando `"none"`, validação de query params). Todos usam o fixture
+`session` de `conftest.py` para semear/ler `Publication`/`PostMetric` direto no banco — exigem
+`DATABASE_URL` para um Postgres de verdade, mesma convenção do `test_account_credentials.py`.
 
 ```bash
 poetry run pytest

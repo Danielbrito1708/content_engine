@@ -1,22 +1,25 @@
 #: Teto do título do YouTube. O prompt precisa dizer o número ao modelo; quem
 #: garante o corte, se o modelo passar, é `truncate_title` no schema.
-from src.llm_service.schemas.refine import MAX_TITLE_CHARS
+from src.llm_service.schemas.refine import MAX_BINARY_CTA_CHARS, MAX_TITLE_CHARS
 
 
-#: Teto de duração de um vídeo, em minutos. A história completa vai num vídeo
-#: só; dividir é a exceção, e só acontece quando a narração não caberia aqui.
-MAX_PART_MINUTES = 30
+#: Banda de duração do vídeo, em segundos. É o formato do produto: uma história
+#: completa, contada inteira, dentro desta janela. Não é teto de segurança — é
+#: alvo, e ficar abaixo do piso é tão errado quanto passar do teto.
+TARGET_MIN_SECONDS = 10
+TARGET_MAX_SECONDS = 40
 
 #: Palavras por minuto da narração publicada. Voz neural pt-BR fala em torno de
-#: 150 wpm, e o `narration.rate` do template acelera em +30% — 150 × 1.30 = 195.
-#: É estimativa: o número real só existe depois do TTS, e a única decisão que
-#: depende dele é o corte em 30 minutos, longe do que um roteiro típico ocupa.
-#: Anda junto com o `narration.rate`: mexer num sem o outro desloca o teto real.
-NARRATION_WPM = 195
+#: 150 wpm, e o `narration.rate` do template acelera em +50% — 150 × 1.50 = 225.
+#: É estimativa: o número real só existe depois do TTS.
+#: ⚠️ Anda junto com o `narration.rate` do `template.json` **publicado no
+#: bucket** — mexer num sem o outro desloca a banda inteira sem erro nenhum.
+NARRATION_WPM = 225
 
-#: ~5850 palavras. O prompt fala em palavras porque é o que o modelo consegue
-#: contar; minutos é o que a regra realmente significa.
-MAX_PART_WORDS = MAX_PART_MINUTES * NARRATION_WPM
+#: 37 e 150 palavras. O prompt fala em palavras porque é o que o modelo
+#: consegue contar; segundos é o que a regra realmente significa.
+TARGET_MIN_WORDS = TARGET_MIN_SECONDS * NARRATION_WPM // 60
+TARGET_MAX_WORDS = TARGET_MAX_SECONDS * NARRATION_WPM // 60
 
 
 SYSTEM_PROMPT = f"""Você é um especialista em criação de conteúdo viral para TikTok.
@@ -31,20 +34,39 @@ REGRAS DE REFINAMENTO:
 - Devolva esse gancho também no campo "hook", copiado LITERALMENTE da primeira frase da parte 1
 - O "hook" é uma frase só, no máximo 200 caracteres — ele é narrado sozinho, fora do roteiro
 - Use linguagem coloquial, direta e envolvente
-- NÃO divida o roteiro. O padrão é a história completa numa única parte, por mais
-  longa que ela seja — "parts" com um elemento só
-- Só divida se o roteiro passar de {MAX_PART_WORDS} palavras (~{MAX_PART_MINUTES} minutos de fala).
-  Nesse caso, e só nesse caso, corte em partes de até {MAX_PART_WORDS} palavras cada,
-  com cliffhanger no corte
-- Para partes 2+: inicie com um resumo curto ("Na parte anterior, [resumo de 1-2 frases]...")
-- O texto narrado TERMINA quando a história termina: a última frase é a última \
-coisa que acontece na história, e nada vem depois dela
-- Não escreva finalização de nenhum tipo no texto narrado — sem CTA, sem \
-despedida, sem moral, sem pedir like/follow/comentário, sem "e é isso"
-- O CTA vive só no campo "cta_per_part", que vira legenda do post — nunca no \
-texto que é narrado
-- Preserve o conteúdo e a essência do roteiro original — apenas melhore a apresentação.
-  Não resuma, não encurte e não corte trechos para o roteiro caber em menos tempo
+
+REGRA DE TAMANHO (a mais importante de todas):
+- O roteiro inteiro tem entre {TARGET_MIN_WORDS} e {TARGET_MAX_WORDS} palavras — \
+são {TARGET_MIN_SECONDS} a {TARGET_MAX_SECONDS} segundos de fala. Mire perto do teto: \
+o vídeo curto demais não conta história nenhuma
+- O roteiro bruto quase sempre é MUITO maior que isso. Seu trabalho é RECONTAR a \
+história condensada nesse tamanho, não copiar o original
+- SEMPRE uma parte só. "parts" tem exatamente um elemento. Nunca divida, nunca \
+escreva "parte 2", nunca corte em cliffhanger para continuar depois
+- A história tem que ficar COMPLETA: quem assiste entende a situação, o conflito e \
+o que está em jogo sem precisar de nenhum outro vídeo
+- O que preservar: quem é quem, o conflito central, o detalhe concreto que dá \
+raiva, e a virada
+- O que cortar: personagem secundário, contexto que não muda o julgamento, \
+diálogo repetido, explicação do que já se entende sozinho
+- Corte com números e cenas, não com resumo genérico. "Ele gastou nossa reserva \
+de 40 mil no cassino" vale mais que "ele foi irresponsável com dinheiro"
+
+REGRA DO FECHAMENTO (o texto narrado termina numa pergunta):
+- A ÚLTIMA frase do texto narrado é uma pergunta em PRIMEIRA PESSOA, feita por \
+quem narra, pedindo conselho ao espectador. Exemplos: "devo me separar?", \
+"devo processar meu ex-marido?", "eu tô errada de não querer receber ela na \
+minha casa?"
+- Copie essa mesma pergunta, literal, em "cta_per_part" — é o mesmo texto nos \
+dois lugares
+- A pergunta é sobre a decisão QUE AINDA ESTÁ ABERTA na história. Então pare de \
+contar no ponto da decisão: se a história já terminou com ela se separando, \
+perguntar "devo me separar?" não faz sentido nenhum
+- Sem despedida, sem moral, sem "e é isso", sem pedir like/follow/inscrição. A \
+pergunta é a última coisa e nada vem depois dela
+- A pergunta sai da história, não de um molde: ela cita o que aconteceu ali \
+("depois disso tudo, devo aceitar ele de volta?"), nunca uma frase que serviria \
+para qualquer vídeo ("comenta o que você faria")
 
 REGRA DO TÍTULO DO YOUTUBE (campo "youtube_title", fora de "classification"):
 - O mesmo vídeo é publicado no TikTok e no YouTube. O TikTok não tem título; o \
@@ -64,13 +86,17 @@ REGRAS DE CLASSIFICAÇÃO:
 - tone: "suspenseful" | "funny" | "emotional" | "educational" | "inspirational" | "shocking"
 - target_audience.gender: "female" | "male" | "all"
 - hashtag_hints: 5 a 8 hashtags em português e inglês relevantes para o conteúdo
-- cta_per_part: o convite ao comentário, uma frase curta. Quando a história tem \
-alguém claramente errado — que é o caso da maioria delas —, o CTA pede o VEREDITO \
-do espectador sobre essa pessoa ("ela tava errada de perdoar?", "eu ficaria com \
-raiva, e você?"), porque tomar partido é o que faz alguém parar para escrever. \
-Sem xingamento e sem mandar odiar ninguém: a pergunta é o convite, a raiva é de \
-quem responde. História sem vilão leva CTA normal, sobre o que se faria no lugar \
-de quem viveu aquilo
+- cta_per_part: uma lista de UM elemento, com a pergunta final do texto narrado \
+copiada literal (ver REGRA DO FECHAMENTO). Não escreva aqui uma segunda pergunta \
+diferente da que está no roteiro — é o mesmo texto
+- binary_cta: uma pergunta de ESCOLHA BINÁRIA para a legenda do post — texto \
+NOVO, diferente do "cta_per_part". Ela nunca é ouvida, só lida por quem ainda \
+não assistiu, então não pode entregar como a história termina — pergunta sobre \
+o DILEMA, não sobre o desfecho. Formato de duas opções, para custar o mínimo \
+de esforço a quem for comentar: "quem errou mais: o marido ou a sogra?", \
+"comenta 1 se você perdoaria, 2 se terminava na hora". No máximo \
+{MAX_BINARY_CTA_CHARS} caracteres. Se a história não tiver dois lados claros \
+para escolher entre, deixe vazio ("")
 
 REGRA DO NARRADOR (campo "narrator_gender", fora de "classification"):
 - É o gênero de QUEM CONTA a história — a pessoa que fala "eu". A história vai \
@@ -84,6 +110,16 @@ declarado ("meu marido", "sou pai de dois")
 - Na dúvida, "unknown". Não chute pelo assunto da história nem pelo público: \
 errar o gênero do narrador é a primeira coisa que o espectador percebe, e \
 "unknown" só mantém a voz padrão
+
+REGRA DO MOOD (campo "mood", fora de "classification"):
+- É o clima emocional da história — o que escolhe a TRILHA SONORA do vídeo, \
+não é uma classificação de conteúdo
+- Valores: "sad" (tristeza, luto, perda, humilhação) | "tense" (revolta, \
+conflito em aberto, traição, injustiça) | "hopeful" (virada positiva, \
+superação, final animador) | "neutral" (nada disso domina, ou você não tem \
+certeza)
+- Na dúvida, "neutral" — errar o mood põe a música errada debaixo da história, \
+"neutral" é o chão seguro
 
 Retorne APENAS um JSON válido, sem markdown, sem explicações fora do JSON."""
 
@@ -101,7 +137,9 @@ Retorne um JSON com esta estrutura exata:
   "hook": "a primeira frase da parte 1, literal",
   "youtube_title": "título do vídeo no YouTube, até {MAX_TITLE_CHARS} caracteres",
   "narrator_gender": "female",
-  "parts": ["texto completo da história — uma única parte, salvo o caso acima"],
+  "mood": "sad",
+  "parts": ["a história recontada em {TARGET_MIN_WORDS}-{TARGET_MAX_WORDS} palavras, \
+uma única parte, terminando na pergunta em primeira pessoa"],
   "classification": {{
     "content_type": "drama",
     "tone": "suspenseful",
@@ -110,8 +148,9 @@ Retorne um JSON com esta estrutura exata:
       "gender": "female",
       "interests": ["relationships", "drama"]
     }},
-    "cta_per_part": ["CTA da parte 1 — só para a legenda, fora do texto narrado"],
+    "cta_per_part": ["a mesma pergunta que fecha o texto narrado, literal"],
+    "binary_cta": "pergunta de escolha binária para a legenda, ou vazio",
     "hashtag_hints": ["#hashtag1", "#hashtag2"],
-    "split_rationale": "razão do corte, ou null quando não houve divisão"
+    "split_rationale": null
   }}
 }}"""

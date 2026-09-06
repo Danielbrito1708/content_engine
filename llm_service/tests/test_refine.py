@@ -23,7 +23,9 @@ async def test_refine_returns_parts_and_classification(client):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["parts"]) == 2
+    # O fixture ainda traz duas partes (é resposta de modelo desobediente); o
+    # formato curto junta tudo num vídeo só. Ver `test_split_policy.py`.
+    assert len(data["parts"]) == 1
     assert data["classification"]["content_type"] == "drama"
     assert data["classification"]["target_audience"]["age_range"] == [15, 25]
     assert len(data["classification"]["hashtag_hints"]) >= 1
@@ -133,17 +135,46 @@ async def test_factory_unknown_provider_raises(monkeypatch):
         get_llm_client()
 
 
-# --- o texto narrado não tem finalização -------------------------------------
+# --- o texto narrado termina numa pergunta ------------------------------------
 
 
-def test_prompt_forbids_a_closing_line_in_the_narrated_text():
-    """O vídeo acaba quando a história acaba. O CTA continua existindo, mas só
-    como campo — o `tiktok_poster` o usa na legenda do post."""
+def test_prompt_ends_the_narration_on_a_first_person_question():
+    """A pergunta é a última coisa narrada — e é a única finalização permitida.
+
+    Reverte a regra anterior ("sem CTA no texto narrado"), que existia porque o
+    CTA de então era genérico e vinha *depois* do desfecho. O CTA agora é a
+    decisão em aberto da própria história, então ele não fecha o vídeo: ele é o
+    ponto em que a história para.
+    """
+    from src.llm_service.prompts.refine import SYSTEM_PROMPT
+
+    assert "PRIMEIRA PESSOA" in SYSTEM_PROMPT
+    assert "devo me separar?" in SYSTEM_PROMPT
+    assert "cta_per_part" in SYSTEM_PROMPT
+
+
+def test_prompt_still_forbids_the_generic_sign_off():
+    """O que foi removido em 27/08 continua removido: despedida, moral, "e é isso"."""
     from src.llm_service.prompts.refine import SYSTEM_PROMPT
 
     assert "Cada parte termina com um CTA" not in SYSTEM_PROMPT
-    assert "sem CTA" in SYSTEM_PROMPT
-    assert "cta_per_part" in SYSTEM_PROMPT
+    assert "Sem despedida, sem moral" in SYSTEM_PROMPT
+    assert "sem pedir like/follow" in SYSTEM_PROMPT
+
+
+def test_prompt_requires_the_question_to_be_story_specific():
+    """"comenta o que você faria" serve para qualquer vídeo — é o que se evita."""
+    from src.llm_service.prompts.refine import SYSTEM_PROMPT
+
+    assert "nunca uma frase que serviria" in SYSTEM_PROMPT
+
+
+def test_prompt_ties_the_question_to_an_unresolved_decision():
+    """Perguntar "devo me separar?" numa história que já terminou na separação
+    é incoerente — a condensação tem que parar no ponto da decisão."""
+    from src.llm_service.prompts.refine import SYSTEM_PROMPT
+
+    assert "AINDA ESTÁ ABERTA" in SYSTEM_PROMPT
 
 
 def test_prompt_still_asks_for_the_cta_field():

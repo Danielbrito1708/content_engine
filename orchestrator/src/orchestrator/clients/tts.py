@@ -14,8 +14,13 @@ class TTSClient:
         rate: str | None = None,
         label: str | None = None,
         narrator_gender: str | None = None,
-    ) -> tuple[str, str]:
-        """Returns (audio_key, srt_key) of the generated files.
+    ) -> tuple[str, str, str | None]:
+        """Returns (audio_key, srt_key, voice) of the generated files.
+
+        ``voice`` é a voz que o `tts_service` de fato usou — resolvida lá a
+        partir do `narrator_gender`, nunca decidida aqui. Serve só para o
+        orchestrador guardar no run e repassar ao `tiktok_poster` como variante
+        de teste A/B; não influencia nenhuma decisão deste cliente.
 
         `rate` comes from the template's `narration.rate`; omitted, the tts_service
         falls back to its own TTS_RATE.
@@ -37,4 +42,7 @@ class TTSClient:
 
         resp = await request("POST", f"{self._base}/generate", timeout=300, json=payload)
         data = resp.json()
-        return data["audio_key"], data["srt_key"]
+        # `.get()`, não `["voice"]`: um `tts_service` mais velho que este cliente
+        # não manda o campo, e perder a voz não pode custar o run — mesmo
+        # contrato de `youtube_title`/`narrator_gender` ausentes.
+        return data["audio_key"], data["srt_key"], data.get("voice")

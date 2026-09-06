@@ -32,6 +32,11 @@ Serviço de geração de áudio a partir de texto. Expõe `POST /generate` que o
 **Response** (`GenerateResponse`):
 - `audio_key` (str) — key MinIO do áudio gerado: `audio/{run_id}/{slug}.mp3`
 - `srt_key` (str) — key MinIO da legenda word-level: `subs/{run_id}/{slug}.srt`
+- `voice` (str) — a voz resolvida por `resolve_voice()` para esta request (ex.:
+  `pt-BR-AntonioNeural`). Existe para o orchestrador guardar qual voz narrou cada run e
+  repassar ao `tiktok_poster` como variante de teste A/B — ver "Voz do narrador" abaixo e
+  `tiktok_poster/CLAUDE.md`. Não é um nome novo: é o mesmo valor que a rota já calculava e
+  logava, só que agora também sai na resposta.
 
 `slug` = `label` quando presente, senão `part_{part_number}` — o comportamento antigo, byte a byte, para quem não manda `label`.
 
@@ -114,7 +119,7 @@ Acelera (ou desacelera) a narração na **própria síntese** — `rate` do `edg
 
 | Var | Padrão | Descrição |
 |---|---|---|
-| `TTS_RATE` | `+30%` | Percentual **com sinal** sobre o ritmo natural da voz |
+| `TTS_RATE` | `+50%` | Percentual **com sinal** sobre o ritmo natural da voz. Fallback do `narration.rate` do template — os dois ficam no mesmo valor |
 
 **Precedência:** `rate` da request (vem do `narration.rate` do `template.json`) → `TTS_RATE` → `+30%`. O env var é o fallback de quem chama o serviço direto ou de templates sem o bloco `narration`, e é mantido igual ao rate do template publicado — divergir os dois faz o fallback narrar num ritmo diferente do resto do canal.
 

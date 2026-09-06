@@ -130,15 +130,43 @@ A primeira frase é transformada para prender o espectador nos primeiros dois se
 
 Além de abrir o roteiro, esse gancho volta separado, como uma frase à parte. Antes ele era só a primeira linha de um texto corrido, e ninguém sabia dizer onde ele terminava; agora o sistema devolve a frase inteira, identificada, para poder ser usada sozinha. Se o modelo esquecer de mandá-la, o sistema a recupera pegando a primeira frase da parte 1 — o gancho nunca fica faltando.
 
-**O texto narrado acaba junto com a história.** Antes, o modelo era instruído a fechar cada parte com uma chamada para ação — "comenta o que você faria", "segue para a parte 2" — e isso era narrado no vídeo. Virava um recado colado no fim de uma história que já tinha terminado: o espectador ouvia o desfecho e, em seguida, um pedido. Agora a última frase narrada é a última coisa que acontece na história, sem despedida, sem moral e sem pedido de like.
+**Tamanho do vídeo: de 10 a 40 segundos, sempre.**
 
-A chamada para ação não deixou de existir — ela continua sendo escrita para cada parte, mas só como **legenda do post**, que é onde o TikTok mostra esse tipo de texto e onde ele não interrompe a narração.
+O vídeo passou a ser curto. Uma história por vídeo, contada inteira, entre dez e quarenta
+segundos — e nunca mais uma "parte 2". Como as histórias que chegam do Reddit são muito
+maiores que isso, o modelo deixou de copiar o texto e passou a **recontar a história
+condensada**: ele fica com quem é quem, o conflito, o detalhe concreto que dá raiva e a
+virada, e joga fora o personagem secundário, o contexto que não muda o julgamento e o
+diálogo repetido.
 
-**Divisão em partes:**
+Isso inverte a regra anterior, que mandava explicitamente *não* encurtar. Ela existia
+quando o problema era outro: o modelo resumia quando deveria dividir. Sem divisão, resumir
+deixou de ser o defeito e virou o trabalho — o que o sistema controla agora não é *se*
+encurta, é *o que* ele pode jogar fora.
 
-O padrão é **não dividir**: a história vai inteira num vídeo só, do começo ao fim, por mais longa que seja. Dividir passou a ser exceção, e só acontece se a narração passar de **30 minutos**. Aí sim o sistema decide onde cortar, sempre num momento de cliffhanger, e a parte 2 começa com um breve resumo do que aconteceu antes.
+Se mesmo assim o modelo devolver a história partida em duas, o sistema **junta as partes de
+volta num vídeo só** em vez de descartar a segunda. Um vídeo comprido demais é um vídeo
+ruim; um vídeo sem o fim da história é um vídeo quebrado, e ninguém percebe até assistir.
 
-O modelo também é instruído a não encurtar a história para caber em menos tempo. Antes, "caber" era a regra principal e o texto era espremido; agora o que manda é contar a história completa.
+**A narração é mais rápida.** A voz passou a falar 50% acima do ritmo natural (era 30%),
+o que faz caber mais história nos mesmos quarenta segundos.
+
+**O vídeo termina com uma pergunta feita por quem narra.**
+
+A última frase narrada é a pessoa da história pedindo conselho a quem está assistindo:
+*"devo me separar?"*, *"devo processar meu ex-marido?"*. É a decisão que ficou em aberto —
+por isso a história para no ponto da decisão, e não depois dela: perguntar "devo me separar?"
+num vídeo que já terminou com ela se separando não faz sentido nenhum.
+
+Isso reverte a regra anterior, que tirou a chamada para ação do texto narrado. O motivo de
+então continua válido: o pedido daquela época era genérico ("comenta o que você faria") e
+vinha *depois* do desfecho, colado numa história encerrada. A pergunta de agora não fecha o
+vídeo — ela **é** o ponto onde a história para. O que continua proibido é o resto: despedida,
+moral, "e é isso", pedido de like ou de inscrição.
+
+**E a pergunta não aparece na legenda.** Ela é falada no vídeo, e escrevê-la também no post
+faria o espectador ler agora o que vai ouvir daqui a trinta segundos — entregando o fim antes
+do começo. A legenda passou a ser só as hashtags.
 
 **Classificação do conteúdo:**
 
@@ -172,7 +200,7 @@ A narração sai acelerada em relação ao ritmo natural da voz. O padrão é **
 
 **A velocidade faz parte do template do vídeo.** Cada template — que já define o visual, a fonte da legenda e o ritmo da edição — define também quão rápido a voz fala. Assim um template de drama pode ter narração mais pausada e um de curiosidades rápidas pode ser mais acelerado, sem que seja preciso mexer em configuração de servidor ou reiniciar nada: basta editar o template. Um template que não diz nada sobre velocidade simplesmente usa o padrão do sistema, então templates antigos continuam funcionando.
 
-A velocidade aceita tanto acelerar quanto desacelerar, e também voltar ao ritmo original da voz, se um tipo de conteúdo pedir uma narração mais calma. Como o vídeo fica mais curto quando a fala é mais rápida, acelerar também ajuda roteiros na fronteira dos 60 segundos a caberem em um único vídeo em vez de serem divididos em partes.
+A velocidade aceita tanto acelerar quanto desacelerar, e também voltar ao ritmo original da voz, se um tipo de conteúdo pedir uma narração mais calma. Como o vídeo fica mais curto quando a fala é mais rápida, a velocidade é também o que decide quanta história cabe nos quarenta segundos do formato.
 
 Se o template não puder ser lido por algum motivo, o sistema não interrompe a produção do vídeo — ele usa a velocidade padrão e registra o ocorrido. Velocidade de narração é uma escolha estética, e não vale perder um vídeo inteiro por causa dela.
 
@@ -535,9 +563,11 @@ Duas coisas mudaram por causa disso. A primeira: o destino passou a ser o **ntfy
 
 ## A legenda pergunta de que lado você está
 
-O vídeo escolhido é o que tem alguém claramente errado. A legenda passou a fechar o ciclo: quando existe um vilão na história, o convite ao comentário pede o **seu veredito sobre ele** — "ela tava errada de perdoar?" — em vez do convite genérico de antes. Tomar partido é o que faz alguém parar de assistir e escrever.
+A pergunta que fecha a narração ("devo me separar?") só existe dentro do vídeo — repeti-la na legenda entregaria o final da história para quem ainda nem assistiu. Por isso, desde 31/08/2026, a legenda do TikTok e do YouTube não leva mais nenhuma pergunta vinda da narração.
 
-A regra tem limite escrito: sem xingamento e sem mandar odiar ninguém. A pergunta é o convite; a raiva é de quem responde. Histórias sem vilão continuam com o convite normal, sobre o que você faria no lugar de quem viveu aquilo.
+Desde 02/09/2026 ela pode levar uma pergunta diferente: quando a história tem dois lados claros para escolher entre, o LLM escreve uma pergunta de **escolha binária** — "quem errou mais: o marido ou a sogra?", "comenta 1 se você perdoaria, 2 se terminava na hora" — pensada para quem só lê a legenda antes de assistir, sem contar como a história termina. Escolher entre duas opções custa menos do que formular uma opinião do zero, e é isso que aumenta o volume de comentário.
+
+A pergunta aparece primeiro na legenda, antes das hashtags — é o trecho que precisa caber antes do corte de "...mais" do TikTok. Quando a história não tem um dilema claro para dividir opinião, o campo fica vazio e a legenda segue só com as hashtags, como já acontecia.
 
 ## Os vídeos saem no horário em que o público está acordado
 
@@ -672,14 +702,88 @@ biblioteca. Mandar o mesmo link duas vezes não duplica nada, e um vídeo curto
 demais para virar fundo é recusado com aviso, em vez de entrar quebrado no
 catálogo.
 
+## A trilha sonora combina com o clima da história
+
+Até 01/09/2026 todo vídeo saía com a mesma música de fundo, não importa se a
+história era triste, revoltante ou de final feliz. Agora o LLM que refina o
+roteiro também lê o clima da história — triste, tensa, esperançosa ou neutra —
+e o sistema escolhe uma trilha que combine com esse clima.
+
+A biblioteca de músicas começa pequena: só a faixa neutra existe hoje. À
+medida que faixas para os outros climas forem adicionadas — basta subir o
+arquivo, sem mexer em nada do sistema —, elas entram em rotação automaticamente.
+Enquanto um clima ainda não tem faixa própria, o vídeo sai com a trilha neutra,
+do mesmo jeito que todo vídeo já saía antes desta mudança — não é um defeito,
+é o estado inicial esperado.
+
+## Uma segunda conta de publicação
+
+Até aqui o sistema só sabia publicar num lugar: um canal do TikTok e um do YouTube, com um
+token só, guardado direto na configuração da máquina. Agora dá para cadastrar uma segunda
+conta — outro canal do TikTok, outro do YouTube, outro token — sem desligar nem afetar a
+conta que já está no ar.
+
+Cada conta cadastrada recebe uma identidade própria. Ao enviar um roteiro manualmente, dá
+para dizer qual conta deve publicá-lo; sem indicar nenhuma, o vídeo sai na conta de sempre,
+exatamente como sempre saiu. **A busca automática de roteiros no Reddit ainda não escolhe
+conta sozinha** — por enquanto ela continua alimentando só a conta principal, e distribuir
+histórias automaticamente entre contas fica para uma etapa futura, quando fizer sentido
+operar várias contas ao mesmo tempo em produção.
+
+O token de cada conta extra fica guardado cifrado, isolado da conta principal — perder ou
+trocar o token de uma não afeta a outra, e nenhum dos dois aparece em texto claro em lugar
+nenhum do sistema.
+
+## Saber qual variante de vídeo está performando melhor
+
+Até aqui, cada vídeo era publicado e esquecido: o sistema sabia que tinha saído, mas não
+guardava nada sobre ele, e não existia nenhuma forma de comparar um vídeo com outro. Agora o
+sistema anota, de cada vídeo publicado, qual conjunto de hashtags foi usado, em qual horário
+saiu, qual template de edição montou o vídeo e qual voz narrou — e, um dia depois (é o tempo
+que a plataforma leva para calcular as visualizações), busca o desempenho real de cada post.
+
+Com isso dá para perguntar: "os vídeos publicados às 11h performam melhor que os das 19h?",
+"esse template novo está indo melhor que o antigo?", "a voz masculina prende mais atenção que
+a feminina nessas histórias?" — e receber, para cada resposta possível, quantos vídeos saíram
+naquele grupo e qual foi a média de visualizações (ou curtidas, ou qualquer outra métrica que
+a plataforma reporte). Não é um veredito automático — é uma média simples por grupo, para
+enxergar tendência, não uma prova estatística. Com poucos vídeos por dia, tirar conclusões
+fortes de qualquer diferença ainda exige bom senso de quem está lendo o número.
+
+Isso vale só para a conta que já está no ar — comparar entre contas diferentes (quando houver
+mais de uma em produção) é um passo futuro, separado deste.
+
+## Aquecimento de conta
+
+Canal novo, ou um canal parado religando, agora começa devagar em vez de publicar no ritmo
+cheio desde o primeiro dia — o padrão mais fácil de reconhecer como conta automatizada.
+
+Ao ligar o aquecimento para um canal (do TikTok ou do YouTube, de qualquer conta), o sistema
+publica um vídeo por dia na primeira semana, dois por dia na segunda, e só depois volta ao
+ritmo normal. O horário de publicação também varia dia a dia enquanto o ritmo está reduzido,
+em vez de sair sempre na mesma hora — a mesma lição já aplicada às hashtags.
+
+Uma história dividida em duas partes conta como uma história só para esse limite — a segunda
+parte de uma série nunca é adiada por causa do aquecimento, porque adiá-la quebraria a
+história ao meio.
+
+Quando uma conta publica no TikTok e no YouTube ao mesmo tempo, cada canal aquece no seu
+próprio ritmo — um pode estar maduro enquanto o outro está começando, e um não empresta
+ritmo para o outro.
+
+Isso é só a parte que o sistema automatiza. A outra metade — perfil completo antes do
+primeiro vídeo, alguns dias de uso normal do aplicativo na conta, responder comentário nos
+primeiros posts — continua sendo trabalho manual, feito por uma pessoa, porque automatizar
+esse uso seria o mesmo tipo de comportamento suspeito que o aquecimento existe para evitar.
+
 ## Fluxo completo resumido
 
 ```
 Você escreve um roteiro em texto
          ↓
-O LLM melhora o texto e define as partes
+O LLM condensa a história e escreve a pergunta final
          ↓
-A história inteira vira um áudio narrado (só divide acima de 30 min)
+A história é recontada em 10-40s e vira um áudio narrado
          ↓
 Os silêncios do áudio são removidos
          ↓

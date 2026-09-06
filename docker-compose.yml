@@ -143,6 +143,10 @@ services:
       - .env
     environment:
       ROOT_DIR: /app
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/tiktok_poster
+    depends_on:
+      db:
+        condition: service_healthy
 
   content_scout:
     <<: *runtime

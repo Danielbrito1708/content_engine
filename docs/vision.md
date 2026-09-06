@@ -158,27 +158,100 @@ O `llm_service` retorna um objeto de classificação junto com o roteiro refinad
 
 O schema é armazenado como JSONB no DB do orchestrador. Novos campos são adicionados sem migração.
 
-**`cta_per_part` é legenda, não roteiro.** O prompt de refino pedia que *cada parte terminasse com um CTA*, e as partes são narradas literalmente (`text=part.script`) — o CTA era falado no vídeo, depois do desfecho da história. São dois artefatos diferentes com o mesmo nome: o campo, que o `tiktok_poster` usa em `compose_caption()`, e uma frase escrita dentro do texto narrado. O primeiro fica; o segundo saiu do prompt, junto com qualquer outra forma de finalização (despedida, moral, "e é isso"). O texto narrado termina na última coisa que acontece na história.
+**`cta_per_part` era legenda, não roteiro — descrição histórica.** O prompt de refino pedia que *cada parte terminasse com um CTA*, e as partes são narradas literalmente (`text=part.script`) — o CTA era falado no vídeo, depois do desfecho da história. Eram dois artefatos diferentes com o mesmo nome: o campo, que o `tiktok_poster` usava em `compose_caption()`, e uma frase escrita dentro do texto narrado. O segundo saiu do prompt em 27/08/2026, junto com qualquer outra forma de finalização (despedida, moral, "e é isso"); o primeiro saiu da legenda em 31/08/2026, quando `cta_per_part` passou a ser a pergunta que fecha a *narração* (ver "Formato: uma história completa em 10 a 40 segundos" abaixo) — repeti-la na legenda entregaria o desfecho antes da história. Hoje `cta_per_part` não aparece em lugar nenhum do post; quem entra na legenda, se houver, é `classification.binary_cta` (ver "CTA de votação binária na legenda").
 
 O corte com cliffhanger continua valendo: um corte no meio da tensão é parte da história, não uma finalização colada nela.
 
 ---
 
-## Divisão em Partes
+## Formato: uma história completa em 10 a 40 segundos
 
-**O padrão é não dividir.** A história completa vai num vídeo só; o LLM devolve `parts` com um elemento e `split_rationale` nulo. Dividir é a exceção, e só quando a narração passaria de **30 minutos** — `MAX_PART_MINUTES` em `llm_service/prompts/refine.py`.
+**Um vídeo por história, sempre.** O LLM devolve `parts` com exatamente um elemento e
+`split_rationale` nulo. Não existe mais divisão em partes: a história é **recontada
+condensada** para caber na janela, e quem assiste entende a situação, o conflito e o que
+está em jogo sem precisar de nenhum outro vídeo.
 
-O formato anterior cortava em 600 palavras (~1 min de fala, segundo o prompt). Era o inverso da regra: uma história de 6000 caracteres — o teto de ingestão do scout — virava seis vídeos, cada um abrindo com "Na parte anterior..." e fechando com um CTA pedindo a próxima parte. O espectador que engatava na parte 1 precisava caçar mais cinco publicações, espalhadas por seis dias (ver "Agendamento de séries"), para chegar ao fim de uma história de seis minutos. Vídeo longo com história inteira retém melhor que seis fragmentos porque não pede nenhuma ação para continuar.
+A banda vive em `llm_service/prompts/refine.py`:
 
-- Se dividido, o LLM escolhe o ponto de corte que maximize a curiosidade (cliffhanger natural).
-- Para partes 2+, o LLM gera um resumo curto ("Na parte anterior...") que é inserido no início do roteiro daquela parte antes de ir para o TTS.
-- O orchestrador cria um `pipeline_part` por parte e processa cada uma em sequência. Nada nessa mecânica mudou — o que mudou é quantas partes existem, que no caso normal passou a ser uma.
+```
+TARGET_MIN_SECONDS = 10   TARGET_MAX_SECONDS = 40
+NARRATION_WPM      = 225  (150 wpm da voz neural × o +50% do template)
+TARGET_MIN_WORDS   = 37   TARGET_MAX_WORDS   = 150
+```
 
-**O teto é declarado em minutos e traduzido para palavras.** `MAX_PART_WORDS = MAX_PART_MINUTES × NARRATION_WPM` (30 × 195 = 5850). O prompt fala em palavras porque é o que o modelo consegue contar; minutos é o que a regra significa. `NARRATION_WPM = 195` sai de voz neural pt-BR em ~150 wpm acelerada pelo `narration.rate` do template (`+30%`) — é estimativa, e a única decisão que depende dela é o corte em 30 minutos, muito acima do que um roteiro real ocupa.
+**Declarada em segundos e traduzida para palavras.** O prompt fala em palavras porque é o
+que o modelo consegue contar; segundos é o que a regra significa. ⚠️ `NARRATION_WPM` embute
+o `narration.rate` do template **publicado no bucket** — mexer num sem o outro desloca a
+banda inteira sem erro nenhum, e o desvio só aparece no vídeo pronto.
 
-**O prompt proíbe encurtar para caber.** Sem isso, um modelo que recebe "não divida" e um roteiro longo resolve resumindo — trocaria a divisão indesejada por uma perda de conteúdo pior e invisível, porque o resultado é um `parts` de tamanho 1 com a história mutilada.
+**O prompt manda condensar, e isso é a inversão de uma regra anterior.** Até 31/08/2026 ele
+dizia o oposto — *"Não resuma, não encurte e não corte trechos para o roteiro caber em menos
+tempo"* — porque o problema de então era um modelo que resumia em vez de dividir. Com a
+divisão eliminada, resumir deixou de ser o modo de falha e passou a ser o trabalho. O que
+substituiu a regra não é "resuma", é uma instrução sobre **o que** cortar: preservar quem é
+quem, o conflito, o detalhe concreto que dá raiva e a virada; cortar personagem secundário,
+contexto que não muda o julgamento e diálogo repetido. E cortar com cena e número ("gastou
+nossa reserva de 40 mil no cassino"), não com abstração ("foi irresponsável").
 
-**Por que não há guarda determinística.** Reunir partes que o modelo devolveu contra a regra exigiria remover os "Na parte anterior..." e os CTAs de meio de história que ele escreveu para o corte — reescrita de texto, não validação. A obediência é observável em `parts_count` e `split_rationale`, que já ficam no DB de todo run.
+**Agora há guarda determinística, e ela junta em vez de descartar.**
+`RefineResponse._collapse_to_single_part` transforma qualquer `parts` de tamanho N>1 num
+elemento só. A versão anterior não tinha guarda porque reunir partes exigiria remover os "Na
+parte anterior..." e os CTAs de meio de história — reescrita, não validação. Sem a divisão,
+esses enxertos não existem e a junção é concatenação simples.
+
+⚠️ **Junta, nunca descarta o excedente.** Os dois modos de falha não se equivalem: um vídeo
+longo demais é um vídeo ruim, visível na hora e auditável em `split_rationale`; um vídeo sem
+o fim da história é um produto quebrado, e ninguém repara até alguém assistir. O corte de
+tamanho continua sendo responsabilidade do prompt — no validator não há como cortar sem
+partir frase ao meio.
+
+**A mecânica de série continua existindo, dormente.** `PipelinePart`, o rótulo "(Parte n/N)"
+e o encadeamento de slots (`follows_at` / `continuation_slot`) não foram removidos: com
+`parts` sempre de tamanho 1 eles simplesmente não disparam. Remover custaria migration,
+schema e três serviços para apagar um caminho que não incomoda parado — e que é o que
+sustenta a guarda acima quando o modelo desobedece.
+
+**Por que 40s e não os 6 minutos anteriores.** O formato longo foi adotado em 27/08/2026
+contra o de 600 palavras, e o argumento era retenção: vídeo longo com história inteira retém
+melhor que seis fragmentos, porque não pede nenhuma ação para continuar. Esse argumento
+sobrevive intacto — o que muda é que a história inteira passou a caber em 40 segundos.
+⚠️ **Isto não é correção de alcance.** A queda de agosto foi medida e a duração **não** era
+o discriminador (a conta entregava bem com vídeos de 0:56 a 6:10 no mesmo período); ver
+"Queda de alcance". É decisão de formato, e deve ser avaliada como tal.
+
+**De brinde, o teto do YouTube deixa de morder.** O Buffer recusa vídeo acima de ~3 min no
+canal (é do tipo Shorts): nos dados, tudo até 2:25 tem `youtube_video_id` e tudo de 4:00 para
+cima está nulo. Em 40 segundos, 100% dos vídeos passam nos dois destinos.
+
+---
+
+### O texto narrado termina numa pergunta em primeira pessoa
+
+A última frase da narração é a decisão em aberto da história, feita pelo narrador ao
+espectador: *"devo me separar?"*, *"devo processar meu ex-marido?"*. O modelo copia essa
+mesma frase, literal, em `classification.cta_per_part` — mesmo padrão do `hook`, que também
+é uma cópia identificada de um trecho que continua dentro do roteiro.
+
+**Isto reverte a decisão de 27/08/2026**, que tirou o CTA do texto narrado. A regra de então
+existia por um motivo específico: o CTA era genérico ("Comenta o que você faria 👇") e vinha
+*depois* do desfecho, colado numa história já encerrada. A pergunta agora não fecha o vídeo —
+ela **é** o ponto em que a história para. Por isso o prompt exige que a condensação pare na
+decisão: perguntar "devo me separar?" numa história que já terminou na separação é
+incoerente, e essa incoerência é o modo de falha a vigiar.
+
+**O que foi removido em 27/08 continua removido**: despedida, moral, "e é isso", pedido de
+like/follow/inscrição. A única finalização permitida é a pergunta.
+
+**A pergunta sai da história, não de um molde.** O prompt proíbe explicitamente a frase que
+serviria para qualquer vídeo ("comenta o que você faria") e exige a que cita o que aconteceu
+ali ("depois disso tudo, devo aceitar ele de volta?").
+
+⚠️ **E ela não vai na legenda.** `compose_caption` deixou de escrever o `cta`: repeti-la no
+post faria o espectador **ler agora o que vai ouvir em 30 segundos**, entregando o desfecho
+antes da história. A legenda passou a ser só as hashtags (mais o rótulo de parte, que não
+dispara). O parâmetro continua na assinatura da função porque `_schedule_youtube` ainda usa
+`cta` como fallback de título quando um orchestrador antigo não manda `youtube_title` —
+tirá-lo mudaria a chamada em dois destinos para não mudar nada no resultado.
 
 ---
 
@@ -193,7 +266,7 @@ _schedule (orchestrator)          POST /schedule (tiktok_poster)
   parte 3 → follows_at = 22:30  → continuation_slot()     → 23:00 UTC (20:00 BRT)
 ```
 
-**Por que a continuação ignora os horários preferidos.** `preferred_times` e `posts_per_day` existem para espaçar histórias independentes ao longo do dia. Uma história dividida não são N posts: é uma história continuada, e submetê-la a esse ritmo jogava a parte 2 para o dia seguinte — que era exatamente o comportamento anterior ("cada parte em um dia consecutivo"). Com o corte agora só acontecendo acima de 30 minutos, a divisão é rara e sempre significa "a história não acabou": 30 minutos é curto o bastante para o espectador ainda estar por perto.
+**Por que a continuação ignora os horários preferidos.** `preferred_times` e `posts_per_day` existem para espaçar histórias independentes ao longo do dia. Uma história dividida não são N posts: é uma história continuada, e submetê-la a esse ritmo jogava a parte 2 para o dia seguinte — que era exatamente o comportamento anterior ("cada parte em um dia consecutivo"). ⚠️ **Desde 31/08/2026 esse caminho é dormente**: `parts` tem sempre um elemento (ver "Formato"), então nenhum run manda `follows_at`. A mecânica ficou porque é ela que sustenta a guarda de junção quando o modelo desobedece.
 
 **O `queue_limit` continua valendo.** É o teto da fila do Buffer, não uma escolha de ritmo — furá-lo falharia na API em vez de ali. Uma continuação que esbarra nele devolve `429` e cai no mesmo caminho de backpressure de sempre: o run fica em `scheduling` e o `retry_pending_schedules()` reoferece.
 
@@ -233,7 +306,7 @@ O orchestrador narra o `hook` numa etapa própria (`_run_hook_tts`), entre o ref
 
 ## Velocidade da Narração
 
-Definida no `template.json`, no bloco `narration.rate` (padrão `+30%`), e aplicada pelo `tts_service`. No provider `edge` vai para `edge_tts.Communicate(..., rate=...)`; no `azure`, para o `<prosody rate='...'>` do SSML. É o mesmo parâmetro nos dois casos, então trocar de provider não muda o ritmo da narração.
+Definida no `template.json`, no bloco `narration.rate` (padrão `+50%` desde 31/08/2026, era `+30%`), e aplicada pelo `tts_service`. No provider `edge` vai para `edge_tts.Communicate(..., rate=...)`; no `azure`, para o `<prosody rate='...'>` do SSML. É o mesmo parâmetro nos dois casos, então trocar de provider não muda o ritmo da narração.
 
 **Por que no template, e não só em env var.** Velocidade de fala é decisão de design do formato, igual à tipografia da legenda e ao timing da edição — que já moram no `template.json`. Um template de drama quer narração pausada; um de curiosidades quer ritmo acelerado. Com env var, trocar de formato exigiria redeploy do `tts_service` e o valor seria global para todos os templates ao mesmo tempo.
 
@@ -249,7 +322,7 @@ template.json (narration.rate)
 
 Decisão: o orchestrador **não lê o MinIO nem parseia `template.json`**. O `blender_worker` é dono dos templates, então serve o config por HTTP. Isso evita duplicar o parsing e o conhecimento de bucket/key em dois serviços. O endpoint expõe o `template.json` inteiro, não só `narration` — outros campos vão precisar do mesmo caminho.
 
-**Precedência:** `narration.rate` do template → `TTS_RATE` do `tts_service` → `+30%`. O env var deixa de ser a fonte primária e vira fallback: cobre templates sem o bloco `narration` (compatibilidade) e chamadas diretas ao `tts_service` fora do pipeline. Os dois são mantidos **no mesmo valor** — divergi-los faria o caminho de fallback narrar num ritmo diferente do resto do canal, e a diferença só apareceria no vídeo pronto.
+**Precedência:** `narration.rate` do template → `TTS_RATE` do `tts_service` → `+50%`. O env var deixa de ser a fonte primária e vira fallback: cobre templates sem o bloco `narration` (compatibilidade) e chamadas diretas ao `tts_service` fora do pipeline. Os dois são mantidos **no mesmo valor** — divergi-los faria o caminho de fallback narrar num ritmo diferente do resto do canal, e a diferença só apareceria no vídeo pronto.
 
 **Degradação.** Falha ao ler o config — template sem bloco, blender_worker fora do ar, JSON inválido — cai no `TTS_RATE` com warning, sem derrubar o run. Narração é estética; o render, não. Mesmo critério da remoção de silêncio (degrada) versus a transcrição (derruba).
 
@@ -261,8 +334,7 @@ Decisão: o orchestrador **não lê o MinIO nem parseia `template.json`**. O `bl
 
 **Ordem no pipeline.** O `rate` age na síntese, antes de tudo. Logo a remoção de silêncio e a transcrição já operam sobre o áudio acelerado, e o SRT sai com o timing certo sem nenhum ajuste — mesma razão pela qual a transcrição roda depois do corte de silêncio (ver "Legendas"). Nada no `blender_worker` muda: ele consome o par MP3+SRT como sempre.
 
-**Efeito na divisão em partes.** O limite é de fala, não de texto, e narração mais rápida encurta o áudio para o mesmo roteiro. O LLM decide o corte a partir do texto, sem conhecer o `rate`: `NARRATION_WPM` já embute o `+30%` do template publicado, então mudar `narration.rate` sem mexer nessa constante desloca o teto real de 30 minutos — as duas andam juntas (a subida de `+15%` para `+30%` levou a constante de 170 para 195). A deriva é irrelevante no uso normal — com o scout ingerindo até 6000 caracteres (~1000 palavras), nenhum roteiro chega perto das 5850 palavras do teto, e o `parts` de tamanho 1 é o resultado independentemente do rate.
-
+**Efeito no tamanho do roteiro.** A banda de 10–40s é de fala, não de texto, e narração mais rápida faz caber mais história no mesmo tempo. O LLM escreve o roteiro sem conhecer o `rate`: `NARRATION_WPM` é a ponte, e já embute o `+50%` do template publicado. ⚠️ **As duas andam juntas** — a subida de `+15%` para `+30%` levou a constante de 170 para 195, e a de `+30%` para `+50%` a levou para 225. Mexer no rate sem mexer na constante desloca a banda inteira: a 225 wpm declarados contra um template ainda em `+30%`, as 150 palavras do teto viram 46 segundos em vez de 40. Sem erro em lugar nenhum — só o vídeo saindo mais longo do que o formato diz.
 
 **Ferramenta de edição do template (fora deste caminho).** `blender_worker` também expõe
 `POST /timelines/validate` e `GET /timelines/schema` — validação de um template **VSEL**
@@ -272,6 +344,7 @@ verdade contra um `video_id` real pra devolver um frame ou um clipe curto de pre
 rotas de dev/operador, não parte de `POST /jobs` nem deste fluxo de `rate`: nenhum job real
 aponta pra esse formato ainda. Ver `blender_worker/CLAUDE.md` § "Fase 3, níveis 2/3" para a
 API completa.
+
 ---
 
 ## Voz da Narração
@@ -622,12 +695,28 @@ O `music_key` do `config.ini` apontava para `assets/music.mp3`, um arquivo de 35
 
 Trocado por uma faixa real (`assets/music/lofi-goularte.mp3`). Medido no render de validação: a trilha isolada dentro da mixagem dá **-29,7 LUFS** contra **-16,7 LUFS** da mixagem cheia — 13 LU abaixo, que é onde uma cama sonora se ouve sem disputar com a narração (o alvo da narração é -16 LUFS, ver "Normalização de loudness").
 
-O prefixo `assets/music/` já é o formato de biblioteca dos fundos, então acrescentar faixas é subir arquivo; o rodízio entre elas ainda não está ligado (com uma faixa só seria no-op).
+O prefixo `assets/music/` já era o formato de biblioteca dos fundos — acrescentar faixas é subir arquivo. O rodízio, quando ligou (01/09/2026), não foi por uso como o do fundo: foi **por mood** (ver abaixo).
 
 **A trilha real expôs dois problemas. O primeiro está resolvido:**
 
 - ~~**O fade começa cedo demais.**~~ **Resolvido.** O fade passou a ser contado a partir do fim (`music.fade_out_seconds`, 1,5s), e `timing.music_fade_out` não é mais lido. Ver "O vídeo não tem finalização" — inclusive a medição de quanto a trilha estava sendo perdida.
 - **Só o primeiro minuto da faixa é ouvido.** O strip começa sempre no 0:00 do arquivo, então uma mix de 34 minutos rende sempre o mesmo trecho, e os 32 MB são baixados a cada render. Alternativas: cortar um trecho curto, ou dar um deslocamento determinístico de entrada por vídeo (`frame_offset_start`), no mesmo espírito do rodízio de fundos.
+
+### A trilha combina com o mood da história (01/09/2026)
+
+Até aqui `music_key` era um único valor fixo no `config.ini` — toda história, feliz ou trágica, saía com a mesma cama sonora. Quem decide se o clima combina é quem assiste, então a decisão precisa de um sinal por vídeo, não uma constante do config.
+
+**De onde vem o mood.** O `llm_service` ganhou um campo de topo em `RefineResponse` (mudança de interface entre serviços): `mood`, valores `"sad" | "tense" | "hopeful" | "neutral"`. É campo de topo, fora de `classification`, pelo mesmo motivo do `narrator_gender`: mecanismo consumido diretamente pelo orchestrador, não uma leitura de audiência. `normalize_mood` — mesmo padrão de `normalize_narrator_gender` — aceita qualquer entrada e cai em `"neutral"` para o que não bate com o contrato; um modelo antigo que não devolve o campo também cai em `"neutral"`, que é a trilha que todo vídeo já usava.
+
+**Não é `classification.tone`.** O `tone` (`suspenseful`/`funny`/`emotional`/`educational`/`inspirational`/`shocking`) informa hashtag e edição, e mistura registros que não mapeiam para música — `emotional` tanto cobre luto quanto reconciliação, e as duas pedem trilhas opostas. `mood` responde só "que cama sonora combina com isto", numa escala pensada para música, não para conteúdo.
+
+**Onde a escolha acontece.** `orchestrator/src/orchestrator/music.py` — `pick_music(keys, run_id)`, determinístico por `sha256(run_id)` (mesmo motivo do `pick_background`: um run re-renderizado depois de restart tem que voltar com a mesma trilha). Sem contagem de uso: ao contrário do fundo, a biblioteca por mood tende a ter poucas faixas, e a mesma música repetindo em vídeos consecutivos não é o defeito visível que o mesmo clipe de fundo é — não vale o custo de uma tabela de uso para isso.
+
+`worker._pick_music` roda uma vez por run, entre o card da intro e o processamento das partes — mesmo lugar do `card_key`, porque o mood é do run, não da parte, e todas as partes de uma série têm que sair com a mesma trilha. Lista `{prefix}{mood}/` (`config.ini [music] prefix`) e cai em `[music] default_key` (a faixa neutra de sempre) quando a pasta está vazia. `PipelineRun.mood` e `PipelineRun.music_key` (migration `008`) guardam o resultado; `_run_render` manda `run.music_key` no lugar do `settings.CONFIG.template.music_key` fixo.
+
+**Pasta de mood vazia não é degradação — é o estado inicial da biblioteca.** Hoje só existe a faixa neutra (`assets/music/lofi-goularte.mp3`); `sad`, `tense` e `hopeful` ainda não têm arquivo. Por isso `_pick_music` não avisa quando a pasta de um mood está vazia: é o esperado até alguém subir faixas lá, e um aviso que dispara em todo run até isso acontecer é um alarme que ninguém lê. A **oitava** degradação silenciosa de verdade é outra: a listagem do bucket falhar (bucket fora do ar) — aí sim cai no `default_key` com `log.warning` e `notify()`, porque isso é sintoma de infraestrutura quebrada, não de biblioteca incompleta.
+
+**Aditivo de propósito.** Nada no bucket foi movido — `lofi-goularte.mp3` continua fora de qualquer subpasta de mood, referenciado só por `default_key`. Preencher a biblioteca é subir `assets/music/sad/<arquivo>.mp3` (e os outros moods) sem tocar em código nem reorganizar o que já está publicado; o R2 é compartilhado entre ambientes, e mover o que já está lá afetaria todos de uma vez sem necessidade.
 
 ---
 
@@ -648,6 +737,107 @@ Até aqui `BLENDER_TEMPLATE_ID` era uma env var única, lida em dois lugares (`_
 ⚠️ Requer a migration `009` aplicada — sem a coluna, `create_pipeline` falha com `UndefinedColumn` na primeira leitura de `run.template_id`. Mesmo padrão das migrations anteriores: o `CMD` do Dockerfile roda `alembic upgrade head` no boot.
 
 - Testes: `tests/test_template_selection.py` — campo aceito e omitido no schema, fallback pro default quando `None`, o mesmo `template_id` chegando ao `POST /jobs` e ao `GET /templates/{id}/config` (`_narration_rate`), e exposição em `PipelineResponse`.
+
+---
+
+## Contas de publicação — Fase 1 do multi-account (06/09/2026)
+
+Implementa a Fase 1 de `docs/multi_account.md`: a conta vira dado, não mais env var
+hardcoded. **Sem** split de `stories`/`renders`/`publications` (Fase 2) e **sem** o scout
+escolher conta sozinho — decisão deliberada deste ciclo, revisitável quando fizer sentido
+operar mais de uma conta em produção simultaneamente (ver "Decisões em Aberto").
+
+**Onde cada coisa mora, e por quê.** O orchestrador nunca fala com o Buffer — sempre foi
+assim, mesmo com uma conta só — então ele não é o lugar certo para guardar token. A tabela
+`accounts` (orchestrador) guarda só identidade e overrides de produção (`slug`, `status`,
+`template_id`); a tabela `account_credentials` (banco novo, próprio do `tiktok_poster`)
+guarda o que é sensível: token do Buffer cifrado com Fernet, org id, canais de TikTok e
+YouTube. As duas são ligadas pelo mesmo `id` (UUID), sem FK entre bancos — são serviços
+diferentes, e a integridade é responsabilidade da aplicação, mesma escolha pragmática já
+usada em outras colunas do projeto.
+
+**Mudança de interface:** `POST /pipeline` (`PipelineCreate`) ganha `account_id: uuid.UUID |
+None = None`, exposto em `PipelineResponse`. Omitido, o run se comporta exatamente como
+antes — publica na conta default (as env vars de sempre do `tiktok_poster`). O orchestrador
+repassa `account_id` (como string) ao `tiktok_poster` via `TikTokClient.schedule(...)`, no
+mesmo payload de `POST /schedule`, omitido quando `None` — mesmo padrão de omissão já usado
+em `youtube_title`/`follows_at`.
+
+**Resolução de credenciais é só do `tiktok_poster`.** `_resolve_account` (`api/routes/
+schedule.py`) busca `account_credentials` por `account_id`; achando, decifra o token e monta
+um `BufferClient(access_token=..., org_id=..., channel_id=...)` — para o TikTok e, se a conta
+tiver canal, para o YouTube também. **`account_id` desconhecido ou inválido nunca derruba a
+publicação**: cai na conta default com um aviso (`log.warning`), porque o vídeo já está
+renderizado e perdê-lo por um erro de operador custaria mais caro que publicar no lugar
+"errado" (a conta de sempre). `BufferClient.__init__` ganhou `access_token`/`org_id`
+opcionais para isso — omitidos, o comportamento é idêntico ao de antes desta mudança.
+
+**`GET /health` é a exceção à regra de nunca falhar.** Diferente do `/schedule`, aqui não há
+vídeo em jogo — é um diagnóstico. `account_id` pedido e não encontrado devolve `404`, não a
+saúde silenciosa da conta default: misturar as duas enganaria justamente quem está
+depurando aquela conta.
+
+**Cadastro de credenciais é um endpoint, não configuração.** `POST /accounts` no
+`tiktok_poster` (upsert por `account_id`) cifra o token na hora e nunca o devolve em nenhuma
+resposta, nem cifrado — `GET /accounts` só expõe `slug`, canais e datas. Existe porque
+centenas — ou mesmo duas — contas não cabem em `.env`, e trocar uma credencial não pode
+exigir reiniciar o serviço.
+
+⚠️ **Requer a migration `010` do orchestrador e a `001` do `tiktok_poster`** (banco novo
+deste serviço) **aplicadas.** Mesmo padrão de sempre: o `CMD` dos dois Dockerfiles roda
+`alembic upgrade head` no boot — o `tiktok_poster` não tinha banco antes desta mudança, e
+passou a rodar migration no boot pela primeira vez.
+
+- Testes: `orchestrator/tests/test_accounts.py` (CRUD de `/accounts`, `account_id`
+  persistindo e chegando ao payload do poster, omissão preservando o comportamento antigo) e
+  `tiktok_poster/tests/test_account_credentials.py` (cifra/decifra, upsert, o token nunca
+  aparecendo em nenhuma resposta, `/schedule` usando a conta certa, conta desconhecida caindo
+  no default, `/health` por conta).
+
+---
+
+## Rampa de publicação — aquecimento de conta (06/09/2026)
+
+Implementa a Parte 1 (software) de `docs/aquecimento.md`: canal novo ou parado publica menos
+no início, em degraus crescentes, em vez do ritmo cheio desde o primeiro dia — o padrão que
+queima conta. A Parte 2 (rotina manual: perfil completo, uso real do app, sem automação de
+engajamento — que continua fora de escopo por violar ToS e ser o próprio sinal que derruba
+conta) é trabalho humano e não pede código; está descrita no doc.
+
+**Regra de negócio: a rampa é do canal, não da conta.** TikTok e YouTube da mesma conta
+podem estar em fases diferentes — um canal parado religando não pode herdar o ritmo cheio
+do outro canal da mesma conta que nunca parou.
+
+**Onde cada data mora.** Conta extra (Fase 1 do multi-account): `account_credentials`
+ganha `tiktok_warmup_started_on`/`youtube_warmup_started_on` (migration `003` do
+`tiktok_poster`), cadastradas pelo mesmo `POST /accounts`. Conta default (env vars, sem
+`account_id`): `config.ini [warmup]` — ela nunca ganhou linha em `account_credentials` na
+Fase 1, e este trabalho não muda isso. Os degraus (`steps`, ex. `"1x7,2x7,3"`) são
+compartilhados entre contas e canais — é política de produto, não dado por conta.
+
+**Decisões dos itens que `docs/aquecimento.md` deixava em aberto:**
+
+| Decisão | Escolha |
+|---|---|
+| Unidade do teto | **história**, não post — uma continuação de série nunca é limitada pela rampa, mesma exceção que `continuation_slot` já faz para `preferred_times`/`posts_per_day` |
+| Horário sob teto reduzido | **roda por dia** (rotação por `check_day.toordinal()`), não fixa sempre no primeiro horário — a mesma classe de assinatura de conta automatizada que a rotação de hashtags já corrigiu em 28/08 |
+| Degraus | `1x7,2x7,3` — o palpite do doc, como default configurável, sem medição por trás |
+| Divergência de ritmo entre TikTok e YouTube da mesma conta | **é o caso normal agora**, não exceção — o YouTube tem teto próprio, contado contra a fila própria dele |
+| Aviso de canal trocado sem data de rampa | **implementado só para contas extras** (o upsert de `POST /accounts` já tem o valor antigo e o novo à mão); para a conta default exigiria persistir "qual canal era antes" em estado novo, e fica adiada |
+
+**Implementação em `tiktok_poster/buffer/scheduler.py`** — detalhes técnicos em
+`tiktok_poster/CLAUDE.md` → "Rampa de publicação". Resumo: `next_available_slot` passou a
+aceitar `posts_per_day` como `int` **ou** `Callable[[date], int]`, retrocompatível com todo
+chamador existente; o YouTube conta seu próprio teto do dia via o `BufferClient` que
+`_schedule_youtube` já constrói, e pula (não falha) quando estourado.
+
+⚠️ Requer a migration `003` do `tiktok_poster` aplicada.
+
+- Testes: `tiktok_poster/tests/test_scheduler.py` (funções puras da rampa e o `Callable` em
+  `next_available_slot`, com a retrocompatibilidade do `int` coberta) e
+  `tiktok_poster/tests/test_account_credentials.py` (datas por conta, upsert não apagando
+  campo omitido, `null` explícito apagando de propósito, e o YouTube pulando — ou não, numa
+  continuação — pelo teto do próprio canal).
 
 ---
 
@@ -735,10 +925,12 @@ Card e gancho são **independentes e degradáveis**: cada etapa vira `warning` e
 - Ritmo: 3 posts por dia, em `preferred_times`.
 - Séries: partes encadeadas com `series_gap_minutes` a partir da parte 1 — ver "Agendamento de séries".
 - O `tiktok_poster` é responsável por:
-  - Escolher hashtags finais (com base na classificação + performance histórica)
-  - Postar no horário agendado via TikTok API
-  - Coletar métricas (views, likes, shares, watch time) após publicação
-  - Armazenar métricas no próprio DB para informar decisões futuras de hashtag e horário
+  - Escolher hashtags finais (com base na classificação; hoje sem retroalimentação de
+    performance — ver "Análise de variantes e teste A/B" abaixo para o que existe disso)
+  - Postar no horário agendado via Buffer (TikTok e, se ligado, YouTube)
+  - Guardar, por publicação, qual hashtag, horário, template e voz foram usados
+  - Puxar métricas (views, likes, shares, ...) do Buffer um dia depois de cada post e
+    expor uma comparação descritiva entre variantes — ver "Análise de variantes e teste A/B"
 - O orchestrador delega completamente — só recebe confirmação de `scheduled` e `posted`.
 
 ### Janela de publicação: 11h–20h de Brasília
@@ -753,13 +945,62 @@ Card e gancho são **independentes e degradáveis**: cada etapa vira `warning` e
 
 **O fuso é a armadilha.** Os horários anteriores (`00:00,12:00,20:00` UTC) eram 21:00, 09:00 e 17:00 em Brasília — dois deles fora de qualquer janela pretendida, um deles quase na virada do dia. Ninguém notou porque **não existe erro**: o run passa por todas as etapas, o Buffer aceita o post e o vídeo publica normalmente. A única evidência é o horário em que ele aparece.
 
-**Por que o último slot é 19:00 e não 20:00.** Uma continuação não disputa `preferred_times` (ver "Agendamento de séries"): ela pendura `series_gap_minutes` depois da parte anterior. Um último slot em 20:00 BRT jogaria a parte 2 para 20:30, fora da janela. A folga de uma hora no fim é o que estende a garantia da janela da parte 1 para a história inteira — cabem duas continuações antes de encostar nas 20h, e com o corte só acontecendo acima de 30 minutos de fala uma história de três partes é caso extremo.
+**Por que o último slot é 19:00 e não 20:00.** Uma continuação não disputa `preferred_times` (ver "Agendamento de séries"): ela pendura `series_gap_minutes` depois da parte anterior. Um último slot em 20:00 BRT jogaria a parte 2 para 20:30, fora da janela. A folga de uma hora no fim é o que estende a garantia da janela da parte 1 para a história inteira — cabem duas continuações antes de encostar nas 20h, e desde 31/08/2026 não há divisão nenhuma, então na prática o slot das 19:00 é o último de um dia de três posts independentes.
 
 Deliberadamente **não há guarda de janela dentro de `continuation_slot`**. As duas saídas possíveis seriam piores que o problema: manter o horário fora da janela não guarda nada, e empurrar para a janela do dia seguinte parte a história ao meio — exatamente o comportamento que o encadeamento foi criado para eliminar. A janela é garantida onde ela é escolhida, que é a configuração.
 
 **A garantia é um teste, não um comentário.** `tiktok_poster/tests/test_posting_window.py` lê o `config.ini` publicado e falha se algum slot cair fora de 11h–20h BRT, se houver menos horários que `posts_per_day` (cota diária inalcançável), se dois horários forem iguais, ou se o último slot mais `series_gap_minutes` passar das 20h. É o único jeito de um erro sem sintoma virar um erro visível.
 
 ---
+
+## Análise de variantes e teste A/B (06/09/2026)
+
+Até aqui o `tiktok_poster` era stateless: agendava no Buffer e esquecia. Não existia registro
+de qual hashtag, horário, template de edição ou voz de narração cada vídeo usou, e nenhuma
+coleta de métricas de performance. Pedido: comparar o desempenho dessas variantes dentro da
+conta atual — não envolve múltiplas contas, que é a Fase 1 do multi-account acima e continua
+sendo uma dimensão separada (comparar entre contas fica para quando houver mais de uma em
+produção real).
+
+**Fonte de métricas: a API do Buffer, não a do TikTok/YouTube direto.** O Buffer expõe
+`post(input:{id}).metrics` e `aggregatedPostMetrics` via GraphQL — tipos `views, likes,
+shares, comments, reach, impressions, saves, totalTimeWatched, reactions, reposts, follows,
+quotes, viewers`. Três restrições documentadas pelo próprio Buffer moldam o design:
+
+- **Só para uso pessoal, com a própria API key.** Serve porque o token já é nosso (mesma
+  conta que agenda), mas não escalaria para consultar métricas de contas de terceiros.
+- **~24h de atraso.** Uma publicação só tem métrica depois de um dia; o sync não tenta puxar
+  nada mais novo que isso, e a ausência de métrica não é tratada como zero.
+- **Métrica ausente ≠ zero.** Se o Buffer ainda não calculou uma métrica para um post, ela
+  simplesmente não aparece — a agregação exclui a publicação daquele grupo, em vez de contar
+  como 0 e distorcer a média para baixo.
+
+**Por que atravessa três serviços.** A voz e o template usados numa parte só são conhecidos
+rio acima — o `tts_service` resolve a voz a partir do gênero do narrador, e o orchestrador
+resolve o template a partir do override do run ou do default. Nenhum dos dois chegava ao
+`tiktok_poster`, que é quem sabe qual post foi de fato publicado onde.
+
+- `tts_service`: `POST /generate` passou a devolver `voice` (a voz resolvida) na resposta —
+  campo novo, sem mudar nenhum comportamento existente. Ver `tts_service/CLAUDE.md`.
+- `orchestrator`: guarda `PipelineRun.tts_voice` (a partir da primeira resposta do TTS do run)
+  e manda `template_id`/`tts_voice` no `POST /schedule` do poster — os dois lidos com `.get()`
+  em vez de acesso direto, mesmo contrato defensivo de `youtube_title`/`narrator_gender`: um
+  serviço mais velho do outro lado não pode derrubar o run por um campo cosmético. Ver
+  `orchestrator/CLAUDE.md` → "Voz resolvida (`tts_voice`)".
+- `tiktok_poster`: `ScheduleRequest` ganha `template_id`/`tts_voice` opcionais, e uma
+  publicação bem-sucedida grava uma linha própria com essas duas variantes mais a hashtag e o
+  horário — ver `tiktok_poster/CLAUDE.md` para o schema exato (`publications`/`post_metrics`).
+
+**Comparação é descritiva, não teste de significância.** `GET /analytics/variants` agrupa por
+variante e devolve tamanho da amostra, média, min, max e soma da métrica escolhida — sem
+p-value nem intervalo de confiança. Com o volume atual (3 posts/dia na conta), qualquer
+significância calculada daria uma falsa sensação de rigor; uma média simples por grupo já é
+suficiente para enxergar tendência, e é o que o `docs/product.md` também descreve.
+
+**Sincronização é puxada por cron externo, não por loop interno.** `POST /metrics/sync`
+existe para ser chamado 1x/dia (o Buffer só atualiza métricas nesse ritmo) — por um cron no
+servidor, mesmo padrão do cron de disco já pendente em `docs/deploy.md`, não por um `asyncio`
+loop dentro do processo. O serviço continua sem estado de longa duração além do banco.
 
 ## Publicação no YouTube
 
@@ -793,7 +1034,7 @@ Então `youtube_title` é campo de topo do `RefineResponse`, com prompt próprio
 
 `#tiktokbrasil` e `#fyp` eram inúteis lá: hashtag no YouTube é busca, não distribuição. Daí `[hashtags] youtube_mandatory` existir separado de `mandatory`. (As duas do TikTok saíram de cena em 28/08/2026 — ver abaixo —, mas a separação continua valendo: são eixos diferentes, não a mesma lista.)
 
-**`#shorts` ficou de fora de propósito.** A política de divisão permite até 30 minutos de fala num vídeo, e Short é só até 3 — a maioria das histórias não é Short. Marcar como Short um vídeo que não é engana quem clica sem mudar a distribuição. Se um dia o formato encurtar, a tag entra por config, sem código.
+**`#shorts` ficou de fora quando o formato era longo** — até 30 minutos de fala, contra os 3 do teto de Short —, e marcar como Short um vídeo que não é engana quem clica sem mudar a distribuição. ⚠️ **Essa razão caducou em 31/08/2026**: com todo vídeo em 10–40s, todos são Shorts de fato. A tag entra por `[hashtags] youtube_mandatory` no `config.ini`, sem código — está pendente de decisão, não de implementação.
 
 ### A cauda da legenda não pode ser a mesma post após post (28/08/2026)
 
@@ -1092,11 +1333,22 @@ Zero é um julgamento — "não há com quem se indignar". Nulo é o modelo não
 
 `seen_items.outrage_score` (indexada) e `seen_items.has_villain` ficam cruas ao lado de `story_score`, exatamente para que o peso entre os dois eixos possa ser re-derivado depois contra o que já foi publicado, em vez de discutido.
 
-#### O CTA da legenda passou a pedir o veredito
+#### O CTA da legenda passou a pedir o veredito — depois substituído (ver abaixo)
 
-A seleção coloca uma história com vilão na frente; a legenda é quem transforma isso em comentário. O prompt do `/refine` agora manda o `cta_per_part` pedir o **veredito do espectador sobre o vilão** ("ela tava errada de perdoar?") quando há um, em vez do convite genérico. Tomar partido é o que faz alguém parar para escrever — é o mesmo sinal pelo qual a história foi escolhida, agora explicitado onde ele é respondido.
+Até 31/08/2026 o `cta_per_part` ia para a legenda, e o prompt do `/refine` mandava a pergunta pedir o **veredito do espectador sobre o vilão** ("ela tava errada de perdoar?") quando havia um. A regra proibia xingamento e proibia mandar odiar alguém: a pergunta era o convite, a raiva era de quem respondia.
 
-A regra proíbe xingamento e proíbe mandar odiar alguém: a pergunta é o convite, a raiva é de quem responde. História sem vilão continua levando CTA normal, sobre o que se faria no lugar de quem viveu aquilo.
+Esse mecanismo saiu da legenda em 31/08/2026, junto com o resto de `cta_per_part` (ver acima) — desde então a legenda não leva pergunta vinda do texto narrado. A ideia de "fechar o ciclo pedindo posição" continua, mas por outro campo: ver "CTA de votação binária na legenda", logo abaixo.
+
+#### CTA de votação binária na legenda (02/09/2026)
+
+A seleção já coloca uma história com vilão claro na frente (`outrage_weight`, acima); esta é a frente que tenta transformar isso em comentário de fato, sem tocar na REGRA DO FECHAMENTO (`llm_service/CLAUDE.md`) — a pergunta que fecha a *narração* continua nunca indo para a legenda.
+
+`classification.binary_cta` (`llm_service/src/llm_service/schemas/refine.py`) é um campo **novo e independente** de `cta_per_part`: o prompt pede uma pergunta de **escolha entre duas opções** — "quem errou mais: o marido ou a sogra?", "comenta 1 se perdoaria, 2 se terminava na hora" — sobre o **dilema** da história, nunca sobre o desfecho. Escolher entre duas coisas custa menos atrito do que formular uma opinião do zero, e é isso que deveria aumentar o volume de comentário; não há medição ainda (ver `docs/comentarios.md`).
+
+- Teto de `MAX_BINARY_CTA_CHARS` (100 caracteres), truncado sem partir palavra — o mesmo padrão de `truncate_title`. Existe porque o campo abre a legenda, e só os primeiros ~50–80 caracteres do TikTok aparecem antes do "...mais"
+- Vazio (`""`) é resultado normal: história sem dois lados claros para dividir opinião não força uma pergunta artificial. Nesse caso a legenda segue como antes do campo existir — só hashtags e, em série, o rótulo de parte
+- `tiktok_poster/hashtags/selector.py` → `compose_caption(cta, hashtags, part_number, total_parts, binary_cta="")` — `binary_cta`, quando presente, abre a legenda, antes do rótulo de parte e das hashtags. `cta` continua sem entrar no texto: é outro campo, com outra regra
+- O dict `classification` trafega opaco do `llm_service` até o `tiktok_poster`, passando pelo orchestrador sem ser remapeado campo a campo (`orchestrator/src/orchestrator/clients/llm.py`, `clients/tiktok.py`) — por isso o campo não exigiu nenhuma mudança no orchestrador nem migração de banco. Um orchestrador antigo, que nunca viu este campo, simplesmente não o repassa, e `body.classification.get("binary_cta", "")` cai no vazio de sempre
 
 ### Filtros
 
@@ -1119,13 +1371,20 @@ O piso não tem esse problema e por isso ficou onde estava: abaixo de `min_chars
 
 Consequência: o candidato longo é buscado, deduplicado, **pontuado** e gravado em `seen_items` com `story_score`/`story_tag` preenchidos, `status=filtered` e `skip_reason=too_long:{n}`. Ele nunca vira vídeo, mas a trilha de auditoria passa a responder *o que* foi deixado passar — que é o dado necessário para decidir se `max_chars` está no lugar certo. Sem isso, mover o teto seria chute: as linhas rejeitadas não diziam nada sobre a qualidade do que se estava recusando.
 
-**O teto continua sendo o gate de produção.** Subi-lo é o que transforma essas linhas em vídeo, e o refino já sabe lidar com o resultado: o padrão é uma parte só, e acima de `MAX_PART_WORDS` (5850, ~30 min de fala) ele divide em partes com cliffhanger. Não há nada abaixo do scout que quebre com roteiro longo — `raw_script` e `script` são `Text` sem limite.
+**O teto continua sendo o gate de produção.** Subi-lo é o que transforma essas linhas em vídeo, e o refino sabe lidar com o resultado. Não há nada abaixo do scout que quebre com roteiro longo — `raw_script` e `script` são `Text` sem limite.
 
-**E foi subido: 6000 → 30000.** Com a medição acima dizendo que o teto antigo recusava o melhor material, mantê-lo em 6000 seria conhecer o erro e não corrigi-lo. O valor novo é **derivado, não escolhido**: é o maior post cru que o refino ainda entrega como *um* vídeo. `MAX_PART_WORDS` são 5850 palavras; o pt-BR mede **5,54 caracteres por palavra** sobre os 30 posts de `content_scout/docs/story_quality_baseline.json`; logo uma parte comporta ~32400 chars. O corte em 30000 deixa ~7% de folga para o refino expandir o texto ao reescrever — ele reconta a história, não a copia, então encostar em 32400 arriscaria uma divisão acidental.
+**E foi subido: 6000 → 30000.** Com a medição acima dizendo que o teto antigo recusava o melhor material, mantê-lo em 6000 seria conhecer o erro e não corrigi-lo. O valor novo era **derivado, não escolhido** *(a conta de então — ver o aviso abaixo, ela não vale mais)*: era o maior post cru que o refino ainda entrega como *um* vídeo. `MAX_PART_WORDS` são 5850 palavras; o pt-BR mede **5,54 caracteres por palavra** sobre os 30 posts de `content_scout/docs/story_quality_baseline.json`; logo uma parte comporta ~32400 chars. O corte em 30000 deixa ~7% de folga para o refino expandir o texto ao reescrever — ele reconta a história, não a copia, então encostar em 32400 arriscaria uma divisão acidental.
 
-Por que essa é a única linha não arbitrária disponível: acima dela a história **não é recusada pelo pipeline**, ela vira série com cliffhanger, que é formato suportado e já em produção. Então o teto deixou de ser um palpite sobre custo de render e passou a marcar uma fronteira de formato — onde um post deixa de ser um vídeo. Em unidades de narração: 6000 chars eram ~1080 palavras, ~5,5 min a 195 wpm; 30000 são ~5415 palavras, ~27,8 min.
+Por que essa era a única linha não arbitrária disponível: acima dela a história **não era recusada pelo pipeline**, ela virava série com cliffhanger. O teto deixou de ser um palpite sobre custo de render e passou a marcar uma fronteira de formato — onde um post deixava de ser um vídeo.
 
-⚠️ **O teto anda junto com `narration.rate`.** `MAX_PART_WORDS` é `MAX_PART_MINUTES × NARRATION_WPM`, e o wpm é o da voz neural acelerada pelo rate do template. Baixar o rate encolhe `MAX_PART_WORDS`, e 30000 chars passariam a estourar uma parte. Mexer num exige refazer esta conta.
+⚠️ **Esta derivação caducou em 31/08/2026, e o valor sobreviveu por outro motivo.** Com o
+formato curto não existe mais `MAX_PART_WORDS`, não existe divisão e nenhum tamanho de post
+cru "estoura uma parte": o refino condensa qualquer entrada nas mesmas 150 palavras. O teto
+deixou de marcar fronteira de formato e passou a ser o que sempre foi por baixo — **um limite
+de custo e de qualidade de entrada**: o post cru é o prompt do refino, e um texto de 30000
+chars já é uma chamada cara. 30000 fica onde está porque a medição acima mostrou que ele não
+recusa o bom material; a conta que o derivava não vale mais, e subi-lo agora **não tem
+consequência nenhuma de formato** — só de token.
 
 O contador `too_long` no `ScoutReport` é o recorte dessa rejeição dentro de `filtered`, que continua sendo o total.
 
@@ -1395,3 +1654,4 @@ barata que ainda é distinta — e esse número ainda não foi medido.
 - **Dashboard**: servido pelo orchestrador (FastAPI + Jinja2) ou container Next.js separado → MVP usa Jinja2, pode migrar depois.
 - **Retry automático**: se TTS ou render falhar, o orchestrador retenta automaticamente ou só marca como `failed`? → MVP marca como failed. O caso de fila cheia do Buffer é diferente (falha temporária, não erro) e já tem solução desenhada em "Fila de espera quando o Buffer está cheio", no Backlog de Features.
 - **Escolha automática de template pelo `content_scout`**: hoje o disparo automático nunca varia de template (ver "Escolher o template por vídeo, não só pela conta inteira"). Split fixo por slot, sorteio com peso, ou continuar manual-only — critério não definido, e não vale decidir sem primeiro ver o formato novo rodando manualmente.
+- **O `content_scout` escolher conta sozinho** (Fase 1 do multi-account, ver "Contas de publicação"): hoje toda descoberta automática publica na conta default, e a conta extra só recebe run por disparo manual com `account_id`. Round-robin com backpressure por conta é o próximo passo natural, mas foi adiado por decisão deste ciclo — mesmo raciocínio da escolha automática de template, acima: não vale desenhar a distribuição antes de ter mais de uma conta rodando de verdade em produção.

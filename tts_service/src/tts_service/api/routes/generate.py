@@ -88,4 +88,4 @@ async def generate(body: GenerateRequest) -> GenerateResponse:
         log.error("transcription failed", error=str(exc))
         raise HTTPException(status_code=502, detail=f"Transcription error: {exc}")
 
-    return GenerateResponse(audio_key=audio_key, srt_key=srt_key)
+    return GenerateResponse(audio_key=audio_key, srt_key=srt_key, voice=voice)

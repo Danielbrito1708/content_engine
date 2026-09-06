@@ -2,6 +2,7 @@ import os
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete
 
 os.environ.setdefault("ROOT_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BUFFER_ACCESS_TOKEN", "test-token")
@@ -9,14 +10,52 @@ os.environ.setdefault("BUFFER_PROFILE_ID", "test-profile-id")
 os.environ.setdefault("MINIO_ENDPOINT", "http://localhost:9000")
 os.environ.setdefault("MINIO_ACCESS_KEY", "minioadmin")
 os.environ.setdefault("MINIO_SECRET_KEY", "minioadmin")
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5433/tiktok_poster_test")
+os.environ.setdefault("ACCOUNT_CREDENTIALS_KEY", "PPDtovE96TaJj6iQL-C_gT2Eu4IQO8tNMQtOW_pgnyU=")
 
 from src.tiktok_poster.api.app import app  # noqa: E402
+from src.tiktok_poster.db.engine import AsyncSessionLocal  # noqa: E402
+from src.tiktok_poster.db.models import PostMetric, Publication  # noqa: E402
 
 
 @pytest_asyncio.fixture
 async def client():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
+
+
+@pytest_asyncio.fixture
+async def session():
+    async with AsyncSessionLocal() as s:
+        yield s
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean_db():
+    """Apaga `publications`/`post_metrics` entre testes.
+
+    Necessário desde que `POST /schedule` passou a gravar uma `Publication` no
+    caminho de sucesso: várias respostas mockadas do Buffer neste arquivo (e em
+    `test_youtube.py`) reusam o mesmo `buffer_post_id` ("buf_update_001") em
+    testes diferentes, e a coluna é `unique` — sem limpar entre testes, o
+    segundo teste que agenda com sucesso bateria de frente com a linha que o
+    primeiro deixou para trás. Mesmo padrão do `clean_db` do orchestrator.
+
+    **A limpeza é best-effort.** Autouse vale para a suíte inteira, incluindo
+    `test_hashtags.py`/`test_scheduler.py`/`test_posting_window.py`, que
+    testam função pura e nunca tocam `Publication`/`PostMetric` — sem o
+    `try/except`, um Postgres fora do ar derrubava esses testes no teardown
+    mesmo eles nunca tendo escrito nada. Quando o banco está de pé, a limpeza
+    acontece normalmente; sem ele, não há nada para limpar mesmo.
+    """
+    yield
+    try:
+        async with AsyncSessionLocal() as s:
+            await s.execute(delete(PostMetric))
+            await s.execute(delete(Publication))
+            await s.commit()
+    except Exception:  # noqa: BLE001 — teardown de teste puro não pode falhar por isto
+        pass
 
 
 SAMPLE_CLASSIFICATION = {

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from src.core.notify import notify, sender_loop
-from src.orchestrator.api.routes import health, pipeline
+from src.orchestrator.api.routes import accounts, health, pipeline
 from src.orchestrator.background_inbox import background_inbox_loop
 from src.orchestrator.worker import maintenance_loop, recover_interrupted_runs
 
@@ -48,3 +48,4 @@ app = FastAPI(title="orchestrator", version="0.1.0", lifespan=lifespan)
 
 app.include_router(health.router)
 app.include_router(pipeline.router)
+app.include_router(accounts.router)

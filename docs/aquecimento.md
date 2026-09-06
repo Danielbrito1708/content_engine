@@ -1,7 +1,10 @@
 # Aquecimento de conta — proposta
 
-**Status: proposta. Nada aqui está implementado.** O documento existe para que a decisão
-seja tomada com as tensões na mesa, no mesmo espírito do `multi_account.md`.
+**Status: Parte 1 (a rampa de publicação, software) implementada em 06/09/2026** — ver
+`docs/vision.md` → "Rampa de publicação — aquecimento de conta" e
+`tiktok_poster/CLAUDE.md`. A Parte 2 (a rotina manual, abaixo) continua sendo trabalho
+humano por decisão de projeto e não muda com este documento. Este arquivo permanece como
+registro das tensões e decisões — as marcadas ✅ abaixo foram resolvidas na implementação.
 
 Data: 29/08/2026. Escrito contra o estado do repo nessa data — uma conta do Buffer
 (`vozes.do.reddit7`), TikTok publicando 3×/dia, YouTube `enabled = false` desde 27/08.
@@ -68,8 +71,16 @@ trocar a forma dá uma rampa que só acerta o primeiro dia da varredura.
 
 ### Onde o estado mora: no config, não em banco
 
-O `tiktok_poster` não tem banco hoje, e o `multi_account.md` só propõe um para credenciais.
-Criar um para guardar "dia N do aquecimento" é desproporcional — e o dado é derivável:
+⚠️ **Premissa desatualizada desde a Fase 1 do multi-account (06/09/2026): o `tiktok_poster`
+ganhou banco próprio** (`account_credentials`, para as credenciais cifradas). Isso muda a
+conclusão só para contas extras — elas guardam a data de início da rampa como coluna em
+`account_credentials`, junto da credencial, em vez de config. A conta default (env vars, sem
+linha em `account_credentials`) continua exatamente como este trecho descreve: o raciocínio
+abaixo vale para ela sem alteração.
+
+O `tiktok_poster` não tinha banco quando isto foi escrito, e o `multi_account.md` só
+propunha um para credenciais. Criar um só para guardar "dia N do aquecimento" seria
+desproporcional — e o dado é derivável:
 
 ```ini
 [warmup]
@@ -162,11 +173,11 @@ ser uso real e passou a ser o que a Parte "o que este documento não cobre" recu
 | Decisão | Opções |
 |---|---|
 | ~~Rampa vale para quais destinos~~ | ✅ **todo canal novo**, em qualquer plataforma (29/08) |
-| Unidade do teto | história (continuação livre) / post (continuação conta) |
-| Degraus | `1x7,2x7,3` proposto, sem medição por trás |
-| Horário sob teto reduzido | rodar por dia (recomendado) / fixo no primeiro |
+| ~~Unidade do teto~~ | ✅ **história** — continuação livre (06/09) |
+| ~~Degraus~~ | ✅ `1x7,2x7,3`, como default configurável, sem medição por trás (06/09) |
+| ~~Horário sob teto reduzido~~ | ✅ **roda por dia** (06/09) |
 | ~~Divergência de ritmo entre destinos~~ | ✅ resolvida por consequência: é o caso normal |
-| Aviso quando o `channel_id` muda sem data de rampa | fazer / confiar na lembrança |
+| Aviso quando o `channel_id` muda sem data de rampa | ✅ **feito para contas extras** (upsert de `POST /accounts` já tem o antes/depois); **adiado para a conta default** — exigiria persistir "qual canal era antes" em estado novo (06/09) |
 
 ---
 

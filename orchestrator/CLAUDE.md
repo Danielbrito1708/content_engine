@@ -13,11 +13,12 @@ Coordenador central do pipeline de geração de conteúdo. Recebe roteiros, orqu
 - `db/engine.py` — engine async + `AsyncSessionLocal` + `get_session()` dependency
 - `schemas/pipeline.py` — `PipelineCreate`, `PipelineResponse`, `PartResponse`
 - `clients/llm.py` — `LLMClient.refine(script, metadata) → RefineResult`
-- `clients/tts.py` — `TTSClient.generate(text, run_id, part_number=1, rate=None, label=None, narrator_gender=None) → (audio_key, srt_key)`
+- `clients/tts.py` — `TTSClient.generate(text, run_id, part_number=1, rate=None, label=None, narrator_gender=None) → (audio_key, srt_key, voice)`
 - `clients/blender.py` — `BlenderClient`: `create_video(...)` (inclui `card_key`/`hook_voice_key`), `create_job(...)`, `render_card(text, template, output_key)`, `get_template_config(...)`, `get_job_status(...)`, `poll_job(...)`
-- `clients/tiktok.py` — `TikTokClient.schedule(video_key, classification, part_number, series_id, total_parts=1, follows_at=None, youtube_title=None)` + exceção `BufferQueueFull`
+- `clients/tiktok.py` — `TikTokClient.schedule(video_key, classification, part_number, series_id, total_parts=1, follows_at=None, youtube_title=None, account_id=None, template_id=None, tts_voice=None)` + exceção `BufferQueueFull`
 - `clients/http.py` — `request(method, url, *, timeout, attempts)`: política única de retry
 - `backgrounds.py` — `pick_background(keys, run_id, part_number)`, puro
+- `music.py` — `pick_music(keys, run_id)` e `is_track(key)`, puros: qual trilha combina com o mood da história
 - `hook_text.py` — `opens_with_hook(script, hook) -> bool`, puro: se a parte já abre pela frase gancho
 - `storage/client.py` — `upload_bytes(...)`, `get_bytes(...)` e `list_keys(bucket, prefix)` via boto3 (MinIO/R2)
 - `background_inbox.py` — caixa de entrada de fundos pelo ntfy: `background_inbox_loop()`, `handle_message()`, `handle_url()`
@@ -65,7 +66,7 @@ alembic upgrade head
 - `NTFY_BACKGROUND_INBOX_URL` — tópico ntfy **de entrada** para fundos: link de vídeo compartilhado do celular vira clipe no manifesto. Vazio (o padrão) desliga o laço. **Tem que ser outro tópico**, diferente de `NOTIFY_WEBHOOK_URL` e do `NTFY_INBOX_URL` do `content_scout`
 
 URLs dos serviços são configuradas em `config.ini [services]`.
-Assets estáticos (background + música) em `config.ini [template]`.
+Assets estáticos: background em `config.ini [template]`, biblioteca de música por mood em `config.ini [music]`.
 
 ## Features
 
@@ -82,12 +83,13 @@ Assets estáticos (background + música) em `config.ini [template]`.
 
 `run_pipeline(run_id)` — executa as fases sequencialmente:
 
-1. **`_refine`**: chama `LLMClient.refine()` → guarda `hook` e `narrator_gender` no run e cria `PipelinePart` para cada parte retornada
+1. **`_refine`**: chama `LLMClient.refine()` → guarda `hook`, `narrator_gender` e `mood` no run e cria `PipelinePart` para cada parte retornada
 2. **`_narration_rate`**: lê `narration.rate` do template uma vez por run, antes do primeiro TTS
 3. **`_run_hook_tts`**: narra a frase gancho num arquivo próprio (degradável — ver abaixo)
 4. **`_render_card`**: compõe o card de comentário com o gancho (degradável — ver abaixo)
-5. **`_process_all_parts`**: para cada part, executa `_run_tts` + `_run_render` sequencialmente
-6. **`_schedule`**: chama `TikTokClient.schedule()` para cada part com `video_key` definido
+5. **`_pick_music`**: escolhe a trilha pelo `mood` do run, uma vez para toda a série (ver abaixo)
+6. **`_process_all_parts`**: para cada part, executa `_run_tts` + `_run_render` sequencialmente
+7. **`_schedule`**: chama `TikTokClient.schedule()` para cada part com `video_key` definido
 
 **`_run_tts`**: chama `POST tts_service/generate` → salva `audio_key` e `srt_key` na part. Recebe o `rate` da narração e o repassa; `None` deixa o `tts_service` aplicar seu `TTS_RATE`. O roteiro vai inteiro: quem evita a repetição do gancho é o `hook_muted` do render, não um corte no texto.
 
@@ -128,9 +130,63 @@ O mesmo vídeo passou a ser publicado também no YouTube, pelo mesmo Buffer. **O
 
 `_template_id_for(run) -> uuid.UUID` = `run.template_id or uuid.UUID(settings.env.blender_template_id)` — único ponto de resolução, chamado tanto por `_narration_rate` quanto por `_run_render`. Os dois **têm que concordar**: divergir faria a narração sair na velocidade de um template enquanto o render usa outro. Só o disparo manual manda `template_id` hoje — o `content_scout` nunca preenche o campo, então todo vídeo automático continua no default. Detalhes e motivação em `docs/vision.md` → "Escolher o template por vídeo, não só pela conta inteira".
 
+`_schedule` também manda `template_id=_template_id_for(run)` ao `tiktok_poster` — não influencia o agendamento, é guardado lá como variante de teste A/B (ver `tiktok_poster/CLAUDE.md`).
+
 ⚠️ Requer a migration `009` aplicada.
 
-- Testes: `tests/test_template_selection.py` (schema aceitando/omitindo o campo, fallback pro default, o valor chegando ao `POST /jobs` e ao `GET /templates/{id}/config`, e exposição na API).
+- Testes: `tests/test_template_selection.py` (schema aceitando/omitindo o campo, fallback pro default, o valor chegando ao `POST /jobs`, ao `GET /templates/{id}/config` e ao `POST /schedule` do poster, e exposição na API).
+
+### Voz resolvida (`tts_voice`)
+
+`TTSClient.generate()` agora devolve `(audio_key, srt_key, voice)` — `voice` é a voz que o
+`tts_service` de fato usou (ver `tts_service/CLAUDE.md` → "Voz do narrador"), lida com
+`.get("voice")` e não `["voice"]`: um `tts_service` mais velho que este cliente não manda o
+campo, e perder um dado cosmético não pode custar o run.
+
+`PipelineRun.tts_voice` (migration `011`, exposto em `PipelineResponse`) guarda a primeira voz
+resolvida do run — no gancho (`_run_hook_tts`) ou, se não houver gancho, na primeira parte
+(`_run_tts`). **Só a primeira**: `if run.tts_voice is None` protege contra sobrescrita, mesma
+razão de `card_key`/`music_key` — é a mesma pessoa narrando a série inteira.
+
+`_schedule` manda `tts_voice=run.tts_voice` ao `tiktok_poster`, omitido quando `None` (mesmo
+contrato de `youtube_title`). Não influencia o agendamento — é guardado lá como variante de
+teste A/B junto com `template_id`, hashtags e horário. Ver `tiktok_poster/CLAUDE.md` e
+`docs/vision.md` → "Análise de variantes e teste A/B".
+
+- Testes: `tests/test_narrator_voice.py` (voz persistida no gancho e na primeira parte, não
+  sobrescrita por partes seguintes, ausência graciosa com `tts_service` antigo, o valor
+  chegando ao `POST /schedule` e omitido quando nulo, e exposição na API).
+
+### Conta por vídeo (`account_id`) — Fase 1 do multi-account
+
+`PipelineCreate.account_id` (opcional) diz qual conta de publicação recebe este run —
+`PipelineRun.account_id` (migration `010`, nullable, exposto em `PipelineResponse`) guarda a
+escolha. `None` é o caso comum: o run publica na conta default (as env vars de sempre do
+`tiktok_poster`), exatamente como antes desta coluna existir.
+
+`_schedule` manda `account_id=str(run.account_id) if run.account_id else None` ao
+`tiktok_poster` — omitido quando `None`, mesmo contrato de `youtube_title`/`template_id`. O
+orchestrador **nunca vê credencial nenhuma**: ele só manda o id, e quem resolve token/canal é
+o `tiktok_poster`, contra o banco próprio dele (ver `tiktok_poster/CLAUDE.md`).
+
+Nova tabela `Account` (`db/models.py`): `slug` (único), `status`, `template_id` (default da
+conta, quando distinto do `BLENDER_TEMPLATE_ID` global — um `PipelineRun.template_id`
+explícito continua tendo prioridade). Endpoints `POST /accounts` e `GET /accounts`
+(`api/routes/accounts.py`) fazem o CRUD mínimo — sem credencial nenhuma aqui, isso é só no
+`tiktok_poster`.
+
+**Quem escolhe hoje é só o disparo manual**, mesma limitação do `template_id`: o
+`content_scout` nunca preenche `account_id`, então toda descoberta automática continua
+indo para a conta default. Ver `docs/vision.md` → "Contas de publicação — Fase 1 do
+multi-account" e "Decisões em Aberto".
+
+⚠️ Requer a migration `010` aplicada.
+
+- Testes: `tests/test_accounts.py` (CRUD de `/accounts`, `account_id` persistindo no run e
+  exposto na API, omissão preservando o comportamento antigo, e o valor chegando — ou não —
+  ao payload de `TikTokClient.schedule`).
+
+### Velocidade da narração (`_narration_rate`)
 
 ### Velocidade da narração (`_narration_rate`)
 
@@ -148,14 +204,14 @@ O orchestrador **não valida o formato** do rate — quem valida é o `tts_servi
 
 **`_run_render`**:
 1. Usa `part.srt_key` — legenda word-level já transcrita e subida pelo `tts_service` em `subs/{run_id}/part_{n}.srt`. O orchestrador não gera SRT.
-2. `POST blender_worker/videos` com `background_video_key` + `music_key` (do config.ini) + `voice_key` (audio do TTS) + `subtitle_key` + `card_key`/`hook_voice_key` (a intro, nullable)
+2. `POST blender_worker/videos` com `background_video_key` + `music_key` (`run.music_key`, escolhido por `_pick_music` pelo mood da história — ver abaixo) + `voice_key` (audio do TTS) + `subtitle_key` + `card_key`/`hook_voice_key` (a intro, nullable)
 3. `POST blender_worker/jobs` com `video_id` + `_template_id_for(run)`
 4. Polling via `poll_job()` até `completed` ou `failed`
 5. Salva `video_key = output_key` na part
 
 **Pré-requisito de infra**: o template (`.blend` + `template.json`) e os assets estáticos (fundos, trilha) devem estar pré-registrados no blender_worker e no MinIO antes de rodar o pipeline.
 
-⚠️ **`[template] music_key`** apontava para `assets/music.mp3`, que é **35s de silêncio digital** (medido: zero amostras não-nulas) — todo vídeo publicado até aqui saiu sem trilha, sem nenhuma falha. Agora aponta para `assets/music/lofi-goularte.mp3`. O render não valida conteúdo de áudio: um arquivo mudo continua sendo um render bem-sucedido. Ver `docs/vision.md` → "Trilha sonora".
+⚠️ **`[template] music_key`** apontava para `assets/music.mp3`, que é **35s de silêncio digital** (medido: zero amostras não-nulas) — todo vídeo publicado até aqui saiu sem trilha, sem nenhuma falha. Agora é só o **piso**: `run.music_key or settings.CONFIG.template.music_key`, usado apenas nos runs anteriores à migration `008` (mood/música). Runs novos sempre chegam com `run.music_key` preenchido por `_pick_music`. O render não valida conteúdo de áudio: um arquivo mudo continua sendo um render bem-sucedido. Ver `docs/vision.md` → "Trilha sonora".
 
 ### Áudio da frase gancho (`_run_hook_tts`)
 
@@ -182,6 +238,22 @@ O card de comentário com a frase gancho é composto uma vez por run (`POST blen
 A condição é o **texto** da parte, não o número dela: se o refino devolver o gancho abrindo a parte 2, ela se muta sozinha. Gancho reescrito pelo modelo dá `False`, e o vídeo volta a abrir com o áudio próprio. `part.script` nunca é reescrito e o TTS recebe o roteiro inteiro.
 
 Regras completas em `docs/vision.md` → "Abertura do vídeo (intro: card + gancho)".
+
+### A trilha combina com o mood da história (`_pick_music`)
+
+O `llm_service` devolve `mood` (`sad` / `tense` / `hopeful` / `neutral`) junto com o resto do refino. `_pick_music` roda uma vez por run — entre `_render_card` e `_process_all_parts` — e escolhe uma trilha para esse mood, guardada em `run.music_key`. Toda parte da série usa a mesma trilha, mesmo padrão do `card_key`: é a mesma história, não faz sentido trocar a cama sonora no meio dela.
+
+- Candidatos vivem sob `{[music] prefix}{mood}/` no bucket (ex.: `assets/music/sad/`). Subir um arquivo lá já basta — sem manifesto, sem re-deploy, ao contrário do fundo. `pick_music` (`src/orchestrator/music.py`) escolhe entre eles por `sha256(run_id)`, determinístico: um re-render depois de restart volta com a mesma trilha.
+- **Sem contagem de uso**, ao contrário do fundo — a biblioteca por mood tende a ter poucas faixas, e a mesma música repetindo em vídeos consecutivos não é o defeito visível que o mesmo clipe de fundo é.
+- Pasta de mood vazia (ou ausente) cai em `[music] default_key` — hoje `assets/music/lofi-goularte.mp3`, a mesma trilha que todo vídeo já usava. **Não é degradação e não avisa**: a biblioteca começa só com a faixa neutra, e é o estado esperado até alguém subir faixas para os outros moods.
+
+⚠️ **Oitava degradação silenciosa.** Só a *listagem do bucket falhando* é degradação de verdade (infraestrutura fora do ar, não biblioteca incompleta) — aí `run.music_key` cai no `default_key` com `log.warning` e `notify()`, e o run segue normalmente até `scheduled`.
+
+⚠️ **Aditivo de propósito.** Nada do que já está publicado foi movido: `lofi-goularte.mp3` continua fora de qualquer subpasta de mood, citado só por `default_key`. O R2 é compartilhado entre ambientes — reorganizar o que já está lá afetaria todos de uma vez sem necessidade.
+
+Colunas em `pipeline_runs`: `mood`, `music_key` (migration `008`). Expostas em `PipelineResponse`.
+
+- Testes: `tests/test_music_mood.py` (12 — `pick_music`/`is_track` puros, o mood persistido no refino com fallback pra `neutral`, a trilha escolhida por mood, o fallback pra faixa default com pasta vazia ou com objeto não-áudio, a degradação de verdade quando a listagem falha, o determinismo entre duas chamadas, o `music_key` chegando ao `POST /videos`, e o campo na API).
 
 ### Legendas
 
@@ -324,6 +396,6 @@ docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE orchestrato
 alembic upgrade head && python -m pytest -q
 ```
 
-195 testes em 14 arquivos: `test_pipeline.py` (6, API layer), `test_youtube_destination.py` (12 — o segundo destino de publicação), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (13 — inclui a rotação consultando o banco: clipe já usado não volta, e parte anterior à migration não conta; inclui também a regressão do `greenlet_spawn`: um run que falha não pode abortar os seguintes da mesma varredura), `test_backgrounds.py` (23 — o ciclo que esgota a biblioteca antes de repetir, o planejamento de segmentos e o filtro de extensão), `test_background_source.py` (11 — união dos candidatos, a queda quando o download falha e as três coisas que o despejo nunca apaga), `test_background_inbox.py` (11 — extração de URL, vídeo novo virando clipes, duplicado, curto demais, sem duração e falha do yt-dlp) e `test_http.py` (5).
+207 testes em 15 arquivos: `test_pipeline.py` (6, API layer), `test_youtube_destination.py` (12 — o segundo destino de publicação), `test_worker.py` (10, stages individuais + end-to-end), `test_series_scheduling.py` (6 — o encadeamento das partes: âncora, retomada, `total_parts`), `test_narrator_voice.py` (10 — o gênero do narrador do refino até o `tts_service`), `test_music_mood.py` (12 — a trilha combina com o mood: escolha, fallback pra faixa default e o `music_key` chegando ao render), `test_narration_rate.py` (13 — leitura do `narration.rate` do template, os fallbacks silenciosos e o repasse do `rate` ao `tts_service`), `test_hook_audio.py` (7 — gancho: persistência, key própria, skip sem gancho e falha degradável), `test_card_intro.py` (13 — card composto com o gancho, rate do gancho, o mute na parte que abre com ele e as keys chegando ao render), `test_hook_text.py` (12 — o predicado puro: prefixo, espaçamento, acentuação, e os casos em que não é abertura), `test_resilience.py` (13 — inclui a rotação consultando o banco: clipe já usado não volta, e parte anterior à migration não conta; inclui também a regressão do `greenlet_spawn`: um run que falha não pode abortar os seguintes da mesma varredura), `test_backgrounds.py` (23 — o ciclo que esgota a biblioteca antes de repetir, o planejamento de segmentos e o filtro de extensão), `test_background_source.py` (11 — união dos candidatos, a queda quando o download falha e as três coisas que o despejo nunca apaga), `test_background_inbox.py` (11 — extração de URL, vídeo novo virando clipes, duplicado, curto demais, sem duração e falha do yt-dlp) e `test_http.py` (5).
 
 ⚠️ **`test_resilience.py::test_background_*` exigem `_load_background_manifest()` caindo em `{}`** — ou seja, `MINIO_ENDPOINT` sem acesso de verdade ao bucket de produção. Rodando com um `.env` que aponta para o R2 real e tem credenciais válidas, essas quatro checagens passam a ver o manifesto de ~1.677 clipes de verdade em vez do fixture sintético, e falham por picar um clipe real em vez de `bg_000.mp4`. Não é regressão: aponte `MINIO_ENDPOINT` para algo inalcançável (ex.: `http://127.0.0.1:1`) ao rodar a suíte fora de um `.env` de teste dedicado.

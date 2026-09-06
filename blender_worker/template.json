@@ -2,7 +2,7 @@
     "frame_rate": 30,
     "frame_end": 900,
     "narration": {
-      "rate": "+30%",
+      "rate": "+50%",
       "tail_seconds": 0.5
     },
     "channels": {

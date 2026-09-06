@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import respx
 from httpx import Response
 
-from src.orchestrator.db.models import PipelinePart, PipelineRun, PipelineStatus
+from src.orchestrator.db.models import PartStatus, PipelinePart, PipelineRun, PipelineStatus
 from src.orchestrator.worker import _refine, _run_hook_tts, _run_tts, run_pipeline
 
 HOOK = "Eu descobri tudo num domingo de manhã."
@@ -50,10 +50,11 @@ def _refine_response(**extra):
     return Response(200, json={"parts": ["Parte única."], "classification": CLASSIFICATION, **extra})
 
 
-def _tts_ok(run_id, slug="part_1"):
+def _tts_ok(run_id, slug="part_1", voice="pt-BR-ThalitaNeural"):
     return Response(200, json={
         "audio_key": f"audio/{run_id}/{slug}.mp3",
         "srt_key": f"subs/{run_id}/{slug}.srt",
+        "voice": voice,
     })
 
 
@@ -220,6 +221,99 @@ async def test_hook_and_parts_are_narrated_by_the_same_person(session, monkeypat
     assert set(genders) == {"male"}
 
 
+# ── a voz resolvida pelo tts_service é guardada no run ────────────────────
+
+@respx.mock
+async def test_run_tts_stores_the_resolved_voice(session):
+    run = await _make_run(session, narrator_gender="male")
+    part = await _make_part(session, run.id)
+    respx.post(TTS_URL).mock(return_value=_tts_ok(run.id, voice="pt-BR-AntonioNeural"))
+
+    await _run_tts(session, part, run)
+
+    await session.refresh(run)
+    assert run.tts_voice == "pt-BR-AntonioNeural"
+
+
+@respx.mock
+async def test_hook_tts_stores_the_resolved_voice(session):
+    run = await _make_run(session, hook=HOOK, narrator_gender="female")
+    respx.post(TTS_URL).mock(return_value=_tts_ok(run.id, "hook", voice="pt-BR-FranciscaNeural"))
+
+    await _run_hook_tts(session, run)
+
+    await session.refresh(run)
+    assert run.tts_voice == "pt-BR-FranciscaNeural"
+
+
+@respx.mock
+async def test_voice_is_not_overwritten_by_a_later_part(session):
+    """Uma vez capturada, a voz não muda no meio do run — mesma pessoa
+    narrando a série inteira."""
+    run = await _make_run(session, narrator_gender="male", tts_voice="pt-BR-AntonioNeural")
+    part = await _make_part(session, run.id)
+    respx.post(TTS_URL).mock(return_value=_tts_ok(run.id, voice="outra-voz-qualquer"))
+
+    await _run_tts(session, part, run)
+
+    await session.refresh(run)
+    assert run.tts_voice == "pt-BR-AntonioNeural"
+
+
+@respx.mock
+async def test_missing_voice_field_does_not_crash_an_old_tts_service(session):
+    """Um `tts_service` mais velho que este cliente não manda `voice` — o
+    campo é cosmético, e perdê-lo não pode custar o run."""
+    run = await _make_run(session)
+    part = await _make_part(session, run.id)
+    respx.post(TTS_URL).mock(return_value=Response(200, json={
+        "audio_key": f"audio/{run.id}/part_1.mp3", "srt_key": f"subs/{run.id}/part_1.srt",
+    }))
+
+    await _run_tts(session, part, run)
+
+    await session.refresh(run)
+    assert run.tts_voice is None
+    assert part.status == PartStatus.tts_done
+
+
+# ── a voz chega ao tiktok_poster ───────────────────────────────────────────
+
+@respx.mock
+async def test_scheduled_part_sends_the_tts_voice_to_the_poster(session):
+    run = await _make_run(session, tts_voice="pt-BR-AntonioNeural")
+    part = await _make_part(session, run.id)
+    part.video_key = "outputs/x.mp4"
+    await session.commit()
+
+    route = respx.post("http://tiktok_poster:8000/schedule").mock(
+        return_value=Response(200, json={"scheduled_at": "2025-06-01T08:00:00Z", "buffer_update_id": "b1"})
+    )
+
+    from src.orchestrator.worker import _schedule
+    await _schedule(session, run)
+
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["tts_voice"] == "pt-BR-AntonioNeural"
+
+
+@respx.mock
+async def test_run_without_a_voice_omits_the_field(session):
+    run = await _make_run(session)
+    part = await _make_part(session, run.id)
+    part.video_key = "outputs/x.mp4"
+    await session.commit()
+
+    route = respx.post("http://tiktok_poster:8000/schedule").mock(
+        return_value=Response(200, json={"scheduled_at": "2025-06-01T08:00:00Z", "buffer_update_id": "b1"})
+    )
+
+    from src.orchestrator.worker import _schedule
+    await _schedule(session, run)
+
+    assert "tts_voice" not in json.loads(route.calls.last.request.content)
+
+
 # ── API ───────────────────────────────────────────────────────────────────
 
 async def test_pipeline_response_exposes_the_narrator_gender(client, session):
@@ -229,3 +323,12 @@ async def test_pipeline_response_exposes_the_narrator_gender(client, session):
 
     assert resp.status_code == 200
     assert resp.json()["narrator_gender"] == "female"
+
+
+async def test_pipeline_response_exposes_the_tts_voice(client, session):
+    run = await _make_run(session, tts_voice="pt-BR-AntonioNeural")
+
+    resp = await client.get(f"/pipeline/{run.id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["tts_voice"] == "pt-BR-AntonioNeural"

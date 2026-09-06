@@ -17,6 +17,10 @@ class RefineResult:
     #: Título do vídeo no YouTube. Vazio quando o `llm_service` do outro lado
     #: ainda não devolve o campo — o poster cai no CTA nesse caso.
     youtube_title: str = ""
+    #: Clima emocional da história — escolhe a trilha sonora. `"neutral"`
+    #: também é o que se lê de um `llm_service` antigo, e cai na faixa default
+    #: do `config.ini`.
+    mood: str = "neutral"
 
 
 class LLMClient:
@@ -37,4 +41,5 @@ class LLMClient:
             hook=(data.get("hook") or "").strip(),
             narrator_gender=(data.get("narrator_gender") or "unknown").strip().lower(),
             youtube_title=(data.get("youtube_title") or "").strip(),
+            mood=(data.get("mood") or "neutral").strip().lower(),
         )
