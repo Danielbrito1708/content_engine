@@ -9,6 +9,10 @@ from src.orchestrator.db.models import PartStatus, PipelineStatus
 class PipelineCreate(BaseModel):
     script: str
     metadata: dict = {}
+    #: Sobrescreve o template default só para este run. `None` preserva o
+    #: comportamento atual (BLENDER_TEMPLATE_ID). Ver docs/vision.md →
+    #: "Escolher o template por vídeo, não só pela conta inteira".
+    template_id: uuid.UUID | None = None
 
 
 class PartResponse(BaseModel):
@@ -36,6 +40,7 @@ class PipelineResponse(BaseModel):
     card_key: str | None
     narrator_gender: str | None
     youtube_title: str | None
+    template_id: uuid.UUID | None
     classification: dict | None
     error: str | None
     parts: list[PartResponse]

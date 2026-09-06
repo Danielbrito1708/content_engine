@@ -631,6 +631,26 @@ O prefixo `assets/music/` já é o formato de biblioteca dos fundos, então acre
 
 ---
 
+## Escolher o template por vídeo, não só pela conta inteira (06/09/2026)
+
+Até aqui `BLENDER_TEMPLATE_ID` era uma env var única, lida em dois lugares (`_narration_rate` e `_run_render`) — todo vídeo da conta usava exatamente o mesmo template, e trocar de template significava trocar para todo mundo de uma vez. Isso bloqueava dois casos legítimos: reverter só um vídeo problemático sem afetar os outros, e rodar um formato novo em paralelo ao antigo (ex.: 1 vídeo no formato experimental, 2 no formato atual, no mesmo dia) para comparar antes de decidir migrar de vez. O rollback por template já existia como prática (registrar um `.blend`/`template.json` novo sob um `BLENDER_TEMPLATE_ID` novo, nunca sobrescrever o publicado — ver "O `template.json` do repo não é o que roda" no `CLAUDE.md` da raiz); o que faltava era um jeito de ter mais de um *em uso* ao mesmo tempo.
+
+**Mudança de interface:** `POST /pipeline` (`PipelineCreate`) ganha `template_id: uuid.UUID | None = None`. Omitido, o run se comporta exatamente como antes — o campo é puramente aditivo.
+
+**`PipelineRun.template_id`** (migration `009`, nullable, exposto em `PipelineResponse`) — a sobrescrita persistida para aquele run. Guardado na criação do run, antes até do refino, porque `_narration_rate` precisa dele no primeiro TTS.
+
+**Resolvido num único lugar.** `_template_id_for(run) -> uuid.UUID` = `run.template_id or uuid.UUID(settings.env.blender_template_id)`, chamado tanto por `_narration_rate` quanto por `_run_render`. Os dois **têm que concordar**: `_narration_rate` lê `narration.rate` do template antes do primeiro TTS, e se o TTS saísse na velocidade de um template enquanto o render usa outro, a narração sairia rápida ou lenta demais para o corte que o vídeo realmente leva. Antes de `template_id` existir, os dois liam a mesma env var e não podiam divergir por construção; agora que o template pode variar por run, `_narration_rate` passou a receber `run` em vez de nenhum argumento.
+
+**Quem escolhe hoje é só o disparo manual.** O `content_scout` (disparo automático) nunca manda `template_id` — todo vídeo automático continua no template default até existir um critério para escolher entre formatos sem intervenção humana, decisão deliberadamente não tomada agora (ver "Decisões em Aberto").
+
+**Não precisa de nada novo no `blender_worker`.** Ele já registra N templates via `POST /templates` desde sempre — o que faltava era o orchestrador nunca ter usado mais de um por vez.
+
+⚠️ Requer a migration `009` aplicada — sem a coluna, `create_pipeline` falha com `UndefinedColumn` na primeira leitura de `run.template_id`. Mesmo padrão das migrations anteriores: o `CMD` do Dockerfile roda `alembic upgrade head` no boot.
+
+- Testes: `tests/test_template_selection.py` — campo aceito e omitido no schema, fallback pro default quando `None`, o mesmo `template_id` chegando ao `POST /jobs` e ao `GET /templates/{id}/config` (`_narration_rate`), e exposição em `PipelineResponse`.
+
+---
+
 ## Abertura do vídeo (intro: card + gancho)
 
 O vídeo abre com o **card de comentário** trazendo a frase gancho, e com essa frase **narrada por cima dele**. A narração da parte começa quando o gancho termina. As duas peças já existiam separadas — o card (`POST /images/render`) e o `hook.mp3` (`_run_hook_tts`) — e nenhuma chegava ao vídeo: a intro era um bloco de 3 segundos de fundo rodando sozinho.
@@ -1374,3 +1394,4 @@ barata que ainda é distinta — e esse número ainda não foi medido.
 - **TikTok API**: autenticação OAuth vs. token estático de longa duração → Definir quando implementar o tiktok_poster.
 - **Dashboard**: servido pelo orchestrador (FastAPI + Jinja2) ou container Next.js separado → MVP usa Jinja2, pode migrar depois.
 - **Retry automático**: se TTS ou render falhar, o orchestrador retenta automaticamente ou só marca como `failed`? → MVP marca como failed. O caso de fila cheia do Buffer é diferente (falha temporária, não erro) e já tem solução desenhada em "Fila de espera quando o Buffer está cheio", no Backlog de Features.
+- **Escolha automática de template pelo `content_scout`**: hoje o disparo automático nunca varia de template (ver "Escolher o template por vídeo, não só pela conta inteira"). Split fixo por slot, sorteio com peso, ou continuar manual-only — critério não definido, e não vale decidir sem primeiro ver o formato novo rodando manualmente.

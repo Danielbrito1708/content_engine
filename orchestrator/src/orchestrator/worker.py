@@ -57,7 +57,7 @@ async def run_pipeline(run_id: uuid.UUID) -> None:
             # the video now, so it has to be spoken at the same rate as the
             # narration it introduces — a hook at a different speed reads as a
             # different voice.
-            rate = await _narration_rate()
+            rate = await _narration_rate(run)
             await _run_hook_tts(session, run, rate)
             await _render_card(session, run)
             await _process_all_parts(session, run, rate)
@@ -212,13 +212,24 @@ async def _render_card(session, run: PipelineRun) -> None:
     notify("Card da intro pronto", level="debug", icon="🖼️", run=short_id(run.id))
 
 
-async def _narration_rate() -> str | None:
+def _template_id_for(run: PipelineRun) -> uuid.UUID:
+    """The template this run renders with — the run's override, or the deploy default.
+
+    Called both here and by `_run_render`, which have to agree: this reads
+    `narration.rate` before the first TTS, and if the TTS ran at one template's
+    rate while the render used another, the narration would come out too fast
+    or too slow for the cut the video actually gets.
+    """
+    return run.template_id or uuid.UUID(settings.env.blender_template_id)
+
+
+async def _narration_rate(run: PipelineRun) -> str | None:
     """`narration.rate` from the template, or None to let the tts_service decide.
 
     A template without a narration block — or an unreachable blender_worker — is not
     worth failing a run over: the pipeline falls back to the tts_service's TTS_RATE.
     """
-    template_id = uuid.UUID(settings.env.blender_template_id)
+    template_id = _template_id_for(run)
     try:
         config = await BlenderClient().get_template_config(template_id)
     except Exception as exc:
@@ -485,8 +496,7 @@ async def _run_render(session, part: PipelinePart, run: PipelineRun) -> None:
         hook_muted=_hook_is_muted(part, run),
     )
 
-    template_id = uuid.UUID(settings.env.blender_template_id)
-    job_id = await blender.create_job(video_id=video_id, template_id=template_id)
+    job_id = await blender.create_job(video_id=video_id, template_id=_template_id_for(run))
 
     part.blender_job_id = job_id
     part.status = PartStatus.render_running

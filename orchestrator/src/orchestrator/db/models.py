@@ -56,6 +56,12 @@ class PipelineRun(Base):
     #: uma história dividida é a mesma história, e o que distingue as partes é o
     #: rótulo "(Parte n/N)", que o poster acrescenta por saber `total_parts`.
     youtube_title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    #: Sobrescreve o BLENDER_TEMPLATE_ID default só para este run. `None` é o
+    #: caso comum — a maioria dos runs não pede template específico e usa o
+    #: default do deploy. Lido por `_narration_rate` e `_run_render`, que têm
+    #: de concordar no mesmo template ou a narração sai na velocidade errada
+    #: para o corte que o render de fato usa.
+    template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     parts_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[PipelineStatus] = mapped_column(Enum(PipelineStatus), nullable=False, default=PipelineStatus.pending)
