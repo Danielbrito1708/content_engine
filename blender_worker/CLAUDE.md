@@ -207,6 +207,27 @@ Verified on real renders (Blender 4.2, 1080x1920):
 
 - Tests: `tests/test_intro.py` (27 tests, marked `no_db` — the strip creation is exercised with fakes that record what the script asks bpy for), plus 5 in `tests/test_worker.py` for the asset plumbing and the flag.
 
+### CTA overlay — persistent bottom-of-frame reminder (`scripts/edit_video.py`)
+
+A single static text strip pinned near the bottom of the frame, from the end of the intro card to the last frame of the video — e.g. "me ajude a pagar a faculdade, segue o perfil". Not the same thing as `classification.cta_per_part` / `binary_cta` upstream (the narrated closing question / the caption's binary-choice prompt) — those live in `llm_service`/`tiktok_poster` and are a different mechanism entirely; this is a visual overlay `blender_worker` draws over the video itself. The name collision is real but confined to cross-service vocabulary — see `docs/vision.md` § "Faixa de apoio fixa no rodapé".
+
+**Public API (pure, no `bpy`):**
+- `resolve_cta_style(config=None, exists=os.path.exists) -> dict` — mirrors `resolve_subtitle_style`, reading the template's `cta` block (`font_path`, `font_size`, `y_position`, `color`, `use_outline`, `outline_color`, `outline_width`). Unlike the subtitles, `font_size` defaults to a concrete number (`DEFAULT_CTA_FONT_SIZE`, 50) rather than `None` — there is no pre-existing render this feature has to stay pixel-identical to.
+- `wrap_cta_text(text, font_size, max_width, measure) -> str` — greedy word wrap, joined with `\n`. A word wider than `max_width` on its own is kept whole rather than split, same trade-off as `fit_font_size`. Exists because the CTA is a full sentence (unlike the one-word subtitle strips) and the script can't assume the installed Blender version has a `wrap_width` strip property — wrapping is done in code instead, measured with the same `blf`-backed `make_text_measurer` the subtitle auto-fit already uses. Pure — `measure` is injected — so it's tested without Blender.
+
+**bpy-side:**
+- `add_cta(scene, vse, text, channel, frame_start, frame_end, style, frame_width=None) -> strip` — one `TEXT` effect strip (`vse.sequences.new_effect`) spanning the whole interval, `align_x`/`align_y = "CENTER"`, `location[1] = style["y_position"]`. No fade, no per-word timeline — it neither moves nor blinks, unlike `import_subtitles`.
+
+**Where it starts and ends, and why the ordering matters.** In `main()`, the CTA is created **after** `scene.frame_end = last_frame` — on its own channel, never a `content_end_frame` candidate. `content_end_frame()` decides where the video ends by looking at the content strips that already exist (voice, subtitles); if the CTA strip existed before that and were counted as content, its own end frame (which is *supposed to be* the video's end frame) would have to be decided first — a circular dependency. Creating it after the length is fixed avoids that entirely. It starts at `card_end`, the same frame `intro_frames()` already computes for the card leaving the screen (or, with no card, the point where the narration starts) — so the CTA and the card never overlap, for the same layout reason the card and the subtitles never do.
+
+**Channel** — `channels.cta` defaults to `DEFAULT_CTA_CHANNEL` (7) in code, same reason `hook`/`card` do: `template.json` lives in the bucket, and a template published before this feature has no entry for it.
+
+**Opt-in on the text being present.** `main()` only calls `add_cta` when `timing.get("cta", {}).get("text")` is truthy — a template with no `cta` block (every template published before this feature) renders exactly as before. There is no separate on/off flag; the text's presence is the switch.
+
+**Defaults and why:** `DEFAULT_CTA_Y` (0.12, same 0=bottom/0.5=centre scale as the card and subtitles) sits low but clear of the strip TikTok itself draws over the bottom of the frame (caption, username, sound title) — roughly the last ~12% of the height. `DEFAULT_CTA_FONT_SIZE` (50) is well under the subtitles' (100+): this text is on screen for nearly the whole video, not one word at a time, and has to read as a steady caption rather than compete with the narration for attention. Colour/outline defaults match the subtitles (white, black outline) and share the same font fallback chain (Futura Bold → DejaVu).
+
+- Tests: `tests/test_cta.py` (`resolve_cta_style` and `wrap_cta_text` fully covered as pure functions; `add_cta` exercised against fakes for `vse.sequences.new_effect`, same pattern `test_intro.py` uses for `add_card`; a guard that the shipped `template.json`'s `cta` channel doesn't collide with any other channel).
+
 ### Word-level subtitles (`scripts/edit_video.py`)
 
 The `.srt` produced by `tts_service` has **one entry per word** (Whisper `word_timestamps=True`). One text strip is created per entry on the subtitles channel.

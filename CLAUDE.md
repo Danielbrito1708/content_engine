@@ -139,6 +139,15 @@ novo.
 `blender_worker`, não só um objeto no bucket. Num banco novo ela não existe e o endpoint
 acima responde `404 Template not found` — que parece erro de credencial do R2 e não é.
 
+⚠️ **Pendente desde 08/09/2026: a faixa de apoio no rodapé (`cta`) só existe no repo.** O
+bloco `cta` (texto "me ajude a pagar a faculdade, segue o perfil", canal 7) foi adicionado a
+`blender_worker/template.json`, que **não é o que roda**. Até o objeto ser republicado no
+bucket, os vídeos continuam saindo sem a faixa — sem erro, sem aviso. Não confundir com o
+`cta_per_part`/`binary_cta` do `llm_service` (a pergunta narrada / a pergunta da legenda,
+ver `docs/vision.md`): esta é uma terceira coisa, um texto fixo sobreposto no rodapé do
+vídeo pelo `blender_worker`. Conferir com o `curl` acima (`GET /templates/{id}/config`,
+olhando a chave `cta`) antes de considerar a faixa publicada.
+
 ## Estado do projeto
 
 **Os seis serviços estão implementados** e o pipeline fecha de ponta a ponta.

@@ -11,12 +11,18 @@
       "voice": 3,
       "subtitles": 4,
       "hook": 5,
-      "card": 6
+      "card": 6,
+      "cta": 7
     },
     "card": {
       "y_position": 0.5,
       "fade_frames": 4,
       "tail_seconds": 0.3
+    },
+    "cta": {
+      "text": "me ajude a pagar a faculdade, segue o perfil",
+      "y_position": 0.12,
+      "font_size": 50
     },
     "subtitles": {
       "fade_frames": 3,

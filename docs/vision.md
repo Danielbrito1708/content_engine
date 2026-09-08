@@ -920,6 +920,28 @@ Card e gancho são **independentes e degradáveis**: cada etapa vira `warning` e
 
 ---
 
+## Faixa de apoio fixa no rodapé (`blender_worker`, 08/09/2026)
+
+**Não confundir com o CTA narrado.** O termo "CTA" já é usado neste documento para a pergunta em primeira pessoa que fecha a narração (`classification.cta_per_part`, ver "O texto narrado termina numa pergunta em primeira pessoa") e para a pergunta de votação binária na legenda (`classification.binary_cta`). Esta seção é uma terceira coisa: um texto **fixo**, escrito, sobreposto no rodapé do vídeo do início ao fim do corpo da história — pedindo para seguir o perfil. Os três nunca competem: um é falado, o segundo é a legenda do post, o terceiro é uma faixa visual sobre o vídeo. No código o campo se chama `cta` (bloco `cta` do `template.json`, canal `channels.cta`) porque `blender_worker` não tem outro conceito com esse nome — a colisão de termo existe só entre este documento e o `llm_service`.
+
+**Onde entra e onde sai.** A faixa começa exatamente onde o card de abertura sai da tela (`card_end` — o mesmo instante que `intro_frames()` já calculava para tirar o card e liberar a legenda) e vai até o último frame do vídeo (`scene.frame_end`, já com o respiro de meio segundo). Quando não há card (run sem gancho), `card_end` cai no início do trecho narrado, então a faixa cobre o vídeo quase inteiro; quando há card, ela só aparece depois que ele sai — os dois nunca se sobrepõem, pela mesma razão de leiaute que já separa o card da legenda (mesma altura, mesma régua `y_position`).
+
+**Um strip estático, não um por palavra.** Diferente da legenda (`import_subtitles`, um `TextSequence` por palavra, com subida e fade), a faixa é um único `TextSequence` cobrindo o intervalo inteiro — não se move, não pisca, não anima. É um lembrete constante por baixo da história, não parte da performance da legenda.
+
+**Por que o strip nasce depois de `scene.frame_end` já decidido.** A faixa termina no último frame do vídeo, mas quem decide esse frame é `content_end_frame()`, que olha os strips de conteúdo já criados (voz e legenda) e ignora os *beds* (música, fundo). Se a faixa fosse criada **antes**, ela teria que terminar em um número que ainda não existe — ou, se entrasse na lista de `content_end_frame`, o vídeo passaria a "terminar" na duração da própria faixa, uma dependência circular. A ordem em `main()` resolve isso sem truque: a faixa é montada **depois** de `scene.frame_end = last_frame`, no seu próprio canal (`channels.cta`, default 7, do mesmo jeito que `hook`/`card` defaultam em código porque `template.json` vive no bucket), então nunca é candidata do cálculo que a usa como limite.
+
+**Opcional por construção, como o card e o gancho.** A faixa só aparece quando `template.json` tem um bloco `cta` com `text` preenchido — um template publicado antes desta feature, ou um que deliberadamente não quer a faixa, simplesmente não a tem, e o render sai idêntico ao de antes. Não há flag "ligado/desligado" separada: a presença do texto **é** o interruptor.
+
+**Quebra de linha própria, sem depender de `wrap_width` do Blender.** A legenda nunca precisou disso — é uma palavra por strip — mas a faixa é uma frase inteira, que pode não caber numa linha só. Em vez de depender de uma propriedade de strip que pode não existir em toda versão do Blender, o texto é quebrado em código (`wrap_cta_text`, medido com `blf` — o mesmo rasterizador que a legenda já usa para o auto-fit de palavra longa) e as quebras entram como `\n` literais no `.text` do strip. Puro — mede com uma função injetada — e testável sem Blender, mesma lógica de `fit_font_size`.
+
+**Posição e tipografia são configuráveis, com defaults próprios.** `cta.y_position` (default 0.12 — perto do rodapé, mas acima da faixa de legenda/nome de usuário/música que o próprio TikTok desenha por cima do vídeo) e `cta.font_size` (default 50 — bem menor que a legenda, porque este texto fica na tela o vídeo inteiro e não pode competir por atenção com a narração). Cor, contorno e fonte seguem a mesma resolução e os mesmos defaults (branco, contorno preto) da legenda, incluindo a mesma cadeia de fallback de fonte (Futura Bold → DejaVu). Diferente da legenda, `font_size` aqui **tem** default em código: não existe um render anterior para manter pixel-idêntico, então "deixar do jeito que o Blender entregar" não seria uma escolha neutra.
+
+⚠️ **O texto de apoio ainda não está publicado.** O bloco `cta` foi adicionado a `blender_worker/template.json` no repositório, com o texto "me ajude a pagar a faculdade, segue o perfil" — mas, como todo o resto deste arquivo, ele **não é o que roda**: o `blender_worker` baixa `template.json` do bucket R2 no momento do render, e o objeto publicado lá ainda não tem o bloco `cta`. Até alguém republicar o objeto (mesmo `curl` de conferência do `CLAUDE.md` raiz, olhando a chave `cta`), os vídeos continuam sem a faixa, sem erro e sem aviso — exatamente o mesmo modo de falha silenciosa já registrado para o `narration.rate`.
+
+- Testes: `blender_worker/tests/test_cta.py` (`resolve_cta_style`, `wrap_cta_text` puros; `add_cta` contra fakes de `vse.sequences`/strip, no padrão de `test_intro.py`).
+
+---
+
 ## Agendamento (tiktok_poster)
 
 - Ritmo: 3 posts por dia, em `preferred_times`.

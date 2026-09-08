@@ -478,6 +478,16 @@ O tamanho anterior era o padrão interno do Blender — pequeno demais para víd
 
 Valores em uso hoje: **tamanho 100**, posição **0.474** — ou seja, 50 pixels abaixo do centro da tela.
 
+## Um lembrete fixo pedindo para seguir o perfil
+
+O vídeo agora carrega, no rodapé, um texto pedindo para seguir o perfil — por exemplo "me ajude a pagar a faculdade, segue o perfil". Diferente da legenda, que troca de palavra em palavra acompanhando a narração, esse texto fica **parado na tela**, sempre a mesma frase, do momento em que a abertura (o card com o gancho) termina até o último segundo do vídeo.
+
+Ele não aparece por cima do card de abertura — só depois que o card sai, junto com o começo da legenda de palavra por palavra. E fica numa altura mais baixa que a legenda, perto do rodapé, mas acima de onde o próprio TikTok desenha a legenda do post e o nome de usuário por cima do vídeo, para não brigar com a interface do aplicativo.
+
+O texto, a posição e o tamanho da letra são configuráveis no template do vídeo — dá para trocar a frase, mover para mais perto ou mais longe do rodapé, ou aumentar/diminuir a letra sem mexer em código. E é opcional: um vídeo montado com um template que não define essa frase sai exatamente como saía antes, sem nenhuma faixa a mais.
+
+⚠️ **Ainda não está no ar.** O texto foi adicionado ao arquivo de template do repositório, mas — como todo ajuste de template deste projeto — só passa a valer depois que alguém publica o arquivo atualizado no lugar de onde a montagem de fato lê (ver aviso equivalente sobre `narration.rate` no `CLAUDE.md` da raiz). Até lá, os vídeos continuam saindo sem a faixa, sem nenhum aviso de que ela "deveria" estar lá.
+
 ## Fundo diferente a cada vídeo
 
 Antes, todo vídeo do canal usava **o mesmo arquivo de fundo, começando no mesmo segundo**. Duas partes seguidas da mesma história saíam com exatamente a mesma imagem por trás, mudando só as palavras.
