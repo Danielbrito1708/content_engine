@@ -54,6 +54,8 @@ Qualidade narrativa: `[scout] story_quality` (liga/desliga), `min_story_score` (
 
 Revolta: `[scout] outrage_weight` (peso da revolta na ordenação, padrão 2) e `min_outrage_score` (piso da revolta — rótulo e contador, nunca portão; padrão 6).
 
+Contas de publicação: `[scout] max_pending_runs_per_account` (teto de runs em andamento por conta, padrão 2) e `account_usage_window_hours` (janela do desempate do rodízio, padrão 24h) — ver "Escolha de conta" abaixo.
+
 ## Features
 
 ### Fonte Reddit (`src/content_scout/sources/reddit.py`)
@@ -133,23 +135,11 @@ O fingerprint é gravado **também nas linhas rejeitadas** — repost de histór
 
 `evaluate(candidate, min_chars) -> str | None` — **só o piso**. Devolve `too_short:{n}` ou `None`. Roda na passagem barata, sobre todo candidato.
 
-`exceeds_length(candidate, max_chars) -> str | None` — **o teto**, função separada porque roda em outro momento do ciclo. Devolve `too_long:{n}` ou `None`.
-
 Segurança **não** mora aqui — ver abaixo.
 
-⚠️ **As duas pontas não são simétricas e por isso não rodam juntas.** O piso é editorial: abaixo de `min_chars` não há história, então não há o que a nota pese — a rejeição é igualmente verdadeira antes ou depois do julgamento. O teto é de **produção**: o texto é uma história boa que custaria mais narração e render do que a vaga vale. Rodar o teto na passagem barata descartava a história antes de qualquer pergunta sobre qualidade, e o que ele descartava era desproporcionalmente o melhor material. Medido ao vivo sobre 45 posts (14/08/2026): 11 estavam acima do teto e **nenhum deles tirou menos que 6**, enquanto todos os candidatos com nota ≤5 estavam dentro do teto; **4 dos 8 candidatos com nota 9 estavam acima**. Os subs onde o gênero mora premiam texto longo, então cortar por tamanho primeiro era cortar por qualidade ao contrário.
+⚠️ **Não há teto de tamanho — removido em 07/09/2026.** Existiu um `exceeds_length(candidate, max_chars)` que recusava posts acima de `max_chars = 30000`, derivado de `MAX_PART_WORDS` (o formato antigo, de até 30 min divididos em partes com cliffhanger). Esse formato não existe mais: desde a mudança de 31/08/2026, o refino sempre `RECONTA` qualquer roteiro — de qualquer tamanho — como **um** vídeo de 10 a 40s (`TARGET_MIN/MAX_WORDS` em `llm_service/prompts/refine.py`; `parts` tem sempre um elemento). Um post maior só significa mais texto para o refino condensar, nunca uma razão para descartá-lo antes — e o histórico media isso: os posts que passavam do teto antigo eram desproporcionalmente os de melhor nota (medição de 45 posts, 14/08/2026: nenhum candidato acima do teto tirava nota abaixo de 6). Ver `llm_service/CLAUDE.md` → "Formato: uma história completa em 10–40s".
 
-Por isso `exceeds_length` roda em `_run_cycle` **depois** da nota: o candidato longo é pontuado e gravado com `story_score`/`story_tag`, `status=filtered`, `skip_reason=too_long:{n}`. Nunca vira vídeo, mas `GET /scout/seen?status=filtered` passa a dizer *o que* foi recusado — o dado que faltava para mover `max_chars` com base em evidência em vez de chute.
-
-⚠️ **Roda depois do backpressure.** Fila cheia encerra o ciclo antes da nota, então o candidato longo não é gravado nesse ciclo e volta inteiro no próximo. Gravá-lo ali o queimaria sem nota — exatamente o estado que a mudança existe para evitar.
-
-⚠️ **Roda antes da moderação, fora do laço de submissão.** A nota é uma chamada em lote por ciclo; a moderação é uma por candidato. Deixar o candidato longo entrar no laço faria uma história que nunca seria publicada pagar uma chamada de modelo.
-
-Nada a jusante quebra com roteiro longo: `raw_script`/`script` são `Text` sem limite, e o refino divide acima de `MAX_PART_WORDS` (5850) em partes com cliffhanger.
-
-**O teto é 30000, e o número é derivado.** É o maior post cru que o refino ainda entrega como **um** vídeo: `MAX_PART_WORDS` são 5850 palavras (30 min × 195 wpm) e o pt-BR mede **5,54 caracteres por palavra** nos 30 posts de `docs/story_quality_baseline.json`, ou seja ~32400 chars numa parte só. Cortar em 30000 deixa ~7% de folga para o refino expandir o texto ao reescrever. Acima disso a história ainda publica, só que como série com cliffhanger — então o teto marca onde um post deixa de ser um vídeo, que é a única linha não arbitrária disponível.
-
-⚠️ **Era 6000, e estava recusando justamente o bom material** — ver a medição dos 45 posts acima. O valor antigo equivalia a ~1080 palavras, ~5,5 min de narração: um quinto do que cabe numa parte.
+Nada a jusante quebra com roteiro longo: `raw_script`/`script` são `Text` sem limite no banco, e o roteiro bruto inteiro (por maior que seja) vai como está no prompt de `/refine` — o custo de um post muito longo é só mais tokens na chamada, não uma falha.
 
 ### Moderação por LLM (`src/content_scout/clients/llm.py` → `llm_service POST /moderate`)
 
@@ -189,9 +179,9 @@ O ciclo para na primeira falha de moderação em vez de tentar os demais: se o s
 
 ⚠️ **É etiqueta, não filtro.** Candidato marcado `weak_storytelling` **continua sendo publicado** se não houver nada melhor atrás. Virar corte rígido esvaziaria a fila em semana ruim — o custo de um vídeo mediano é menor que o de não publicar. A nota age na **ordem** (`rank_by_story`), a tag age como informação para o refino e para calibragem.
 
-⚠️ **A tag é derivada, não pedida ao modelo.** O corte mora em config, então se move contra dados reais (`GET /scout/seen?story_tag=weak_storytelling`) — mesmo motivo de `min_chars`/`max_chars`. `story_score` fica cru, então mover o corte permite re-derivar as linhas antigas. A derivação acontece na escrita: mover o corte só afeta linhas novas.
+⚠️ **A tag é derivada, não pedida ao modelo.** O corte mora em config, então se move contra dados reais (`GET /scout/seen?story_tag=weak_storytelling`) — mesmo motivo de `min_chars`. `story_score` fica cru, então mover o corte permite re-derivar as linhas antigas. A derivação acontece na escrita: mover o corte só afeta linhas novas.
 
-⚠️ **`story_tag IS NULL` ≠ fraco.** Nulo = não avaliado — o que foi barrado pelos filtros baratos (a nota roda **depois** deles e **depois** do backpressure: fila cheia não publica, então não paga julgamento) e todo candidato de ciclo em que o `llm_service` caiu. **Filtrado não implica nulo:** quem foi recusado por `too_long` passou pela nota e tem as colunas preenchidas — é o ponto da rejeição tardia por tamanho.
+⚠️ **`story_tag IS NULL` ≠ fraco.** Nulo = não avaliado — o que foi barrado pelos filtros baratos (a nota roda **depois** deles e **depois** do backpressure: fila cheia não publica, então não paga julgamento) e todo candidato de ciclo em que o `llm_service` caiu.
 
 `rank_by_story(candidates, scores, neutral, outrage_neutral, outrage_weight)` — ordena por `outrage_weight × outrage + story_score`, desc, **estável**: como `interleave_by_origin` preserva a ordem interna de cada grupo, um sort estável na lista plana vira "melhor primeiro dentro de cada origem" sem tocar na justiça entre origens. Empate mantém a posição do feed. **Candidato sem nota ordena nos próprios limiares**, não no fim — mandá-lo para o fim converteria falha de modelo em handicap permanente, e são as sobras de cada ciclo que herdariam isso.
 
@@ -227,7 +217,7 @@ Desligável em `[scout] story_quality`.
 
 **Ordem das etapas importa:** a capacidade é checada **depois** de registrar os filtrados e **antes** de submeter. Assim uma fila cheia não custa nada e não perde nada — o lixo é queimado e o próximo ciclo começa de uma pilha menor.
 
-**Backpressure** — consulta `GET /pipeline` no orchestrador e conta runs em estado ativo (`pending`, `refining`, `refined`, `processing`, `scheduling`). Se `active_runs >= max_pending_runs`, nada é submetido. A fila free do Buffer segura 10 posts; ingerir mais rápido do que se publica só converte roteiro novo em run falho.
+**Backpressure** — consulta `GET /pipeline` no orchestrador e conta runs em estado ativo (`pending`, `refining`, `refined`, `processing`, `scheduling`). Se `active_runs >= max_pending_runs`, nada é submetido. Ingerir mais rápido do que se publica só converte roteiro novo em run falho — mesmo raciocínio por trás do `[posting] buffer_queue_limit` apertado do `tiktok_poster` (hoje 1, não os 10 que o plano free do Buffer aceitaria): ver `tiktok_poster/docs/scheduling.md` → "Por que o teto é menor que o do Buffer".
 
 **Orçamento por ciclo** — `min(capacidade_restante, max_per_cycle)`. A lista ordenada é percorrida **além** do orçamento, porque candidato rejeitado pela moderação não consome vaga — a próxima história assume.
 
@@ -240,6 +230,65 @@ Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando
 **Dedup** — `SeenItem.external_id` é único e guarda **todo** candidato avaliado, inclusive os rejeitados, com o motivo. Sem isso o scout reposta a mesma história toda semana que ela reaparece no top, e re-avalia o mesmo lixo para sempre. A tabela também serve de trilha de auditoria para calibrar os filtros contra dados reais.
 
 **Falha isolada** — um submit que estoura é gravado como `failed` e o ciclo continua nos demais.
+
+### Escolha de conta (round-robin, 08/09/2026)
+
+Até aqui, todo `POST /pipeline` automático saía sem `account_id` — a descoberta automática
+publicava sempre na conta default, mesmo depois de uma segunda conta (`redditors-inc`) ter
+sido cadastrada na Fase 1 do multi-account (06/09/2026). Resultado medido: dois dias em
+produção sem um único run direcionado a ela. Este é o "próximo passo natural" que
+`docs/multi_account.md` já previa.
+
+**Dois sinais, dois problemas.** Elegibilidade (`active_by_account`, lido de
+`GET /pipeline` a cada ciclo, igual a `count_active_runs()` mas agrupado por conta) diz
+*quais* contas podem receber trabalho agora — uma conta no teto (`max_pending_runs_per_account`)
+não recebe mais nada neste ciclo, mesmo com orçamento global sobrando.
+Desempate (`pick_account`, `usage_by_account`) diz *qual* das elegíveis recebe a próxima
+história — a menos usada recentemente, empate a favor da conta default.
+
+⚠️ **O desempate usa uma janela de 24h (`_submitted_per_account`), não a vida inteira —
+ao contrário de `_submitted_per_origin`.** Toda linha de `seen_items` anterior a esta
+feature tem `account_id = NULL` (foi para a conta default, porque rodízio não existia
+ainda) — são bem mais de 100 linhas `submitted`. Se o desempate contasse desde sempre,
+uma conta nova (contagem 0) ganharia **todo** desempate por dezenas de ciclos até alcançar
+a contagem da conta default, o que na prática pararia de publicar na conta principal por
+dias. Isso nunca aconteceu com origem porque todas as origens nasceram em zero juntas —
+aqui é uma dimensão nova sendo retrofitada sobre histórico assimétrico. A janela de 24h
+resolve isso: o histórico pré-feature sai de vista em menos de um dia.
+
+⚠️ **Elegibilidade é checagem em memória e roda antes da moderação**, mesmo princípio de
+custo do resto do ciclo — moderação é chamada de LLM, elegibilidade é comparação de dict.
+Contas todas no teto interrompe o loop (`skipped_no_account_capacity`) mesmo com orçamento
+global sobrando — distinto de `skipped_no_capacity`, que é o teto global.
+
+**Trava estrutural para conta única.** Com `GET /accounts` devolvendo `[]` (todo deploy
+hoje, e toda a suíte de testes que não chama `accounts_on`), a checagem de elegibilidade
+nunca roda — o comportamento é idêntico ao de antes desta feature **independente** do
+valor de `max_pending_runs_per_account`. Mais robusto que confiar num default numérico
+coincidir com `max_pending_runs`.
+
+⚠️ **Falha em `GET /accounts` degrada para a conta default**, mesmo espírito de toda
+degradação silenciosa do orchestrador — `list_accounts()` não é serviço essencial para
+publicar, então uma indisponibilidade não pode travar o ciclo.
+
+**`max_pending_runs`/`max_per_cycle` continuam intocados** — o teto global de trabalho em
+andamento, protegendo a capacidade compartilhada do `blender_worker`, é ortogonal ao teto
+por conta.
+
+`SeenItem.account_id` (migration `006`) é só auditoria — `GET /scout/seen?account_id=`
+mostra para onde cada história foi. A decisão em si nunca olha essa coluna isolada, só a
+agregação recente via `_submitted_per_account`.
+
+**Fora de escopo, de propósito**: a caixa de entrada manual (`inbox.py`) continua sempre na
+conta default — quem já escolheu o vídeo ali foi uma pessoa, e distribuir isso entre contas
+não foi pedido.
+
+- Testes: seção "contas de publicação (round-robin)" em `test_scout.py` — desempate puro
+  (`pick_account`), a janela de 24h ignorando histórico antigo, conta única inalterada,
+  duas contas alternando dentro de um ciclo, teto por conta interrompendo o loop com
+  orçamento global sobrando, a checagem rodando antes da moderação, persistência em
+  `SeenItem`, filtro por `status`, degradação quando `GET /accounts` falha, e o campo
+  exposto em `GET /scout/seen`.
 
 `scout_loop()` — driver periódico iniciado no `lifespan` do FastAPI. Não precisa de scheduler durável: `seen_items` torna o ciclo idempotente, então um restart no pior caso repete uma passagem que não acha nada novo. O loop sobrevive a qualquer exceção de ciclo.
 
@@ -254,11 +303,9 @@ Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando
 ### Endpoints (`src/content_scout/api/routes/scout.py`)
 
 - `POST /scout/run` — roda um ciclo agora, síncrono, e devolve os contadores. Feito para calibrar filtros vendo o resultado na hora.
-- `GET /scout/seen?status=&story_tag=&limit=&offset=` — trilha de auditoria; filtre por `filtered` para ver o que foi rejeitado e por quê, e por `story_tag=weak_storytelling` para calibrar `min_story_score`.
+- `GET /scout/seen?status=&story_tag=&account_id=&limit=&offset=` — trilha de auditoria; filtre por `filtered` para ver o que foi rejeitado e por quê, por `story_tag=weak_storytelling` para calibrar `min_story_score`, e por `account_id` para ver o que uma conta específica recebeu.
 
-**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `story_scored`, `weak_storytelling`, `low_outrage`, `with_villain`, `story_quality_unavailable`, `archive_swept`, `archive_fetched`, `archive_wrapped`, `duplicate_story`, `too_long`, `already_running`.
-
-`too_long` conta os candidatos julgados e gravados com a nota, depois recusados pelo teto de tamanho. É recorte de `filtered`, não uma categoria à parte.
+**Response** (`ScoutRunResponse`): `fetched`, `already_seen`, `filtered`, `unsafe`, `submitted`, `skipped_no_capacity`, `skipped_no_account_capacity`, `moderation_unavailable`, `active_runs`, `submitted_ids`, `comments_fetched`, `story_scored`, `weak_storytelling`, `low_outrage`, `with_villain`, `story_quality_unavailable`, `archive_swept`, `archive_fetched`, `archive_wrapped`, `duplicate_story`, `already_running`.
 
 `archive_swept` é a origem varrida no ciclo (`None` quando nenhuma estava devida); `archive_wrapped` diz que a listagem acabou e voltou ao topo; `duplicate_story` conta candidatos pulados por já existir a mesma história sob outro id.
 
@@ -266,7 +313,7 @@ Intercalar mantém o ranking do Reddit como sinal de qualidade (continua pegando
 
 `weak_storytelling`, `low_outrage` e `with_villain` contam tudo que foi julgado no ciclo, não só o que foi publicado. Nenhum dos três rejeita nada — são a leitura da oferta.
 
-`GET /scout/seen` devolve também `author`, `comment_count` (nulo = não consultado), `has_hook`, `story_score`, `outrage_score`, `has_villain`, `story_tag`, `hook_line`, `story_reason` (todos nulos = não avaliado) e `comments[]` com `external_id`, `author`, `text`, `position`, `published`.
+`GET /scout/seen` devolve também `author`, `comment_count` (nulo = não consultado), `has_hook`, `story_score`, `outrage_score`, `has_villain`, `story_tag`, `hook_line`, `story_reason` (todos nulos = não avaliado), `account_id` (nulo = conta default, incluindo toda linha anterior à migration 006) e `comments[]` com `external_id`, `author`, `text`, `position`, `published`.
 
 ### Notificação de operação (`src/core/notify.py`)
 
@@ -320,7 +367,7 @@ Telegram exigiria token, dependência e um serviço a mais.
 - `inbox_loop()` — assina `{NTFY_INBOX_URL}/json` e trata cada mensagem. Iniciado no `lifespan`.
 - `handle_message(message) -> list[str]` — extrai as URLs e processa **uma de cada vez**.
 - `handle_url(url) -> str` — o desfecho: `submitted` / `duplicate_url` / `duplicate_video` /
-  `duplicate_story` / `too_short:{n}` / `too_long:{n}` / `no_capacity` / `transcribe_failed` /
+  `duplicate_story` / `too_short:{n}` / `no_capacity` / `transcribe_failed` /
   `submit_failed`.
 - `extract_urls(message) -> list[str]` — puro.
 
@@ -332,7 +379,7 @@ Telegram exigiria token, dependência e um serviço a mais.
 | 2 | Reenvio do mesmo link (`seen_items.url`) | uma consulta |
 | 3 | Transcrição (`tts_service POST /transcribe`) | **~70s de CPU** |
 | 4 | Dedup por `external_id` e por fingerprint | duas consultas |
-| 5 | `min_chars` / `max_chars` | grátis |
+| 5 | `min_chars` | grátis |
 
 ⚠️ **A checagem 2 existe só para não pagar a 3.** O dedup de verdade é `external_id` +
 fingerprint, e os dois só ficam disponíveis **depois** de transcrever. Como reenviar o mesmo link é
@@ -385,10 +432,9 @@ Nada mais muda: dedup, filtros, backpressure e orçamento tratam toda fonte igua
 
 ## Testing rules
 
-- `tests/test_reddit_source.py` (34), `tests/test_filters.py` (14) e `tests/test_story_quality.py` (34) — marcados `no_db`, rodam sem docker. O último usa `respx` para o cliente HTTP.
+- `tests/test_reddit_source.py` (34), `tests/test_filters.py` (11) e `tests/test_story_quality.py` (34) — marcados `no_db`, rodam sem docker. O último usa `respx` para o cliente HTTP.
 - `tests/test_inbox.py` (19) — 9 puros (`no_db`: extração de URL e montagem do candidato) e 10 de integração, que exigem o banco. `TranscribeClient` e `OrchestratorClient` são mockados via `patch.object`.
-- `tests/test_scout.py` (78) — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
-- A fixture `length_cfg` (não-autouse) fixa `min_chars`/`max_chars` nos testes do teto de tamanho, para eles não dependerem do `config.ini` — subir `max_chars` em produção não pode quebrar a suíte.
+- `tests/test_scout.py` (88 — inclui 10 da seção "contas de publicação (round-robin)") — integração, exige o banco `content_scout`. Orchestrador é mockado via `monkeypatch` nos métodos de `OrchestratorClient`.
 - ⚠️ **Nunca rodar a suíte com DB contra o banco vivo**: o fixture autouse `clean_db` apaga `seen_items` e `archive_cursors`, ou seja, o histórico de dedup inteiro — o scout voltaria a republicar tudo. Criar um banco descartável: `docker exec content_engine-db-1 psql -U postgres -c "CREATE DATABASE content_scout_wt;"`, `alembic upgrade head` nele e rodar com `DATABASE_URL=…/content_scout_wt`.
 - O helper `_candidate` em `test_scout.py` costura o `external_id` dentro do corpo. Corpos iguais fazem o dedup por fingerprint tratar todo candidato depois do primeiro como repost — um helper com `"aaa…"` para todos quebraria a suíte inteira.
 - A fixture autouse `archive_off` desliga a varredura histórica por padrão; use `archive_on` para exercitá-la.

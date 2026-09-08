@@ -3,7 +3,6 @@ import pytest
 from src.content_scout.filters import (
     content_fingerprint,
     evaluate,
-    exceeds_length,
     normalize_for_fingerprint,
 )
 from src.content_scout.sources.base import Candidate
@@ -34,11 +33,12 @@ def test_floor_is_inclusive():
     assert evaluate(_candidate("a" * 600), min_chars=600) is None
 
 
-def test_length_ceiling_is_not_checked_here():
-    """The ceiling runs after the story score, so the cheap pass must let it by.
+def test_there_is_no_length_ceiling():
+    """A long post is never rejected for being long — only condensed harder.
 
-    Checking it here is what used to discard a long post before anything asked
-    whether it was good — and the good ones are disproportionately the long ones.
+    There used to be a ceiling here; it was dropped once the refiner started
+    always recounting every candidate, of any length, into the same short
+    video. Length now only changes how much the refiner has to condense.
     """
     assert evaluate(_candidate("a" * 40000), min_chars=600) is None
 
@@ -51,21 +51,6 @@ def test_sensitive_wording_is_not_judged_here():
     """
     text = "Eram 3 mil que não me mataria, mas afundaria minhas contas. " + "a" * 600
     assert evaluate(_candidate(text), min_chars=600) is None
-
-
-# --------------------------------------------------------------- length ceiling
-
-
-def test_rejects_too_long():
-    assert exceeds_length(_candidate("a" * 9000), max_chars=6000) == "too_long:9000"
-
-
-def test_ceiling_is_inclusive():
-    assert exceeds_length(_candidate("a" * 6000), max_chars=6000) is None
-
-
-def test_short_body_clears_the_ceiling():
-    assert exceeds_length(_candidate("a" * 1000), max_chars=6000) is None
 
 
 # ---------------------------------------------------------------- fingerprints

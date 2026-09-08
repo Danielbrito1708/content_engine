@@ -68,15 +68,11 @@ A segunda é **marcar**. Toda história avaliada recebe uma etiqueta: `strong` q
 
 **O que é descartado automaticamente:**
 
-Nem toda história serve. O sistema recusa textos curtos demais, que não têm história suficiente para sustentar um vídeo, e textos longos demais, que custariam mais narração e renderização do que uma vaga vale.
+Nem toda história serve. O sistema recusa textos curtos demais, que não têm história suficiente para sustentar um vídeo.
 
-**Mas o limite de tamanho deixou de ser o primeiro critério.** Ele era: o texto longo era descartado assim que chegava, antes de qualquer pergunta sobre qualidade. O problema é que isso descartava justamente o melhor material. Numa medição sobre 45 histórias reais, 11 estavam acima do teto — e **nenhuma delas tirou nota baixa**, enquanto todas as histórias fracas estavam dentro do teto. Metade das notas mais altas estava do lado descartado. Faz sentido: as comunidades onde mora o gênero premiam quem escreve bem e longo, então tamanho e qualidade andam juntos, e cortar por tamanho primeiro era cortar por qualidade ao contrário.
+**Não existe mais um limite para texto longo demais.** Havia um: histórias grandes eram descartadas por custarem mais narração e renderização do que uma vaga valia. Mas isso parou de fazer sentido quando o formato do vídeo mudou para uma história completa recontada em 10 a 40 segundos — hoje toda história, curta ou enorme, é resumida para caber nesse tamanho fixo, então o comprimento do texto original deixou de mudar o que sai no fim. E ele já vinha descartando justamente o melhor material: numa medição sobre 45 histórias reais, 11 estavam acima do antigo teto, e nenhuma delas tirou nota baixa — as comunidades onde mora esse gênero premiam quem escreve bem e longo, então cortar por tamanho primeiro era cortar por qualidade ao contrário.
 
-Agora a história longa é coletada, lida e **avaliada normalmente**, recebe sua nota e sua etiqueta, e só então é recusada por tamanho. Ela não vira vídeo, mas fica registrada com a nota que tirou. A diferença prática é que o registro de rejeições passa a responder "o que estamos deixando passar", em vez de só dizer que algo foi descartado.
-
-**E o teto subiu: de 6.000 para 30.000 caracteres.** A medição acima dizia que o limite antigo estava recusando o melhor material, então ele foi movido para onde existe uma razão real para ele estar. Esse ponto é o maior texto que ainda vira **um** vídeo só: acima disso, a etapa de refinamento passa a dividir a história em série com gancho de continuação. O valor antigo equivalia a cerca de cinco minutos e meio de narração — um quinto do que cabe num vídeo. O novo equivale a quase vinte e oito minutos, encostado no limite de trinta que o formato admite, com uma folga para o texto crescer enquanto é reescrito.
-
-Na prática: as histórias longas e bem avaliadas que vinham sendo registradas e descartadas passam a virar vídeo. O teto continua existindo, mas agora ele marca uma fronteira de formato — onde um post deixa de caber num vídeo — em vez de um palpite sobre custo.
+Agora a história longa é coletada, lida, avaliada e enviada ao pipeline como qualquer outra — sem passar por nenhuma checagem de tamanho depois do piso mínimo.
 
 Depois disso, cada história que está prestes a ser publicada passa por uma leitura de segurança feita por um modelo de linguagem. A pergunta é uma só: publicar isso coloca a conta em risco de suspensão? Assuntos como automutilação, abuso sexual e violência gráfica são recusados. Não é moralismo, é sobrevivência do canal — o TikTok remove contas que publicam esse tipo de conteúdo, e uma única coleta ruim custaria o perfil inteiro.
 
@@ -190,7 +186,7 @@ Quando o roteiro não deixa claro quem narra, o vídeo usa a voz padrão de semp
 
 Se a narração do gancho falhar, o vídeo é produzido do mesmo jeito. Esse arquivo é um extra — perdê-lo não pode custar a peça inteira, e a falta dele fica registrada para quem for olhar depois.
 
-O sistema suporta três motores de voz. O primeiro é gratuito e funciona sem nenhuma configuração extra, mas entrega o áudio numa qualidade fixa e baixa — é a razão pela qual a narração soa abafada, como se viesse de um rádio. O segundo é o Azure, que usa exatamente as mesmas vozes do gratuito, só que numa qualidade muito superior. O terceiro é o ElevenLabs, ainda não implementado, para quando fizer sentido pagar por vozes mais expressivas. A escolha entre eles é feita por configuração, sem alterar nada no fluxo de produção.
+O sistema suporta três motores de voz. O primeiro é gratuito e funciona sem nenhuma configuração extra, mas entrega o áudio numa qualidade fixa e baixa — é a razão pela qual a narração soa abafada, como se viesse de um rádio. O segundo é o Azure, que usa exatamente as mesmas vozes do gratuito, só que numa qualidade muito superior. O terceiro é o ElevenLabs, com vozes de outra biblioteca (não as mesmas do gratuito/Azure) e potencialmente mais expressivas, para quando fizer sentido pagar por caractere narrado. A escolha entre eles é feita por configuração, sem alterar nada no fluxo de produção.
 
 **O motor em uso é o gratuito, por decisão.** O Azure está pronto e é melhor em áudio, mas exige uma conta e uma chave para manter — e a diferença, ainda que audível, não impede nada de ser publicado. Trocar continua sendo uma questão de configuração: preencher a chave e apontar para o Azure. Se a chave faltar, o sistema se recusa a subir em vez de descobrir o problema no meio de uma produção, então a troca falha de forma limpa e visível.
 
@@ -490,7 +486,7 @@ Se a biblioteca estiver vazia, o sistema continua usando o arquivo único de ant
 
 ## Fila cheia deixou de jogar vídeo fora
 
-O serviço de agendamento aceita no máximo 10 posts na fila. Quando ela enchia, a história inteira era marcada como **falha** — depois de já ter pago o refinamento do texto, a narração, a transcrição e a montagem do vídeo. O trabalho ia todo para o lixo por causa de um minuto de fila cheia.
+O serviço de agendamento aceita um número limitado de posts na fila (hoje 1 — ver "Mudanças no canal aparecem quase no dia seguinte", mais abaixo; era 10 quando esta proteção foi criada). Quando ela enchia, a história inteira era marcada como **falha** — depois de já ter pago o refinamento do texto, a narração, a transcrição e a montagem do vídeo. O trabalho ia todo para o lixo por causa de um minuto de fila cheia.
 
 Agora a história fica **esperando vaga**, com os vídeos prontos guardados. De tempos em tempos o sistema tenta de novo sozinho, e assim que abre espaço na fila ela é agendada.
 
@@ -725,10 +721,18 @@ conta que já está no ar.
 
 Cada conta cadastrada recebe uma identidade própria. Ao enviar um roteiro manualmente, dá
 para dizer qual conta deve publicá-lo; sem indicar nenhuma, o vídeo sai na conta de sempre,
-exatamente como sempre saiu. **A busca automática de roteiros no Reddit ainda não escolhe
-conta sozinha** — por enquanto ela continua alimentando só a conta principal, e distribuir
-histórias automaticamente entre contas fica para uma etapa futura, quando fizer sentido
-operar várias contas ao mesmo tempo em produção.
+exatamente como sempre saiu.
+
+**Atualização: a busca automática de roteiros no Reddit agora distribui entre as contas
+ativas**, em vez de alimentar só a principal. A cada história descoberta, o sistema escolhe
+a conta menos servida recentemente, respeitando um limite de quanto trabalho cada conta pode
+ter em andamento ao mesmo tempo — se uma conta está no limite, a próxima história vai para
+outra, e só quando todas estiverem ocupadas o ciclo espera. O critério olha só o dia
+anterior, não o histórico completo: senão uma conta recém-criada ganharia toda história nova
+por semanas, até "empatar" com o total acumulado da conta principal — o oposto do que se
+quer, que é reforçar a conta nova só um pouco no começo. A caixa de entrada de links
+compartilhados manualmente continua sempre indo para a conta principal, porque ali a escolha
+já foi feita por uma pessoa.
 
 O token de cada conta extra fica guardado cifrado, isolado da conta principal — perder ou
 trocar o token de uma não afeta a outra, e nenhum dos dois aparece em texto claro em lugar
@@ -775,6 +779,27 @@ Isso é só a parte que o sistema automatiza. A outra metade — perfil completo
 primeiro vídeo, alguns dias de uso normal do aplicativo na conta, responder comentário nos
 primeiros posts — continua sendo trabalho manual, feito por uma pessoa, porque automatizar
 esse uso seria o mesmo tipo de comportamento suspeito que o aquecimento existe para evitar.
+
+## Mudanças no canal aparecem quase no dia seguinte
+
+Cada vídeo já sai pronto — trilha, fundo, legenda — no momento em que é montado. Trocar a
+trilha sonora, ou qualquer outro material usado na montagem, não muda vídeo nenhum que já
+foi montado; só muda os próximos. Até aqui isso não era um problema visível porque o sistema
+guardava até 10 vídeos já prontos numa fila, esperando a vez de publicar, publicando 3 por
+dia — então uma troca feita hoje só aparecia num vídeo publicado dali a alguns dias, depois
+de até 10 posts com o material antigo. Foi assim que o problema apareceu na prática: trocar a
+música do canal e ver os próximos vídeos publicados continuarem com a música velha por mais
+de uma semana.
+
+Agora a fila guarda **no máximo 1** vídeo pronto de cada vez. Uma troca feita hoje aparece,
+na prática, no vídeo seguinte — quase sempre já no dia seguinte, nunca dez posts depois.
+
+Isso tem um preço: aquela fila de vídeos prontos também era uma reserva para os dias em que
+a produção de vídeo trava por algum motivo técnico — com a reserva menor, um tropeço bem na
+hora de publicar tem mais chance de custar um horário vazio em vez de só um vídeo com
+material desatualizado a mais. Foi uma troca deliberada: preferir que o canal reflita
+mudanças rápido, aceitando ficar com menos gordura para absorver um problema técnico
+pontual.
 
 ## Fluxo completo resumido
 
