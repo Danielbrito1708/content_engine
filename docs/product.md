@@ -486,7 +486,15 @@ Ele não aparece por cima do card de abertura — só depois que o card sai, jun
 
 O texto, a posição e o tamanho da letra são configuráveis no template do vídeo — dá para trocar a frase, mover para mais perto ou mais longe do rodapé, ou aumentar/diminuir a letra sem mexer em código. E é opcional: um vídeo montado com um template que não define essa frase sai exatamente como saía antes, sem nenhuma faixa a mais.
 
-⚠️ **Ainda não está no ar.** O texto foi adicionado ao arquivo de template do repositório, mas — como todo ajuste de template deste projeto — só passa a valer depois que alguém publica o arquivo atualizado no lugar de onde a montagem de fato lê (ver aviso equivalente sobre `narration.rate` no `CLAUDE.md` da raiz). Até lá, os vídeos continuam saindo sem a faixa, sem nenhum aviso de que ela "deveria" estar lá.
+⚠️ **Ainda não está no ar.** O texto está pronto no novo formato de template editável (ver seção seguinte), mas ainda não foi publicado no lugar de onde a montagem de fato lê — isso exige um passo manual no servidor de produção que esta sessão não tem como executar (ver aviso no `CLAUDE.md` da raiz). Até lá, os vídeos continuam saindo sem a faixa, sem nenhum aviso de que ela "deveria" estar lá.
+
+## A montagem do vídeo passou a ler um arquivo editável, não mais números escondidos no código
+
+Até aqui, mudar como o vídeo é montado — onde cada elemento fica na tela, quanto tempo cada trecho dura, o que acontece antes ou depois de quê — exigia mudar código-fonte e publicar uma nova versão do serviço de montagem. O arquivo de configuração (`template.json`) só ajustava números dentro dessa forma fixa; não dava para descrever, por exemplo, uma trilha nova ou uma peça a mais sem escrever Python.
+
+Agora existe um segundo formato de template, escrito num arquivo de texto comum (parecido com uma lista de tarefas, não com código), que descreve a montagem inteira: quais peças existem, em que ordem, quando cada uma entra e sai. Foi esse formato que ganhou a faixa de apoio no rodapé (seção anterior) como uma peça nova — sem precisar mexer no serviço de montagem para isso.
+
+Isso não muda como nenhum vídeo já publicado ficou, e não muda nada visível hoje: a virada só tem efeito no dia em que o novo arquivo for publicado no lugar de onde a montagem lê de verdade, o mesmo passo manual mencionado acima.
 
 ## Fundo diferente a cada vídeo
 

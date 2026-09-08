@@ -124,3 +124,17 @@ tracks:
           y_position: 0.474
           color: [1.0, 1.0, 1.0, 1.0]
           outline: { color: [0.0, 0.0, 0.0, 1.0], width: 0.24 }
+
+  - name: cta
+    channel: 7
+    role: bed            # roda até timeline_end sem decidir onde ele fica —
+                          # mesma regra da música e do fundo
+    clips:
+      - type: text
+        text: "me ajude a pagar a faculdade, segue o perfil"
+        start: $card_end  # nunca sobre o card — mesma regra da legenda
+        y_position: 0.12  # perto do rodapé, acima da UI que o próprio TikTok desenha
+        style:
+          font_size: 50   # bem menor que a legenda: fica na tela o vídeo inteiro
+          color: [1.0, 1.0, 1.0, 1.0]
+          outline: { color: [0.0, 0.0, 0.0, 1.0], width: 0.24 }

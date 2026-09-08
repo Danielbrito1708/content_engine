@@ -104,8 +104,8 @@ async def test_missing_required_input_propagates_resolver_error(monkeypatch, rea
     video = _video(voice_key=None)
 
     with (
-        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
-        patch("src.blender_worker.timeline.preview.probe_duration_seconds", new_callable=AsyncMock),
+        patch("src.blender_worker.timeline.assemble.download_file", new_callable=AsyncMock),
+        patch("src.blender_worker.timeline.assemble.probe_duration_seconds", new_callable=AsyncMock),
     ):
         with pytest.raises(TimelineResolutionError, match="voice"):
             await assemble_preview(video=video, template_blend_key="t.blend", doc=_doc(), flags={})
@@ -124,9 +124,10 @@ async def test_missing_optional_asset_is_skipped_without_downloading(monkeypatch
         return proc_ok
 
     with (
-        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock) as download,
-        patch("src.blender_worker.timeline.preview.probe_duration_seconds",
+        patch("src.blender_worker.timeline.assemble.download_file", new_callable=AsyncMock) as download,
+        patch("src.blender_worker.timeline.assemble.probe_duration_seconds",
               new_callable=AsyncMock, return_value=10.0),
+        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
         patch("src.blender_worker.timeline.preview.subprocess.run", side_effect=fake_run),
     ):
         output_path, tmpdir, resolved = await assemble_preview(
@@ -156,9 +157,10 @@ async def test_image_input_is_not_probed(monkeypatch, real_tmpdir):
         return proc_ok
 
     with (
-        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
-        patch("src.blender_worker.timeline.preview.probe_duration_seconds",
+        patch("src.blender_worker.timeline.assemble.download_file", new_callable=AsyncMock),
+        patch("src.blender_worker.timeline.assemble.probe_duration_seconds",
               new_callable=AsyncMock, return_value=10.0) as probe,
+        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
         patch("src.blender_worker.timeline.preview.subprocess.run", side_effect=fake_run),
     ):
         await assemble_preview(video=video, template_blend_key="t.blend", doc=doc, flags={})
@@ -180,9 +182,10 @@ async def test_subtitles_duration_mirrors_voice_instead_of_being_probed(monkeypa
         return proc_ok
 
     with (
-        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
-        patch("src.blender_worker.timeline.preview.probe_duration_seconds",
+        patch("src.blender_worker.timeline.assemble.download_file", new_callable=AsyncMock),
+        patch("src.blender_worker.timeline.assemble.probe_duration_seconds",
               new_callable=AsyncMock, return_value=12.0) as probe,
+        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
         patch("src.blender_worker.timeline.preview.subprocess.run", side_effect=fake_run),
     ):
         await assemble_preview(video=_video(), template_blend_key="t.blend", doc=_doc(), flags={})
@@ -202,9 +205,10 @@ async def test_successful_assemble_writes_payload_config(monkeypatch, real_tmpdi
         return proc_ok
 
     with (
-        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
-        patch("src.blender_worker.timeline.preview.probe_duration_seconds",
+        patch("src.blender_worker.timeline.assemble.download_file", new_callable=AsyncMock),
+        patch("src.blender_worker.timeline.assemble.probe_duration_seconds",
               new_callable=AsyncMock, return_value=5.0),
+        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
         patch("src.blender_worker.timeline.preview.subprocess.run", side_effect=fake_run),
     ):
         await assemble_preview(video=video, template_blend_key="t.blend", doc=_doc(), flags={})
@@ -221,9 +225,10 @@ async def test_blender_assemble_failure_cleans_up_and_raises(monkeypatch, real_t
     proc_fail = CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
 
     with (
-        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
-        patch("src.blender_worker.timeline.preview.probe_duration_seconds",
+        patch("src.blender_worker.timeline.assemble.download_file", new_callable=AsyncMock),
+        patch("src.blender_worker.timeline.assemble.probe_duration_seconds",
               new_callable=AsyncMock, return_value=5.0),
+        patch("src.blender_worker.timeline.preview.download_file", new_callable=AsyncMock),
         patch("src.blender_worker.timeline.preview.subprocess.run", return_value=proc_fail),
     ):
         with pytest.raises(RuntimeError, match="Blender exited 1"):

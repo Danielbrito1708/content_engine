@@ -1,16 +1,20 @@
 import asyncio
 import uuid
+from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy import select
 
 from src.blender_worker import worker
 from src.blender_worker.db.engine import AsyncSessionLocal
 from src.blender_worker.db.models import Job, JobStatus, Template, Video
 from src.blender_worker.worker import render_job
+
+DEFAULT_TEMPLATE_YAML = (
+    Path(__file__).resolve().parents[1] / "templates_v2" / "default.yaml"
+).read_bytes()
 
 
 async def _get_job(job_id):
@@ -30,26 +34,50 @@ async def test_render_job_not_found_does_not_raise():
     await render_job(uuid.uuid4())
 
 
-async def test_render_job_completes(session, video, template):
+def _proc_ok():
     from subprocess import CompletedProcess
-    from unittest.mock import MagicMock
+    return CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
+
+def _render_mocks(**overrides):
+    """The standard set of patches for a `_render` run that should reach the
+    end successfully — every I/O boundary (MinIO, ffprobe, Blender, the DB
+    session is real) mocked out. `resolve_video_timeline`'s own downloads and
+    probing live in `timeline/assemble.py`, not `worker.py` — see that
+    module's docstring for why the two are patched at different import
+    paths."""
+    defaults = dict(
+        download_bytes=patch(
+            "src.blender_worker.worker.download_bytes",
+            new=AsyncMock(return_value=DEFAULT_TEMPLATE_YAML),
+        ),
+        worker_download_file=patch("src.blender_worker.worker.download_file", new_callable=AsyncMock),
+        assemble_download_file=patch(
+            "src.blender_worker.timeline.assemble.download_file", new_callable=AsyncMock
+        ),
+        assemble_probe=patch(
+            "src.blender_worker.timeline.assemble.probe_duration_seconds",
+            new_callable=AsyncMock, return_value=5.0,
+        ),
+        upload_file=patch("src.blender_worker.worker.upload_file", new_callable=AsyncMock),
+        to_thread=patch(
+            "src.blender_worker.worker.asyncio.to_thread", new_callable=AsyncMock,
+            return_value=_proc_ok(),
+        ),
+        exists=patch("src.blender_worker.worker.os.path.exists", return_value=True),
+    )
+    defaults.update(overrides)
+    return defaults
+
+
+async def test_render_job_completes(session, video, template):
     job = await _make_job(session, video, template)
-
-    proc_ok = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    mocks = _render_mocks()
 
     with (
-        patch("src.blender_worker.worker.download_file", new_callable=AsyncMock),
-        patch("src.blender_worker.worker.upload_file", new_callable=AsyncMock),
-        patch("src.blender_worker.worker.asyncio.to_thread", new_callable=AsyncMock,
-              return_value=proc_ok),
-        patch("src.blender_worker.worker.json.load", return_value={
-            "frame_rate": 30, "frame_end": 900,
-            "channels": {"video": 1, "music": 2, "voice": 3, "subtitles": 4},
-            "timing": {"intro_start": 0, "speech_start": 90},
-        }),
-        patch("builtins.open", create=True),
-        patch("src.blender_worker.worker.os.path.exists", return_value=True),
+        mocks["download_bytes"], mocks["worker_download_file"],
+        mocks["assemble_download_file"], mocks["assemble_probe"],
+        mocks["upload_file"], mocks["to_thread"], mocks["exists"],
     ):
         await render_job(job.id)
 
@@ -60,35 +88,55 @@ async def test_render_job_completes(session, video, template):
     assert updated.error is None
 
 
-async def _run_and_capture_config(job_id):
-    """Run render_job with every side effect stubbed, returning the job_config."""
-    from subprocess import CompletedProcess
+async def test_render_job_fails_without_a_yaml_key(session, video):
+    # No v1 fallback — see docs/edicao_declarativa.md's "corte seco"
+    # decision. A Template that never got a yaml_key must fail loudly, not
+    # silently render the retired template.json-driven layout.
+    t = Template(name="No YAML", blend_key="test/t.blend", json_key="test/t.json")
+    session.add(t)
+    await session.commit()
+    await session.refresh(t)
+    job = await _make_job(session, video, t)
+
+    await render_job(job.id)
+
+    updated = await _get_job(job.id)
+    assert updated.status == JobStatus.failed
+    assert "yaml_key" in updated.error
+
+
+async def _run_and_capture_config(job_id, *, probe_seconds=5.0):
+    """Run render_job with every side effect stubbed, returning the
+    job_config that was about to be written to disk."""
+    import src.blender_worker.worker as worker_module
 
     captured = {}
+    real_dump = worker_module.json.dump
 
-    def capture(payload, _fh):
+    def capture(payload, fh, *a, **kw):
         captured.update(payload)
+        return real_dump(payload, fh, *a, **kw)
 
-    proc_ok = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    mocks = _render_mocks(
+        assemble_probe=patch(
+            "src.blender_worker.timeline.assemble.probe_duration_seconds",
+            new_callable=AsyncMock, return_value=probe_seconds,
+        ),
+    )
+    downloaded_asset_keys = []
+
+    async def _record_download(bucket, key, dest):
+        downloaded_asset_keys.append(key)
 
     with (
-        patch("src.blender_worker.worker.download_file", new_callable=AsyncMock) as download,
-        patch("src.blender_worker.worker.upload_file", new_callable=AsyncMock),
-        patch("src.blender_worker.worker.asyncio.to_thread", new_callable=AsyncMock,
-              return_value=proc_ok),
-        patch("src.blender_worker.worker.json.load", return_value={
-            "frame_rate": 30, "frame_end": 900,
-            "channels": {"video": 1, "music": 2, "voice": 3, "subtitles": 4},
-            "timing": {"intro_start": 0, "speech_start": 90},
-        }),
+        mocks["download_bytes"], mocks["worker_download_file"],
+        patch("src.blender_worker.timeline.assemble.download_file", side_effect=_record_download),
+        mocks["assemble_probe"], mocks["upload_file"], mocks["to_thread"], mocks["exists"],
         patch("src.blender_worker.worker.json.dump", side_effect=capture),
-        patch("builtins.open", create=True),
-        patch("src.blender_worker.worker.os.path.exists", return_value=True),
     ):
         await render_job(job_id)
 
-    downloaded = [call.args[1] for call in download.await_args_list]
-    return captured, downloaded
+    return captured, downloaded_asset_keys
 
 
 async def test_render_job_without_intro_passes_only_the_four_base_assets(
@@ -98,7 +146,7 @@ async def test_render_job_without_intro_passes_only_the_four_base_assets(
 
     config, downloaded = await _run_and_capture_config(job.id)
 
-    assert set(config["assets"]) == {"video", "music", "voice", "subtitles"}
+    assert set(config["assets"]) == {"background", "music", "voice", "subtitles"}
     assert not [key for key in downloaded if "card" in key or "hook" in key]
 
 
@@ -123,7 +171,7 @@ async def test_render_job_downloads_and_passes_the_intro_assets(session, templat
     assert "audio/run/hook.mp3" in downloaded
 
 
-async def test_render_job_forwards_the_muted_hook_flag(session, template):
+async def test_render_job_forwards_the_muted_hook_flag_into_the_payload(session, template):
     video = Video(
         video_file_key="test/video.mp4",
         music_key="test/music.mp3",
@@ -141,7 +189,8 @@ async def test_render_job_forwards_the_muted_hook_flag(session, template):
 
     # Still downloaded: muted or not, the file is what the card is measured by.
     assert "audio/run/hook.mp3" in downloaded
-    assert config["hook_muted"] is True
+    hook_clip = next(c for c in config["payload"]["clips"] if c["track"] == "hook")
+    assert hook_clip["muted"] is True
 
 
 async def test_render_job_defaults_to_an_audible_hook(session, video, template):
@@ -149,7 +198,8 @@ async def test_render_job_defaults_to_an_audible_hook(session, video, template):
 
     config, _ = await _run_and_capture_config(job.id)
 
-    assert config["hook_muted"] is False
+    voz_clip = next(c for c in config["payload"]["clips"] if c["track"] == "voz")
+    assert voz_clip["muted"] is False
 
 
 async def test_render_job_takes_the_card_without_the_hook(session, template):
@@ -170,6 +220,16 @@ async def test_render_job_takes_the_card_without_the_hook(session, template):
 
     assert "card" in config["assets"]
     assert "hook" not in config["assets"]
+
+
+async def test_render_job_includes_the_cta_clip(session, video, template):
+    job = await _make_job(session, video, template)
+
+    config, _ = await _run_and_capture_config(job.id)
+
+    cta = next(c for c in config["payload"]["clips"] if c["track"] == "cta")
+    assert cta["type"] == "text"
+    assert cta["text"] == "me ajude a pagar a faculdade, segue o perfil"
 
 
 @pytest.fixture
@@ -243,20 +303,46 @@ async def test_render_slot_is_released_when_a_render_raises(fresh_slot, monkeypa
 
 async def test_render_job_fails_on_subprocess_error(session, video, template):
     job = await _make_job(session, video, template)
+    mocks = _render_mocks(
+        to_thread=patch(
+            "src.blender_worker.worker.asyncio.to_thread",
+            side_effect=CalledProcessError(1, "blender"),
+        ),
+    )
 
     with (
-        patch("src.blender_worker.worker.download_file", new_callable=AsyncMock),
-        patch("src.blender_worker.worker.upload_file", new_callable=AsyncMock),
-        patch("src.blender_worker.worker.asyncio.to_thread",
-              side_effect=CalledProcessError(1, "blender")),
-        patch("src.blender_worker.worker.json.load", return_value={
-            "frame_rate": 30, "frame_end": 900,
-            "channels": {}, "timing": {},
-        }),
-        patch("builtins.open", create=True),
+        mocks["download_bytes"], mocks["worker_download_file"],
+        mocks["assemble_download_file"], mocks["assemble_probe"],
+        mocks["upload_file"], mocks["to_thread"],
     ):
         await render_job(job.id)
 
     updated = await _get_job(job.id)
     assert updated.status == JobStatus.failed
     assert updated.error is not None
+
+
+async def test_render_job_fails_when_a_required_input_is_missing(session, template):
+    # voice_key is required by the shipped template — resolve_timeline raises
+    # before Blender is ever invoked.
+    video = Video(
+        video_file_key="test/video.mp4",
+        music_key="test/music.mp3",
+        voice_key="",
+        subtitle_key="test/subs.srt",
+    )
+    session.add(video)
+    await session.commit()
+    job = await _make_job(session, video, template)
+
+    mocks = _render_mocks()
+    with (
+        mocks["download_bytes"], mocks["worker_download_file"],
+        mocks["assemble_download_file"], mocks["assemble_probe"],
+        mocks["upload_file"], mocks["to_thread"], mocks["exists"],
+    ):
+        await render_job(job.id)
+
+    updated = await _get_job(job.id)
+    assert updated.status == JobStatus.failed
+    assert "voice" in updated.error

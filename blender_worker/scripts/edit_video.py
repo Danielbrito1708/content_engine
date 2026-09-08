@@ -873,6 +873,7 @@ def apply_payload(scene, vse, payload, assets):
         "audio": _apply_audio_clip,
         "image": _apply_image_clip,
         "subtitles": _apply_subtitles_clip,
+        "text": _apply_text_clip,
     }
     content_clips = [c for c in payload["clips"] if c["role"] == "content"]
     bed_clips = [c for c in payload["clips"] if c["role"] == "bed"]
@@ -937,6 +938,21 @@ def _apply_image_clip(scene, vse, clip, assets, frame_rate):
         scene, vse, path, clip["channel"],
         clip["frame_start"], clip["frame_end"], config,
         scene.render.resolution_y,
+    )
+
+
+def _apply_text_clip(scene, vse, clip, assets, frame_rate):
+    """A `text` clip is always `role: bed` (`templates_v2/default.yaml`'s
+    `cta` track) — it runs to the end of the video without deciding where
+    that end is, same reason the music/background beds are. Its `frame_end`
+    is therefore `scene.frame_end` itself, already re-derived from the real
+    content strips by the time bed clips dispatch (see `apply_payload`'s
+    docstring), never a value carried on the payload."""
+    style = resolve_cta_style(clip.get("style"))
+    add_cta(
+        scene, vse, clip["text"], clip["channel"],
+        clip["frame_start"], scene.frame_end, style,
+        frame_width=scene.render.resolution_x,
     )
 
 

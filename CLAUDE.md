@@ -146,7 +146,29 @@ bucket, os vídeos continuam saindo sem a faixa — sem erro, sem aviso. Não co
 `cta_per_part`/`binary_cta` do `llm_service` (a pergunta narrada / a pergunta da legenda,
 ver `docs/vision.md`): esta é uma terceira coisa, um texto fixo sobreposto no rodapé do
 vídeo pelo `blender_worker`. Conferir com o `curl` acima (`GET /templates/{id}/config`,
-olhando a chave `cta`) antes de considerar a faixa publicada.
+olhando a chave `cta`) antes de considerar a faixa publicada. **Superado pelo aviso
+seguinte** — desde 08/09/2026 esse `curl` já não é o caminho de produção; a faixa (agora
+como clipe `text` do VSEL) só liga através do checklist abaixo.
+
+⚠️ **Pendente desde 08/09/2026, e mais sério que os anteriores: o VSEL foi ligado no código,
+mas a linha de produção da tabela `templates` não tem `yaml_key` e o YAML não está publicado
+no bucket — até isso acontecer, `blender_worker` recusa (não degrada) todo render real.**
+`worker.py` passou a montar todo vídeo a partir de um template YAML (`docs/edicao_declarativa.md`)
+em vez do `template.json` de sempre — **corte seco, sem coexistência**: um `Template` sem
+`yaml_key` faz o job falhar na hora, em vez de cair de volta no jeito antigo. Isso é diferente
+de todo outro aviso desta seção, que descreve uma feature nova saindo sem efeito, em silêncio;
+este descreve o pipeline inteiro parado até dois passos manuais no servidor:
+
+1. Publicar `blender_worker/templates_v2/default.yaml` como objeto no bucket R2 (mesmo bucket
+   de `template.blend`/`template.json`).
+2. `PATCH /templates/$BLENDER_TEMPLATE_ID` no `blender_worker` do servidor, corpo
+   `{"yaml_key": "<chave do objeto publicado no passo 1>"}`.
+
+Conferir se já foi feito: `curl -s localhost:8001/templates/$BLENDER_TEMPLATE_ID | python -m json.tool`
+— campo `yaml_key` não deve ser `null`. Nenhum dos dois passos está disponível para uma sessão
+sem acesso SSH ao servidor (`docs/servidor.md`) e às credenciais do R2. Detalhe completo em
+`blender_worker/CLAUDE.md` § "VSEL wired into `worker.py`" e `docs/vision.md` § "VSEL em
+produção — corte seco".
 
 ## Estado do projeto
 
@@ -257,3 +279,11 @@ Decisão tomada em 06/09/2026:
 | Fonte de métricas de performance | **API do Buffer** (`post(id).metrics`), não TikTok/YouTube direto — já é a mesma conta e o mesmo token, sem OAuth novo por plataforma |
 | Rigor da comparação entre variantes | **Descritiva** (média/contagem por grupo), sem teste de significância — com ~3 posts/dia o volume não sustenta uma alegação de confiança estatística |
 | Gatilho da sincronização de métricas | **Endpoint + cron externo no servidor**, 1x/dia (o Buffer só atualiza métricas nesse ritmo) — nenhum loop novo dentro do `tiktok_poster` |
+
+Decisão tomada em 08/09/2026:
+
+| Decisão | Escolha |
+|---|---|
+| VSEL em produção | **Ligado, corte seco.** `blender_worker/worker.py` monta todo vídeo a partir de um template YAML (`docs/edicao_declarativa.md`) em vez do `template.json` de sempre — código mesclado, deploy pendente (ver aviso acima) |
+| Coexistência com `template.json` v1 | **Nenhuma.** Só existia um template real; uma chave `version` seria dívida permanente por uma ramificação nunca exercitada. `Template` sem `yaml_key` falha o job, não cai de volta no layout antigo |
+| O que sobra do `template.json` | **Só `narration.rate`**, que o orchestrator lê antes do TTS e nunca foi sobre montagem. `channels`/`card`/`subtitles`/`cta`/`music`/`timing` só existem no YAML agora |

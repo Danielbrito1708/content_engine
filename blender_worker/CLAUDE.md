@@ -383,7 +383,7 @@ section implements — see `docs/edicao_declarativa.md` for the design rationale
 **`docs/vsel.md` for the format reference** (every field, the expression grammar, known gaps);
 this entry only tracks what exists in code.
 
-**Status: Fase 2 escrita e verificada contra Blender 4.2.20 real — não ligada a `worker.py`.** `template.json` no bucket é o que ainda renderiza de verdade; nada aqui é chamado pelo pipeline. Not yet in `docs/product.md`/`docs/vision.md` because it changes nothing a user or the pipeline can observe yet — that update lands when a `worker.py` change actually points a real job at this path, which is a separate, deliberately-not-yet-taken step (see "Não wired into worker.py" below).
+**Status since 08/09/2026: wired into `worker.py` — corte seco, no v1 fallback.** `_render` resolves the VSEL timeline (`Template.yaml_key`) for every real job; `main()` (`template.json`-driven) is unreachable from the pipeline, though the code is still here. See "VSEL wired into `worker.py`" below for the cutover itself — `docs/vision.md` § "VSEL em produção — corte seco" and `docs/product.md` carry the product-facing version, per the documentation rules. ⚠️ The production `Template` row still has no `yaml_key` and the YAML is not published to the bucket — see the root `CLAUDE.md` pending-deploy note; until that manual step happens, every real render fails loudly instead of falling back.
 
 Resolves a VSEL timeline into absolute Blender-frame numbers, entirely without `bpy` — the
 point being that "editable by hand, previewable without a 12-minute render" starts with a
@@ -391,7 +391,7 @@ resolver that runs in milliseconds outside Blender.
 
 **`timeline/expr.py`** — the "tempo simbólico" mini-language: `parse(text)` / `evaluate(ast, ...)` / `resolve(text, ...)`. Literals (`"0.3s"`, `"4f"`), `$name` references, `after($input)`, `max(...)`/`min(...)`, `+`/`-`, and the `timeline_end` keyword (only valid while resolving bed tracks). Raises `ExprError` on bad syntax or an unresolved reference — a typo fails at resolution, not mid-render.
 
-**`timeline/schema.py`** — Pydantic models for the format (`TimelineDoc`, `Canvas`, `Track`, and the four clip types `video`/`audio`/`image`/`subtitles`, discriminated on `type`). `extra="forbid"` on everything except visual-only clip properties (typography, colours) that this Fase doesn't interpret yet.
+**`timeline/schema.py`** — Pydantic models for the format (`TimelineDoc`, `Canvas`, `Track`, and the five clip types `video`/`audio`/`image`/`subtitles`/`text`, discriminated on `type`). `extra="forbid"` on everything except visual-only clip properties (typography, colours) that this Fase doesn't interpret yet. `text` (added 08/09/2026) is the persistent bottom-of-frame CTA's clip type — see "CTA overlay" above and `docs/vision.md` § "Faixa de apoio fixa no rodapé"; it is always `role: bed` (runs to `timeline_end` without deciding it, same as the music/background beds), so its `ResolvedClip.frame_end` is always `None` — `apply_payload`'s `_apply_text_clip` uses `scene.frame_end` directly, the same pattern `_apply_audio_clip`'s fade already uses.
 
 **`timeline/resolver.py`** — `resolve_timeline(doc, inputs, flags) -> ResolvedTimeline`. Everything is computed in **relative frames** (timeline zero = 0) and the Blender `+1` origin is added exactly once, at the end — see the module's docstring for the commutativity argument that makes this equivalent to the legacy code's per-strip `+1`. Two passes: content tracks resolve first and decide `timeline_end`; bed tracks (background loop, music fade) resolve second, anchored to it — mirroring the order `scripts/edit_video.py`'s `main()` already follows, now enforced by the resolver rather than by comment.
 
@@ -403,9 +403,9 @@ resolver that runs in milliseconds outside Blender.
 
 **`timeline/payload.py`** — `build_payload(doc, resolved, flags) -> dict`. Fase 1's resolver deliberately only computes *time* (see its module docstring); this is what zips the frame numbers back with the non-timing properties (`volume`, `style`, `y_position`, ...) that `ResolvedClip.clip` still carries from the original schema object, producing the plain JSON dict a render actually needs — meant to sit next to `assets` in `job_config.json`, each clip's `source` being a name matched against an asset path exactly like `assets["video"]` works today. Includes `resolve_flag_ref` (in `resolver.py`) for the one non-time, non-expression field the format has: `AudioClip.muted`, which mirrors a flag (`$hook_muted`) rather than computing a position, so it deliberately bypasses `expr.py`.
 
-**`apply_payload(scene, vse, payload, assets)`** (`scripts/edit_video.py`) — the Fase 2 dispatcher: `main()`'s replacement, not yet wired in. Sets up the scene (fps, resolution) then runs in **two passes, `content` then `bed`** — not an arbitrary choice, see "Verified against a real render" below for why. `content` clips dispatch first; `scene.frame_end` is then re-derived from the real strips via `content_end_frame` (the same rule `main()` uses); only then do `bed` clips dispatch, with `_apply_video_clip`'s loop (`extend_background`) and `_apply_audio_clip`'s fade (`music_fade_start`) recomputed against that corrected value — not read off `payload`'s advisory `repeats`/`fade_start`/`fade_duration_frames`. Every handler still calls the *same* existing bpy helpers `main()` already calls (`add_movie_strip`, `add_sound_strip`, `add_card`, `import_subtitles`, `apply_volume_fade`, `extend_background`, `music_fade_start`, `content_end_frame`) — no new bpy logic, only new wiring. `add_movie_strip` gained an optional `min_frames` parameter (default unchanged) so the dispatcher can honour a payload's `min_frames` instead of only the module constant.
+**`apply_payload(scene, vse, payload, assets)`** (`scripts/edit_video.py`) — the Fase 2 dispatcher: `main()`'s replacement, wired into `worker.py` since 08/09/2026 (see "VSEL wired into `worker.py`" below). Sets up the scene (fps, resolution) then runs in **two passes, `content` then `bed`** — not an arbitrary choice, see "Verified against a real render" below for why. `content` clips dispatch first; `scene.frame_end` is then re-derived from the real strips via `content_end_frame` (the same rule `main()` uses); only then do `bed` clips dispatch, with `_apply_video_clip`'s loop (`extend_background`) and `_apply_audio_clip`'s fade (`music_fade_start`) recomputed against that corrected value — not read off `payload`'s advisory `repeats`/`fade_start`/`fade_duration_frames`. Every handler still calls the *same* existing bpy helpers `main()` already calls (`add_movie_strip`, `add_sound_strip`, `add_card`, `import_subtitles`, `apply_volume_fade`, `extend_background`, `music_fade_start`, `content_end_frame`) — no new bpy logic, only new wiring. `add_movie_strip` gained an optional `min_frames` parameter (default unchanged) so the dispatcher can honour a payload's `min_frames` instead of only the module constant.
 
-**Não wired into `worker.py`.** `main()` is untouched and is still what every real render calls; `apply_payload` is dead code from the pipeline's point of view until something calls it. This is deliberate, not an oversight — wiring it in means deciding the `template.json` v1 coexistence question in `docs/edicao_declarativa.md`'s "Decisões em aberto" first (a `version` key, or a coordinated cutover on the shared bucket), and that is a production-facing, hard-to-reverse change that hasn't been asked for yet.
+**Wired into `worker.py` since 08/09/2026 — corte seco, decided in `docs/edicao_declarativa.md`'s "Decisões em aberto".** `main()` is untouched but has no caller left; `_render` calls `apply_payload` (via `main_declarative`) for every real job. See "VSEL wired into `worker.py`" below.
 
 **Verified against a real render — Blender 4.2.20 LTS, installed natively (no Docker Desktop available; the version matches the Dockerfile pin exactly).** Synthetic assets (`wave`+`array` tones for voice/hook/music, a 16-word `.srt`, a Pillow PNG card, a colour-strip background rendered through the VSE — same tricks as `project_render_verification_recipe`), `main()` and `apply_payload` run side by side in both hook modes, every strip's channel/frame/`blend_type`/volume/mute dumped and diffed.
 
@@ -415,13 +415,74 @@ resolver that runs in milliseconds outside Blender.
 
 - Fase 2 tests: `tests/test_timeline_payload.py` (10 tests, `no_db`) for `build_payload`; `tests/test_apply_payload.py` (16 tests, `no_db`) for the dispatcher — per-handler tests with full VSE/strip fakes (including the live loop/fade recomputation), the content-before-bed pass-order guarantee, two end-to-end tests per hook mode running `templates_v2/default.yaml` through the real resolver/payload builder/dispatcher together, and the subtitle-overshoot regression test above.
 
+### VSEL wired into `worker.py` (corte seco, 08/09/2026)
+
+`_render` (`worker.py`) resolves a VSEL timeline for every real job now, instead of reading
+`template.json`'s `timing` block. No coexistence: a `Template` with no `yaml_key` fails the
+job with a clear `RuntimeError` rather than falling back to `main()` — see
+`docs/edicao_declarativa.md` § "VSEL ligado a `worker.py`" for the full decision record;
+`docs/vision.md` § "VSEL em produção — corte seco" for the product-facing summary.
+
+**`timeline/assemble.py`** (new module) — `download_and_probe_inputs` and
+`resolve_video_timeline`, extracted from `timeline/preview.py`'s `assemble_preview` because
+`worker.py`'s production path needs the exact same download/`ffprobe`/`resolve_timeline`/
+`build_payload` sequence against a real `Video`. Deliberately has no semaphore and never calls
+Blender — `preview.py` keeps wrapping it with `preview_slot()`, `worker.py` runs it already
+inside `render_slot()` (acquired by `render_job`, before `_render` is even called), and mixing
+the two would defeat the reason they are two gates in the first place (an interactive preview
+must never queue behind a ~12-minute render, and a burst of production jobs must never starve
+behind a limit sized for interactive use).
+
+**`_render`'s new shape:**
+1. `template.yaml_key` missing → `RuntimeError` (job fails; message names the template id and
+   points at the `PATCH` endpoint below).
+2. `download_bytes(bucket, template.yaml_key)` → `timeline.loader.load_timeline(text)` →
+   `TimelineDoc`.
+3. `flags = {"hook_muted": video.hook_muted}` — the one flag the shipped template branches on.
+4. `timeline.assemble.resolve_video_timeline(video=video, doc=doc, flags=flags, ...)` →
+   `(asset_paths, resolved, payload)`.
+5. Download `template.blend_key` (unchanged).
+6. `job_config.json = {job_id, assets: asset_paths, payload, output_path, render_output_path}`
+   — the `"payload"` key is what `edit_video.py`'s `if __name__ == "__main__":` guard already
+   used to pick `main_declarative()` over `main()` (see that guard's own comment); no change
+   needed there.
+7. Two Blender invocations, upload, job status — all unchanged from before.
+
+**`Template.json_key` stays required — it shrank, it didn't disappear.** Its only surviving
+consumer is `GET /templates/{id}/config`, which the orchestrator reads for `narration.rate`
+before the first TTS call — a TTS-speed setting that was never part of the timeline and never
+moved into the YAML. Everything else `template.json` used to carry (`channels`, `card`,
+`subtitles`, `cta`, `music`, `timing`) has no reader left after the cutover.
+
+**`Template.yaml_key`** — new nullable column (migration `f6a1b2c3d4e5`, revises
+`e5a6b7c8d9e0`). Nullable because it lands after every existing row, including the production
+one. `POST /templates` accepts it optionally (`TemplateCreate.yaml_key`); **`PATCH
+/templates/{id}`** (new route, `TemplateUpdate` — every field optional, only what's passed
+changes) is what retrofits the existing production row once the YAML is published to the
+bucket, without creating a second `Template` and repointing `BLENDER_TEMPLATE_ID` or every
+`Video.template_id` foreign key at it.
+
+⚠️ **Code-complete, not deploy-complete.** The production `Template` row's `yaml_key` is still
+`NULL` and `templates_v2/default.yaml` is not published to the R2 bucket — both require server
+access (`docs/servidor.md`) and R2 credentials that a repository-only session doesn't have.
+Until an operator does both, every real render fails immediately at step 1 above. This is the
+intended failure mode, not a bug to work around — see "Sem chave `version`, sem v1 opcional"
+in `docs/edicao_declarativa.md`.
+
+- Tests: `tests/test_worker.py` (rewritten for the VSEL path — `download_bytes`/
+  `timeline.assemble.download_file`/`.probe_duration_seconds`/the Blender subprocess all
+  mocked, `templates_v2/default.yaml`'s real bytes fed through the real `load_timeline`;
+  includes the missing-`yaml_key` failure case), `tests/test_templates.py` (`yaml_key` on
+  create, the new `PATCH` route), `tests/test_preview.py` (updated for `download_file`/
+  `probe_duration_seconds` now living in `timeline.assemble`, not `timeline.preview`).
+
 ### Fase 3, nível 1 — validação sem Blender (`src/blender_worker/timeline/loader.py` + `api/routes/timelines.py`)
 
-**Status: implementado, ligado em `api/app.py`.** Não é o pipeline de produção — não toca DB,
-MinIO nem Blender, e não é a mesma superfície que `POST /jobs`. É ferramenta de dev/operador
-para iterar num template VSEL sem renderizar (`docs/edicao_declarativa.md` § "Loop de preview",
-nível 1). Não wired into `worker.py`: continua sendo a Fase 2 (`apply_payload`) quem decide se
-essa timeline algum dia executa de verdade — este endpoint só valida o texto.
+**Status: implementado, ligado em `api/app.py`.** Não toca DB, MinIO nem Blender, e não é a
+mesma superfície que `POST /jobs` — é ferramenta de dev/operador para iterar num template VSEL
+sem renderizar (`docs/edicao_declarativa.md` § "Loop de preview", nível 1), independente de
+`POST /jobs` estar ou não usando VSEL de verdade (está, desde 08/09/2026 — ver "VSEL wired
+into `worker.py`" abaixo). Este endpoint só valida o texto; não executa nada.
 
 **`timeline/loader.py`** — `load_timeline(text: str) -> TimelineDoc` e `TimelineLoadError`
 (`.errors: list[LoadIssue]`, cada um `{location, message}`). Único ponto de entrada de YAML cru
@@ -544,8 +605,9 @@ então `404` (video/template incógnitos), `422` (template ou range de clipe inv
 formato `{location, message}` do nível 1) e `502` (falha do Blender, log estruturado com
 stdout/stderr, mesmo padrão de `worker.py`) são tratamento de erro normal, não exceção.
 
-**Não wired em `POST /jobs`.** Como a Fase 2, isto é ferramenta de edição — não muda nada que
-o pipeline de produção observa.
+**Não wired em `POST /jobs`.** Diferente da Fase 2 (que passou a rodar em produção em
+08/09/2026 — ver "VSEL wired into `worker.py`" abaixo), estas duas rotas continuam sendo só
+ferramenta de edição: preview de frame/clipe não muda nada que o pipeline de produção observa.
 
 **`api/app.py` ganhou `CORSMiddleware` aberto (`allow_origins=["*"]`, `allow_credentials=False`)**
 por causa desta seção — o `declarative_editor` (fora do monorepo) chama estas rotas direto do
