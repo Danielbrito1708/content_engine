@@ -133,6 +133,59 @@ A razão é econômica: quando o render começa, o run já pagou LLM, síntese d
 
 ---
 
+## Atraso entre mudança no repo e publicação
+
+**O problema, medido em produção:** trocar um asset (trilha, template, fundo) ou editar
+código de seleção não muda vídeo nenhum que já foi renderizado — o MP4 já tem o conteúdo
+"assado" desde o render. Até 06/09/2026, o `tiktok_poster` deixava o Buffer acumular até 10
+vídeos já renderizados na fila (`[posting] buffer_queue_limit`, perto do teto do próprio
+plano free do Buffer), publicando 3 por dia. Uma mudança feita hoje só aparecia num vídeo
+publicado depois de todo esse estoque escoar — até ~3 dias e **10 posts** de atraso. Foi
+assim que o problema apareceu: trocar a trilha sonora no repo e o vídeo publicado continuar
+com a antiga por dez posts seguidos.
+
+**Decisão (06/09/2026): `buffer_queue_limit` cai de 10 para 1.** Com o teto em 1, no máximo
+um vídeo já renderizado fica à frente com conteúdo potencialmente desatualizado — qualquer
+mudança feita no repo ou no bucket aparece no próximo vídeo a publicar, quase sempre no dia
+seguinte. Ver `tiktok_poster/config.ini` → `[posting] buffer_queue_limit` e
+`tiktok_poster/docs/scheduling.md` → "Por que o teto é menor que o do Buffer".
+
+**O que se perde: o colchão contra o render cair.** O valor antigo existia como proteção —
+se o Blender travasse ou o `blender_worker` ficasse fora do ar bem na hora de um slot do
+Buffer abrir, ainda havia dias de vídeos prontos para publicar sem interrupção (ver "Um
+render por vez" em "Operação 24h", acima). Com o teto em 1, esse colchão quase não existe: um
+problema no render pode custar um slot vazio, não só um vídeo desatualizado a menos. É uma
+troca deliberada — frescor pela resiliência que a fila cheia dava —, não um efeito colateral
+não avaliado.
+
+⚠️ **A garantia de "no máximo 1" não é absoluta.** `[scout] max_pending_runs`
+(`content_scout/config.ini`, hoje 2) permite até 2 runs em voo ao mesmo tempo pelo pipeline
+(refinando, narrando, renderizando) — ver "Um render por vez e um teto de memória para ele"
+acima. Se os dois já tiverem passado pelo ponto em que escolhem trilha/fundo (`_pick_music`,
+`pick_background`) antes de uma mudança no repo, os dois terminam de renderizar com o
+conteúdo antigo; só um cabe na fila (`buffer_queue_limit = 1`), o outro espera a próxima
+vaga. No pior caso teórico isso soma **2** vídeos desatualizados publicados antes da mudança
+aparecer, não 1 — na prática, raro, porque exige as duas renderizações em voo exatamente no
+instante da mudança, e um render leva minutos, não dias.
+
+**A mudança tem que estar publicada, não só commitada, para valer.** Isto não é sobre
+`git push` — é sobre onde o pipeline lê o dado. Código de seleção (`music.py`,
+`backgrounds.py`, prompts do `llm_service`) só vale depois de build+deploy no servidor
+(`docs/servidor.md`). Um arquivo de asset no bucket (trilha nova em `assets/music/{mood}/`,
+clipe de fundo) vale assim que sobe, sem deploy nenhum. Já `template.json` do
+`blender_worker` é a exceção que **não** segue essa regra — precisa ser republicado no
+bucket, e editar a cópia do repo sozinha não muda nada (ver "O `template.json` do repo não é
+o que roda", no `CLAUDE.md` da raiz). O teto de 1 post não resolve esse caso: um `template.json`
+nunca republicado continua desatualizado para sempre, não só por 1 post.
+
+**Por que não resolver escondendo o vídeo já renderizado em vez de encolher a fila.**
+Re-renderizar ou descartar um vídeo já na fila do Buffer quando um asset muda exigiria saber
+*qual* mudança afeta *qual* vídeo em fila — problema bem mais caro (rastrear dependências
+entre run e asset) para resolver um caso que hoje é raro (mudar asset com frequência). Encolher
+a fila resolve o caso geral sem esse rastreamento, ao custo de resiliência já descrito acima.
+
+---
+
 ## Classificação de Conteúdo
 
 O `llm_service` retorna um objeto de classificação junto com o roteiro refinado. O schema é flexível — cada tipo de conteúdo pode ter campos diferentes.
@@ -357,11 +410,14 @@ As histórias do acervo são contadas em **primeira pessoa**, então o narrador 
 llm_service: RefineResponse.narrator_gender   (male | female | unknown)
   └→ orchestrator: PipelineRun.narrator_gender  (migration 005)
       └→ tts_service: POST /generate {narrator_gender}
-          └→ resolve_voice() → TTS_VOICE_MALE | TTS_VOICE_FEMALE | TTS_VOICE
-              └→ provider ativo (edge: Communicate(voice) | azure: <voice name=...>)
+          └→ _voice_ids_for_provider(TTS_PROVIDER) → trio (default, male, female)
+              └→ resolve_voice() → um dos três
+                  └→ provider ativo (edge: Communicate(voice) | azure: <voice name=...> | elevenlabs: voice_id na URL)
 ```
 
-**Trafega o gênero, nunca o nome da voz.** O que o orchestrador manda é um fato sobre o roteiro; que voz corresponde a ele é decisão do `tts_service`, que conhece os providers. Como `edge` e `azure` servem as mesmas vozes neurais, `male` é uma string só para os dois, e um provider novo mexe num arquivo só (`tts/voices.py`). Um provider novo precisa aceitar `voice` no construtor — senão a voz do narrador é ignorada em silêncio ao trocar de provider, exatamente a armadilha já documentada para o `rate`.
+**Trafega o gênero, nunca o nome da voz.** O que o orchestrador manda é um fato sobre o roteiro; que voz corresponde a ele é decisão do `tts_service`, que conhece os providers. `resolve_voice()` (`tts/voices.py`) continua puro e agnóstico de provider — só recebe os três valores já escolhidos. Um provider novo precisa aceitar `voice` no construtor — senão a voz do narrador é ignorada em silêncio ao trocar de provider, exatamente a armadilha já documentada para o `rate`.
+
+**Nem todo provider compartilha o namespace de vozes.** `edge` e `azure` servem as mesmas vozes neurais, então `TTS_VOICE_MALE`/`TTS_VOICE_FEMALE` bastam para os dois. O ElevenLabs usa voice ids da biblioteca da própria conta — um nome `pt-BR-AntonioNeural` ali seria um id inexistente. Por isso `_voice_ids_for_provider()` (`api/routes/generate.py`) decide, pelo `TTS_PROVIDER`, qual trio de env vars alimenta `resolve_voice()`: `ELEVENLABS_VOICE_ID(_MALE/_FEMALE)` quando o provider é `elevenlabs`, `TTS_VOICE(_MALE/_FEMALE)` nos outros dois. As variantes por gênero do ElevenLabs são opcionais — sem elas, os três gêneros caem em `ELEVENLABS_VOICE_ID`. `/health` reporta o trio do provider ativo pelo mesmo helper.
 
 **Padrões:** `TTS_VOICE_MALE` = `pt-BR-AntonioNeural`, `TTS_VOICE_FEMALE` = `pt-BR-FranciscaNeural`. O par foi escolhido para soar como duas pessoas da mesma idade e do mesmo registro: o que muda entre eles é o gênero, não o personagem. `TTS_VOICE` (`pt-BR-ThalitaNeural`) deixa de ser a voz de todo vídeo e vira o fallback de `unknown`.
 
@@ -384,6 +440,8 @@ llm_service: RefineResponse.narrator_gender   (male | female | unknown)
 **Provider `azure`.** Azure Speech (Cognitive Services) expõe as **mesmas vozes neurais** do edge (`pt-BR-ThalitaNeural` etc.) via REST, com o formato de saída escolhido pelo cliente. Default `audio-48khz-192kbitrate-mono-mp3`. Decisão: é a menor mudança possível que resolve o problema — mesma voz, mesmo `TTS_RATE`, mesma interface `BaseTTSClient.generate(text) -> bytes`, mesma key MinIO. Só o transporte muda. O ElevenLabs resolveria também, mas trocaria a voz do canal e custa por caractere; o Azure tem free tier de 500k caracteres/mês.
 
 O `edge` continua registrado como fallback sem-configuração — útil em dev e quando não há key.
+
+**Provider `elevenlabs`.** Implementado (07/09/2026), não ativado — mesma decisão de 14/08 abaixo, `TTS_PROVIDER` continua `edge`. Diferente do `azure`, **não** reaproveita a voz do canal: vozes ElevenLabs vêm da biblioteca da própria conta, namespace incompatível com os nomes `pt-BR-*` de `edge`/`azure` (ver "Voz do narrador" acima, `ELEVENLABS_VOICE_ID*`). `POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}`, corpo JSON, saída 44.1 kHz. O `TTS_RATE` vira `voice_settings.speed`, mas a API só aceita `[0.7, 1.2]` — o `+50%` padrão do canal (equivaleria a 1.5) satura no teto de 1.2, então uma narração em `elevenlabs` no rate padrão sai mais lenta que em `edge`/`azure` no mesmo rate nominal; não há como equalizar sem sair do intervalo suportado pela API. Mesma interface `BaseTTSClient.generate(text) -> bytes`, mesma key MinIO, mesma validação de boot (`ELEVENLABS_API_KEY`/`ELEVENLABS_VOICE_ID` ausentes derrubam o start).
 
 ⚠️ **Decisão (14/08/2026): produção fica no `edge`.** O `azure` está implementado e testado, e o parágrafo acima continua descrevendo por que ele é melhor — mas ele exige uma conta e uma key para manter, e a diferença de nitidez não bloqueia publicação. O default do código (`TTS_PROVIDER`, `config.py`) é `edge` e permanece assim; a narração em produção sai a 24 kHz / 48 kbps, com o abafamento descrito acima. Reverter é preencher `AZURE_SPEECH_KEY`/`AZURE_SPEECH_REGION` e apontar `TTS_PROVIDER=azure` — sem migration, sem mudança de contrato, e com a validação de boot abaixo garantindo que a troca falhe visível se a key faltar.
 
@@ -743,9 +801,27 @@ Até aqui `BLENDER_TEMPLATE_ID` era uma env var única, lida em dois lugares (`_
 ## Contas de publicação — Fase 1 do multi-account (06/09/2026)
 
 Implementa a Fase 1 de `docs/multi_account.md`: a conta vira dado, não mais env var
-hardcoded. **Sem** split de `stories`/`renders`/`publications` (Fase 2) e **sem** o scout
-escolher conta sozinho — decisão deliberada deste ciclo, revisitável quando fizer sentido
-operar mais de uma conta em produção simultaneamente (ver "Decisões em Aberto").
+hardcoded. **Sem** split de `stories`/`renders`/`publications` (Fase 2).
+
+**Atualização de 08/09/2026 — o scout passou a escolher conta.** A decisão original deste
+ciclo era deixar isso para depois ("revisitável quando fizer sentido operar mais de uma
+conta em produção simultaneamente"); a lacuna foi medida antes de ser revisitada — a segunda
+conta (`redditors-inc`) ficou dois dias em produção sem receber um único run, porque nenhum
+disparo automático preenchia `account_id`. A implementação (round-robin com backpressure por
+conta, detalhes técnicos em `content_scout/CLAUDE.md` → "Escolha de conta") manteve a Fase 1
+intacta — nenhuma tabela nova no orchestrador ou no `tiktok_poster`, só o `content_scout`
+lendo `GET /accounts`/`GET /pipeline` (já existentes) e decidindo.
+
+**Duas regras de negócio valem a pena registrar aqui, não só no código:**
+- **A caixa de entrada manual (`inbox.py`) fica fora do rodízio.** Quem compartilha um link
+  já escolheu o vídeo; distribuir isso entre contas não faz sentido no mesmo jeito que
+  distribuir descoberta automática faz.
+- **O desempate do rodízio usa uma janela de 24h, não o histórico desde sempre.** Toda linha
+  de auditoria anterior a esta mudança corresponde a um run que foi para a conta default —
+  contar isso como "vida inteira" faria uma conta nova ganhar todo desempate por semanas até
+  a contagem alcançar a da conta principal, na prática parando de publicar nela. Isso não é
+  um detalhe de implementação: é a diferença entre "a conta nova recebe mais um pouco no
+  primeiro dia" (correto) e "a conta principal para de publicar por semanas" (incidente).
 
 **Onde cada coisa mora, e por quê.** O orchestrador nunca fala com o Buffer — sempre foi
 assim, mesmo com uma conta só — então ele não é o lugar certo para guardar token. A tabela
@@ -1307,7 +1383,7 @@ Regras de projeto:
 - **Corpo que normaliza para vazio devolve `None`, não o hash de `""`.** Com o hash, todo candidato desses colidiria com todos os outros e o segundo seria descartado como repost do primeiro.
 - **A coluna é indexada mas não é única.** Um repost precisa ser gravado com a própria linha de auditoria dizendo que foi pulado; uma constraint única rejeitaria exatamente essa linha e não sobraria registro da rejeição.
 - **Cobertura começa na migration 004.** `seen_items` nunca guardou o corpo, só título, url e contagem de caracteres — o histórico anterior não pode ser reprocessado e fica `NULL`.
-- A checagem roda **depois** do piso de tamanho e **antes** de moderação e nota: repost é a rejeição mais barata que existe e não pode custar chamada de modelo. Fica *antes* da nota justamente pelo contrário do que vale para o teto de tamanho (ver "Filtros") — um repost não é uma história que valeria a pena julgar, é uma que já foi julgada.
+- A checagem roda **depois** do piso de tamanho e **antes** de moderação e nota: repost é a rejeição mais barata que existe e não pode custar chamada de modelo — um repost não é uma história que valeria a pena julgar, é uma que já foi julgada.
 
 ### Sinal de qualidade
 
@@ -1363,7 +1439,7 @@ Daí um segundo sinal, independente do primeiro: `llm_service POST /story-qualit
 
 **A escala vai até o topo, e o topo é alcançável.** O prompt reservava 9–10 para o excepcional, e a medição mostrou o efeito: **nenhum** dos 30 posts chegou lá, ou seja, a régua era efetivamente 2–8. Um teto que nunca é usado não é rigor, é resolução perdida — e a perda cai justamente onde a nota é usada, que é distinguir a história boa da ótima para decidir qual vai primeiro. O prompt agora manda usar a escala inteira: 9–10 é "você contaria isso adiante depois de ler", não uma raridade anual. **O meio não se moveu** — post comum de fórum continua em 4–6, e o corte `min_story_score` continua em 6, então relaxar o topo não inflaciona a taxa de `weak_storytelling`; ele só desempata melhor a cabeça da fila. Fixado em `tests/test_story.py`.
 
-**A tag é derivada, não pedida ao modelo.** O modelo devolve nota; a linha entre fraco e forte é config (`min_story_score`, padrão 6 — a régua do prompt põe post comum de fórum em 4–6). Assim o corte se move contra dados reais via `GET /scout/seen?story_tag=weak_storytelling`, do mesmo jeito que `min_chars`/`max_chars` moram em config. `story_score` fica gravado cru, então mover o corte permite re-derivar as linhas antigas.
+**A tag é derivada, não pedida ao modelo.** O modelo devolve nota; a linha entre fraco e forte é config (`min_story_score`, padrão 6 — a régua do prompt põe post comum de fórum em 4–6). Assim o corte se move contra dados reais via `GET /scout/seen?story_tag=weak_storytelling`, do mesmo jeito que `min_chars` mora em config. `story_score` fica gravado cru, então mover o corte permite re-derivar as linhas antigas.
 
 **`story_tag IS NULL` ≠ fraco.** Nulo significa não avaliado: o candidato barrado pelos filtros baratos (a nota roda depois deles, e depois do backpressure — fila cheia não publica, então não deve pagar julgamento) e todo candidato de um ciclo em que o `llm_service` caiu. **Filtrado não implica nulo**: quem caiu no teto de tamanho foi julgado antes de cair, e tem as colunas preenchidas. Um candidato sem nota ordena **no próprio limiar**, não no fim da fila: manda-lo para o fim converteria uma falha de modelo em handicap permanente para uma história que ninguém julgou, e são justamente as sobras de cada ciclo que herdariam esse handicap.
 
@@ -1421,47 +1497,23 @@ A seleção já coloca uma história com vilão claro na frente (`outrage_weight
 
 ### Filtros
 
-Três etapas, separadas de propósito por custo e por natureza — e **encenadas nessa ordem porque o que a ordem decide não é só custo, é o que o sistema fica sabendo**:
+Duas etapas, separadas de propósito por custo e por natureza — e **encenadas nessa ordem porque o que a ordem decide não é só custo, é o que o sistema fica sabendo**:
 
-**1. Piso de tamanho (`filters.evaluate`).** Curto demais não sustenta um vídeo. Roda sobre todo candidato, é grátis.
+**1. Piso de tamanho (`filters.evaluate`).** Curto demais não sustenta um vídeo. Roda sobre todo candidato, é grátis. Abaixo de `min_chars` não há história para o modelo pesar, então a rejeição é tão verdadeira antes do julgamento quanto depois.
 
-**2. Teto de tamanho (`filters.exceeds_length`), *depois* da nota.** Longo demais custa mais narração e render do que uma vaga vale — mas isso é restrição de **produção**, não juízo sobre a história, e por isso não pode rodar antes de a história ser julgada.
+**2. Moderação por LLM (`llm_service POST /moderate`).** Decide se publicar coloca a conta em risco de remoção.
 
-O teto morava na etapa 1, junto com o piso, e a assimetria foi medida sobre 45 posts reais das três comunidades configuradas (14/08/2026):
+#### Não há mais teto de tamanho (removido em 07/09/2026)
 
-| | dentro do teto | acima do teto |
-|---|---|---|
-| candidatos | 34 | 11 |
-| notas | 2,3,3,4,4,5,5,5,6×8,7×5,8×9,9×4 | 6, 7×3, 8×3, 9×4 |
+Existiu um segundo filtro aqui, `filters.exceeds_length`, que recusava candidatos acima de `max_chars` — rodando *depois* da nota de storytelling, nunca antes, porque era restrição de **produção** (mais narração e render do que uma vaga vale), não juízo sobre a história.
 
-**Nenhum dos 11 acima do teto tirou menos que 6**, e todos os oito candidatos com nota ≤5 estavam dentro dele. Metade das notas 9 estava acima. Não é coincidência — `r/story` e `r/stories` são onde mora o gênero "história escrita para entreter", e o gênero premia texto longo. Cortar por tamanho antes de julgar era, na prática, correlacionar o filtro negativamente com a qualidade.
+A medição que sustentou o teto por meses tinha sido, na prática, a medição que o condenava: sobre 45 posts reais (14/08/2026), nenhum dos 11 candidatos acima do teto tirou nota abaixo de 6, e metade das notas 9 estava acima dele. `r/story` e `r/stories` são onde mora o gênero "história escrita para entreter", e o gênero premia texto longo — cortar por tamanho antes de julgar correlacionava o filtro negativamente com a qualidade. A resposta em 14/08 foi subir o teto (6000 → 30000) e mover a checagem para depois da nota; a resposta em 07/09 foi perguntar por que ter um teto, ponto.
 
-O piso não tem esse problema e por isso ficou onde estava: abaixo de `min_chars` não há história para o modelo pesar, então a rejeição é tão verdadeira antes do julgamento quanto depois. O teto rejeita algo que o julgamento tinha o que dizer sobre.
+A derivação do valor 30000 já tinha caducado em 31/08/2026 (ver aviso histórico abaixo) — o número original vinha de `MAX_PART_WORDS` (5850 palavras, formato de até 30 min dividido em partes com cliffhanger), e esse mecanismo **não existe mais**. Desde a mudança de formato de 31/08, o refino sempre `RECONTA` qualquer roteiro — de qualquer tamanho — como **um** vídeo de 10 a 40s (`TARGET_MIN/MAX_WORDS`, `llm_service/prompts/refine.py`; `parts` tem sempre um elemento). Um post maior não estoura mais uma parte porque não há partes: o refino condensa 40000 caracteres para as mesmas 37–150 palavras que condensaria 1000. A única coisa que um teto ainda protegia era o custo de token de mandar o post bruto inteiro no prompt — proteção real, mas nenhuma diferente da que qualquer chamada de LLM sempre tem, e que não justificava descartar candidatos com nota alta.
 
-Consequência: o candidato longo é buscado, deduplicado, **pontuado** e gravado em `seen_items` com `story_score`/`story_tag` preenchidos, `status=filtered` e `skip_reason=too_long:{n}`. Ele nunca vira vídeo, mas a trilha de auditoria passa a responder *o que* foi deixado passar — que é o dado necessário para decidir se `max_chars` está no lugar certo. Sem isso, mover o teto seria chute: as linhas rejeitadas não diziam nada sobre a qualidade do que se estava recusando.
+Consequência prática: o candidato longo agora só é **buscado, deduplicado, pontuado e submetido** como qualquer outro — não há mais `skip_reason=too_long:{n}`, nem o contador `too_long` em `ScoutReport`/`ScoutRunResponse`. `raw_script`/`script` continuam `Text` sem limite no banco, e o post bruto (de qualquer tamanho) vai como está no prompt de `/refine` — o custo de um post muito longo é só mais tokens na chamada, nunca uma falha ou uma rejeição.
 
-**O teto continua sendo o gate de produção.** Subi-lo é o que transforma essas linhas em vídeo, e o refino sabe lidar com o resultado. Não há nada abaixo do scout que quebre com roteiro longo — `raw_script` e `script` são `Text` sem limite.
-
-**E foi subido: 6000 → 30000.** Com a medição acima dizendo que o teto antigo recusava o melhor material, mantê-lo em 6000 seria conhecer o erro e não corrigi-lo. O valor novo era **derivado, não escolhido** *(a conta de então — ver o aviso abaixo, ela não vale mais)*: era o maior post cru que o refino ainda entrega como *um* vídeo. `MAX_PART_WORDS` são 5850 palavras; o pt-BR mede **5,54 caracteres por palavra** sobre os 30 posts de `content_scout/docs/story_quality_baseline.json`; logo uma parte comporta ~32400 chars. O corte em 30000 deixa ~7% de folga para o refino expandir o texto ao reescrever — ele reconta a história, não a copia, então encostar em 32400 arriscaria uma divisão acidental.
-
-Por que essa era a única linha não arbitrária disponível: acima dela a história **não era recusada pelo pipeline**, ela virava série com cliffhanger. O teto deixou de ser um palpite sobre custo de render e passou a marcar uma fronteira de formato — onde um post deixava de ser um vídeo.
-
-⚠️ **Esta derivação caducou em 31/08/2026, e o valor sobreviveu por outro motivo.** Com o
-formato curto não existe mais `MAX_PART_WORDS`, não existe divisão e nenhum tamanho de post
-cru "estoura uma parte": o refino condensa qualquer entrada nas mesmas 150 palavras. O teto
-deixou de marcar fronteira de formato e passou a ser o que sempre foi por baixo — **um limite
-de custo e de qualidade de entrada**: o post cru é o prompt do refino, e um texto de 30000
-chars já é uma chamada cara. 30000 fica onde está porque a medição acima mostrou que ele não
-recusa o bom material; a conta que o derivava não vale mais, e subi-lo agora **não tem
-consequência nenhuma de formato** — só de token.
-
-O contador `too_long` no `ScoutReport` é o recorte dessa rejeição dentro de `filtered`, que continua sendo o total.
-
-⚠️ **A rejeição por teto roda depois do backpressure, como a nota.** Fila cheia encerra o ciclo antes de pontuar, então o candidato longo **não** é gravado nesse ciclo — ele volta inteiro no próximo. Gravá-lo ali o queimaria sem nota, que é exatamente o estado que esta mudança existe para evitar.
-
-⚠️ **O teto roda antes da moderação, não dentro do laço de submissão.** A nota é uma chamada em lote por ciclo; a moderação é uma chamada por candidato. Deixar o candidato longo entrar no laço faria uma história que nunca seria publicada pagar uma chamada de moderação, e a rejeição por tamanho é determinística — não precisa de modelo para acontecer.
-
-**3. Moderação por LLM (`llm_service POST /moderate`).** Decide se publicar coloca a conta em risco de remoção.
+⚠️ **Histórico — a conta que derivava 30000, preservada porque explica o número em si:** era o maior post cru que o refino (no formato antigo) ainda entregava como *um* vídeo. `MAX_PART_WORDS` eram 5850 palavras; o pt-BR mede 5,54 caracteres por palavra sobre os 30 posts de `content_scout/docs/story_quality_baseline.json`; logo uma parte comportava ~32400 chars, e 30000 deixava ~7% de folga para o refino expandir o texto ao reescrever. Essa conta não descreve mais nada que o pipeline faça hoje.
 
 A versão anterior era uma blocklist por substring, e ela errou de forma instrutiva: `me matar` casou dentro de `"Eram 3 mil que não me mataria"` — figura de linguagem sobre dinheiro — descartando uma história boa. Enquanto `"disseram que depois de me matar iam fazer com ela..."` é ameaça real e precisa ser barrada. **As duas contêm a mesma sequência de caracteres.** Segurança é julgamento de contexto, não casamento de padrão.
 
@@ -1518,7 +1570,7 @@ Além do veredito, a linha guarda `author` e — para os enriquecidos — `comme
 
 Antes de submeter, o scout conta os runs ativos no orchestrador (`pending`, `refining`, `refined`, `processing`, `scheduling`). Se atingiu `max_pending_runs`, o ciclo não submete nada.
 
-A razão é a fila do Buffer, que segura 10 posts: ingerir mais rápido do que se publica não gera mais vídeos, só converte roteiro bom em run falho. Enquanto a feature "Fila de espera quando o Buffer está cheio" (ver Backlog) não existir, o backpressure é a única proteção contra isso.
+A razão é a fila do Buffer: ingerir mais rápido do que se publica não gera mais vídeos, só converte roteiro bom em run falho. Enquanto a feature "Fila de espera quando o Buffer está cheio" (ver Backlog) não existir, o backpressure é a única proteção contra isso. ⚠️ **Desde 06/09/2026 a fila não segura mais 10 posts, e sim 1** (`[posting] buffer_queue_limit` do `tiktok_poster`) — ver "Atraso entre mudança no repo e publicação" abaixo. O raciocínio deste parágrafo não muda: ingerir além do que a fila aceita ainda é desperdício, só que agora a fila aceita menos.
 
 **Ordem das etapas.** A capacidade é verificada *depois* de registrar os filtrados e *antes* de submeter. Assim uma fila cheia não custa nada e não perde nada — o lixo é queimado e o ciclo seguinte parte de uma pilha menor.
 
@@ -1562,7 +1614,7 @@ O alvo é uma máquina ligada o tempo todo, sem ninguém olhando. O que o `docke
 **Um render por vez, e um teto de memória para ele.** A máquina alvo tem 8 GB e um render 1080×1920 custa ~1–2 GB, então a concorrência de render é o único item do orçamento que estoura. Ela era ilimitada em dois pontos, e os dois foram fechados:
 
 - **`[blender] max_concurrent_renders` (padrão 1)** — `POST /jobs` entrega todo job a `BackgroundTasks`, que não impõe limite nenhum: N jobs aceitos eram N processos Blender disputando a mesma RAM. `render_job` agora espera um `asyncio.Semaphore` antes de começar, e quem espera **continua `pending`** — que é exatamente o que esse status já significa para o orchestrador, que faz polling. Nada é recusado, nada se perde; só deixa de acontecer junto.
-- **`[scout] max_pending_runs`: 5 → 2** — o freio a montante. Ele limita quantos runs ficam em voo, o que limita quanto trabalho chega ao gate acima. Com 3 publicações/dia, 2 em produção simultânea mantém a fila cheia: o corte remove um pico, não throughput.
+- **`[scout] max_pending_runs`: 5 → 2** — o freio a montante. Ele limita quantos runs ficam em voo, o que limita quanto trabalho chega ao gate acima. Com 3 publicações/dia, 2 em produção simultânea mantinha a fila cheia (quando ela segurava 10): o corte removia um pico, não throughput. ⚠️ Desde que a fila passou a segurar só 1 (06/09/2026, ver "Atraso entre mudança no repo e publicação"), o teto de 2 é também o pior caso da garantia de atraso: até 2 runs podem estar em voo com conteúdo já escolhido antes de uma mudança no repo, então o pior caso teórico de vídeos desatualizados até a mudança aparecer é 2, não 1.
 
 **`mem_limit: 3g` no `blender_worker`.** Contraintuitivo, mas é proteção. Sem limite, quem o OOM killer derruba é arbitrário — e se for o Postgres, perde-se o estado de **todos** os runs, não um render. Com limite, quem morre é o render: o job vira `failed` com o motivo, e a recuperação de runs órfãos no boot cuida do resto. É trocar uma falha catastrófica por uma recuperável. O valor é ~2× a estimativa de um render; medir um real e apertar.
 
@@ -1662,7 +1714,7 @@ As mensagens mostram o horário agendado de cada publicação, formatado com `as
 |---|---|
 | `orchestrator` | FastAPI + SQLAlchemy + PostgreSQL |
 | `llm_service` | FastAPI + OpenRouter / Claude API / Chutes AI (configurável por env) |
-| `tts_service` | FastAPI + Azure Speech (padrão) / edge-tts (fallback) + ffmpeg (→ ElevenLabs futuramente) |
+| `tts_service` | FastAPI + edge-tts (produção) / Azure Speech / ElevenLabs (implementados, não ativados) + ffmpeg |
 | `blender_worker` | FastAPI + Blender 4.2 LTS + Pillow (existente) |
 | `tiktok_poster` | FastAPI + TikTok API |
 | `content_scout` | FastAPI + SQLAlchemy + PostgreSQL + httpx |
@@ -1723,4 +1775,4 @@ barata que ainda é distinta — e esse número ainda não foi medido.
 - **Dashboard**: servido pelo orchestrador (FastAPI + Jinja2) ou container Next.js separado → MVP usa Jinja2, pode migrar depois.
 - **Retry automático**: se TTS ou render falhar, o orchestrador retenta automaticamente ou só marca como `failed`? → MVP marca como failed. O caso de fila cheia do Buffer é diferente (falha temporária, não erro) e já tem solução desenhada em "Fila de espera quando o Buffer está cheio", no Backlog de Features.
 - **Escolha automática de template pelo `content_scout`**: hoje o disparo automático nunca varia de template (ver "Escolher o template por vídeo, não só pela conta inteira"). Split fixo por slot, sorteio com peso, ou continuar manual-only — critério não definido, e não vale decidir sem primeiro ver o formato novo rodando manualmente.
-- **O `content_scout` escolher conta sozinho** (Fase 1 do multi-account, ver "Contas de publicação"): hoje toda descoberta automática publica na conta default, e a conta extra só recebe run por disparo manual com `account_id`. Round-robin com backpressure por conta é o próximo passo natural, mas foi adiado por decisão deste ciclo — mesmo raciocínio da escolha automática de template, acima: não vale desenhar a distribuição antes de ter mais de uma conta rodando de verdade em produção.
+- ~~**O `content_scout` escolher conta sozinho**~~ — **implementado em 08/09/2026**, ver "Contas de publicação — Fase 1 do multi-account" e `content_scout/CLAUDE.md` → "Escolha de conta". Round-robin com backpressure por conta, desempate por janela recente de 24h (não vida inteira, para não deixar uma conta nova monopolizar o desempate contra o histórico da conta principal).

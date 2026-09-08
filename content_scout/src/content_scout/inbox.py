@@ -217,12 +217,6 @@ async def handle_url(url: str) -> str:
             )
             return reason
 
-        if candidate.char_count > filters_cfg.max_chars:
-            reason = f"too_long:{candidate.char_count}"
-            await _record(session, _seen_row(candidate, SeenStatus.filtered, skip_reason=reason))
-            log.info("inbox_filtered", url=url, reason=reason)
-            return reason
-
         metadata = candidate.to_metadata()
         try:
             run_id = await orchestrator.create_pipeline(script=candidate.text, metadata=metadata)

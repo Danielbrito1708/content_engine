@@ -51,26 +51,10 @@ def evaluate(candidate: Candidate, min_chars: int) -> str | None:
 
     Only the floor is checked. Below ``min_chars`` there is no story to tell, so
     there is nothing for the scoring model to weigh in on — the rejection is as
-    true before a judgement as after it. The ceiling is not like that; it lives
-    in ``exceeds_length`` and runs later. See ``scout._run_cycle``.
+    true before a judgement as after it. There is no ceiling: the refiner
+    condenses every candidate down to the same short video regardless of how
+    long the raw post is, so a long story is never rejected for being long.
     """
     if candidate.char_count < min_chars:
         return f"too_short:{candidate.char_count}"
-    return None
-
-
-def exceeds_length(candidate: Candidate, max_chars: int) -> str | None:
-    """Return a skip reason when the body is too long to produce, else ``None``.
-
-    Separate from ``evaluate`` because it answers a different question. The floor
-    is editorial — a 50-character post is not a story. The ceiling is about
-    production: the body is a fine story that would cost more narration and
-    render time than a slot is worth.
-
-    Keeping it out of the cheap pass is what lets the ceiling reject a candidate
-    the scout has already scored, so the audit trail records *what* was passed on
-    and not merely that something was.
-    """
-    if candidate.char_count > max_chars:
-        return f"too_long:{candidate.char_count}"
     return None

@@ -32,11 +32,11 @@ class ScoutRunResponse(BaseModel):
     archive_wrapped: bool = False
     #: Candidates skipped because the same story was already seen under another id.
     duplicate_story: int = 0
-    #: Candidates that were judged and recorded with their story score, then
-    #: dropped for being too long to produce. Included in ``filtered`` too.
-    too_long: int = 0
     #: True when a cycle was already in flight, so this call did nothing.
     already_running: bool = False
+    #: True when every eligible account had hit max_pending_runs_per_account —
+    #: distinct from skipped_no_capacity, which is the global ceiling.
+    skipped_no_account_capacity: bool = False
 
 
 class ItemCommentResponse(BaseModel):
@@ -76,6 +76,9 @@ class SeenItemResponse(BaseModel):
     status: SeenStatus
     skip_reason: str | None
     pipeline_run_id: uuid.UUID | None
+    #: Which publication account this run was sent to. ``None`` = the default
+    #: account, including every row from before this column existed.
+    account_id: uuid.UUID | None = None
     created_at: datetime
     comments: list[ItemCommentResponse] = []
 
