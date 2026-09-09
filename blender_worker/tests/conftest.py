@@ -40,6 +40,11 @@ async def template(session):
         name="Test Template",
         blend_key="test/template.blend",
         json_key="test/template.json",
+        # Render-ready by default — see worker.py's VSEL cutover (08/09/2026).
+        # A template with no yaml_key is a valid, deliberate state (see
+        # test_templates.py), but the shared fixture should represent a
+        # complete row so worker.py tests don't each have to set it.
+        yaml_key="test/template.yaml",
     )
     session.add(t)
     await session.commit()

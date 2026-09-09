@@ -133,6 +133,20 @@ def test_background_repeats_match(hook_muted):
 
 
 @pytest.mark.parametrize("hook_muted", [False, True])
+def test_cta_starts_at_card_end_and_carries_no_frame_end(hook_muted):
+    # role: bed — same reason the music/background beds never get a
+    # `frame_end` either: the clip runs to timeline_end without itself
+    # deciding where that is (see edit_video._apply_text_clip's docstring).
+    resolved = _resolve(hook_muted)
+    cta = next(c for c in resolved.clips if c.track == "cta")
+
+    assert cta.role == "bed"
+    assert cta.type == "text"
+    assert cta.frame_start == resolved.anchors["card_end"]
+    assert cta.frame_end is None
+
+
+@pytest.mark.parametrize("hook_muted", [False, True])
 def test_music_fade_start_matches(hook_muted):
     resolved = _resolve(hook_muted)
     music = next(c for c in resolved.clips if c.track == "musica")

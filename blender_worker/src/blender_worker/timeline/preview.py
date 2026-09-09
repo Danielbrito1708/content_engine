@@ -1,11 +1,15 @@
 """Assembles a declarative-timeline preview (Fase 3, níveis 2/3 of
 docs/edicao_declarativa.md) against a real `Video`'s assets.
 
-Isolated from `worker.py` on purpose — this is a dev/operator tool, not the
-production render path. `worker.py`, `render_job` and `render_slot()` stay
-completely untouched; a preview waits on `preview_slot()`, a separate
-semaphore, so an interactive "generate a preview" click never queues behind
-a ~12-minute production render.
+This is a dev/operator tool, not the production render path — but since
+08/09/2026 the production path (`worker.py`'s `_render`) resolves the same
+kind of VSEL timeline for real jobs, so the two now share the
+download/probe/resolve/build-payload sequence (`timeline/assemble.py`). What
+stays isolated on purpose is the concurrency gate and the Blender subprocess
+call: a preview waits on its own `preview_slot()`, never `worker.render_slot()`,
+so an interactive "generate a preview" click never queues behind a
+~12-minute production render — and, symmetrically, a burst of production
+jobs never starves behind a limit sized for interactive use.
 
 Splits the work the same way `worker.py`'s `_render` does — download assets,
 write `job_config.json`, run Blender once to assemble (`scripts/edit_video.py`
@@ -14,6 +18,11 @@ or a short clip) is the caller's job: it needs mode-specific CLI flags
 (`-f N` vs `-s/-e -a`, an output format, an optional resolution override) that
 have nothing to do with assembly and everything to do with which of the two
 preview routes is calling.
+
+The download/probe/resolve/build-payload sequence itself now lives in
+`timeline/assemble.py`, shared with `worker.py`'s production path — see that
+module's docstring for why the two callers still each keep their own
+semaphore and their own Blender subprocess call.
 """
 from __future__ import annotations
 
@@ -28,9 +37,8 @@ from structlog import get_logger
 
 from src.blender_worker.db.models import Video
 from src.blender_worker.storage.client import download_file
-from src.blender_worker.timeline.payload import build_payload
-from src.blender_worker.timeline.probe import duration_seconds_to_frames, probe_duration_seconds
-from src.blender_worker.timeline.resolver import ResolvedTimeline, TimelineResolutionError, resolve_timeline
+from src.blender_worker.timeline.assemble import resolve_video_timeline
+from src.blender_worker.timeline.resolver import ResolvedTimeline
 from src.blender_worker.timeline.schema import TimelineDoc
 from src.core import settings
 
@@ -58,19 +66,6 @@ def preview_slot() -> asyncio.Semaphore:
     return _preview_slot
 
 
-#: Which `Video` column backs each of the six standard input names. A
-#: template declaring an input outside this set can't be previewed against a
-#: real video — there is no way to know which asset it means.
-_INPUT_TO_VIDEO_FIELD = {
-    "background": "video_file_key",
-    "music": "music_key",
-    "voice": "voice_key",
-    "subtitles": "subtitle_key",
-    "hook": "hook_voice_key",
-    "card": "card_key",
-}
-
-
 async def assemble_preview(
     *, video: Video, template_blend_key: str, doc: TimelineDoc, flags: dict[str, bool],
 ) -> tuple[str, str, ResolvedTimeline]:
@@ -90,44 +85,9 @@ async def assemble_preview(
         bucket = settings.CONFIG.storage.bucket
         ffprobe_bin = getattr(settings.CONFIG.blender, "ffprobe_bin", "ffprobe")
 
-        asset_paths: dict[str, str] = {}
-        inputs: dict[str, int | None] = {}
-        srt_inputs: list[str] = []
-
-        for name, spec in doc.inputs.items():
-            field = _INPUT_TO_VIDEO_FIELD.get(name)
-            if field is None:
-                raise TimelineResolutionError(
-                    f"input {name!r} has no known asset source for preview — only "
-                    f"{sorted(_INPUT_TO_VIDEO_FIELD)} are supported"
-                )
-            key = getattr(video, field)
-            if not key:
-                inputs[name] = None
-                continue
-
-            path = os.path.join(tmpdir, f"{name}_{os.path.basename(key)}")
-            await download_file(bucket, key, path)
-            asset_paths[name] = path
-
-            if spec.type == "image":
-                inputs[name] = 0  # presence placeholder — a PNG has no duration
-            elif spec.type == "srt":
-                # ffprobe has nothing to read from a subtitle file — same
-                # "as long as the voice" approximation resolver.py's own
-                # docstring already documents for `duration: source` on a
-                # subtitles clip (see "Known Fase 1 simplification").
-                # Resolved in a second pass below, once "voice" is known.
-                srt_inputs.append(name)
-            else:
-                seconds = await probe_duration_seconds(path, ffprobe_bin=ffprobe_bin)
-                inputs[name] = duration_seconds_to_frames(seconds, doc.canvas.fps)
-
-        for name in srt_inputs:
-            inputs[name] = inputs.get("voice")
-
-        resolved = resolve_timeline(doc, inputs=inputs, flags=flags)
-        payload = build_payload(doc, resolved, flags=flags)
+        asset_paths, resolved, payload = await resolve_video_timeline(
+            video=video, doc=doc, flags=flags, tmpdir=tmpdir, bucket=bucket, ffprobe_bin=ffprobe_bin,
+        )
 
         template_blend = os.path.join(tmpdir, "template.blend")
         await download_file(bucket, template_blend_key, template_blend)

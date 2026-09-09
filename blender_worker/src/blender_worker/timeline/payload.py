@@ -47,6 +47,7 @@ from src.blender_worker.timeline.schema import (
     AudioClip,
     ImageClip,
     SubtitlesClip,
+    TextClip,
     TimelineDoc,
     VideoClip,
     VolumeFadeFilter,
@@ -136,17 +137,23 @@ def _clip_payload(c, frame_rate: int, flags: dict[str, bool]) -> dict:
         if clip.rise:
             payload["rise_frames"] = clip.rise.get("frames", 0)
             payload["rise_offset"] = clip.rise.get("offset", 0.0)
-        payload["style"] = _flatten_subtitle_style(clip.style)
+        payload["style"] = _flatten_text_style(clip.style)
+
+    elif isinstance(clip, TextClip):
+        payload["text"] = clip.text
+        payload["y_position"] = clip.y_position
+        payload["style"] = _flatten_text_style(clip.style)
 
     return payload
 
 
-def _flatten_subtitle_style(style: dict) -> dict:
+def _flatten_text_style(style: dict) -> dict:
     """`style.outline.{color,width}` (this format) → `use_outline` /
     `outline_color` / `outline_width` (the flat shape
-    `edit_video.resolve_subtitle_style` already reads from the legacy
-    `template.json`). The new format nests because it reads better; the
-    legacy function is left alone because it works and has its own tests."""
+    `edit_video.resolve_subtitle_style`/`resolve_cta_style` already read from
+    the legacy `template.json`). The new format nests because it reads
+    better; shared by `subtitles` and `text` clips, the two clip types with a
+    typography block."""
     flat = {k: v for k, v in style.items() if k != "outline"}
     outline = style.get("outline") or {}
     if outline:

@@ -129,6 +129,24 @@ def test_subtitles_carries_timing_and_flattened_style():
     assert "outline" not in style  # flattened away, not left nested
 
 
+def test_cta_clip_carries_text_position_and_flattened_style():
+    cta = _clip(_payload(False), "cta")
+
+    assert cta["type"] == "text"
+    assert cta["role"] == "bed"
+    assert "frame_end" not in cta  # bed clip — see resolver.py / apply_payload
+    assert cta["text"] == "me ajude a pagar a faculdade, segue o perfil"
+    assert cta["y_position"] == 0.12
+
+    style = cta["style"]
+    assert style["font_size"] == 50
+    assert style["color"] == [1.0, 1.0, 1.0, 1.0]
+    assert style["use_outline"] is True
+    assert style["outline_color"] == [0.0, 0.0, 0.0, 1.0]
+    assert style["outline_width"] == 0.24
+    assert "outline" not in style
+
+
 def test_bad_expression_only_reachable_from_build_payload_names_its_track():
     """`max_hold` is never resolved by `resolve_timeline` (see this module's
     docstring) — a bad expression there only surfaces here, and the error

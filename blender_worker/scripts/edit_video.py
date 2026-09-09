@@ -77,6 +77,29 @@ DEFAULT_HOOK_TAIL_SECONDS = 0.3
 DEFAULT_CARD_Y = 0.5
 DEFAULT_CARD_FADE_FRAMES = 4
 
+# CTA (call to action) — a persistent bottom-of-frame reminder, on screen from
+# the end of the intro card to the last frame. Channel defaults in code for the
+# same reason hook/card do: `template.json` lives in the bucket, and a template
+# published before this feature has no `cta` block at all — the feature is
+# opt-in on `cta.text` being present, never assumed.
+DEFAULT_CTA_CHANNEL = 7
+# Fraction of frame height, same 0 = bottom / 0.5 = centre scale as the card
+# and subtitles. Low enough to read as "at the bottom" but clear of TikTok's
+# own bottom UI (caption line, username, sound title), which occupies roughly
+# the last ~12% of the frame.
+DEFAULT_CTA_Y = 0.12
+# Smaller than the subtitles on purpose: this text sits on screen for nearly
+# the whole video, not one word at a time, so it has to read as a steady
+# caption rather than compete with the narration.
+DEFAULT_CTA_FONT_SIZE = 50
+DEFAULT_CTA_COLOR = (1.0, 1.0, 1.0, 1.0)
+DEFAULT_CTA_OUTLINE_COLOR = (0.0, 0.0, 0.0, 1.0)
+DEFAULT_CTA_OUTLINE_WIDTH = 0.24
+# Fraction of the frame width kept clear on each side when wrapping the CTA
+# text — wider margin than the subtitles' since this is prose, not a single
+# centred word.
+CTA_SIDE_MARGIN = 0.08
+
 # Breathing room after the last narrated word. `content_end_frame` lands the last
 # frame exactly on the end of the voice strip, and that is too tight for two
 # reasons that compound: the strip end is rounded to the frame, and the MP4's
@@ -243,6 +266,88 @@ def resolve_subtitle_style(config=None, exists=os.path.exists):
         # template value from silently rendering as something else.
         "outline_width": min(1.0, max(0.0, float(config.get("outline_width", DEFAULT_OUTLINE_WIDTH)))),
     }
+
+
+def resolve_cta_style(config=None, exists=os.path.exists):
+    """Build the text-strip style dict from the template's `cta` block.
+
+    Mirrors `resolve_subtitle_style`, with its own defaults: the CTA is one
+    static line held on screen for most of the video, not a per-word pop, so
+    unlike the subtitles it defaults `font_size` to a concrete number instead
+    of `None` — there is no pre-existing render to keep pixel-identical.
+
+    Pure — no bpy — so font fallback and colour parsing are testable outside
+    Blender.
+    """
+    config = config or {}
+    return {
+        "font_path": resolve_font_path(config.get("font_path"), exists=exists),
+        "font_size": config.get("font_size", DEFAULT_CTA_FONT_SIZE),
+        # Clamped to the frame for the same reason the card and subtitles are:
+        # an out-of-range value renders as the CTA silently missing.
+        "y_position": min(1.0, max(0.0, float(config.get("y_position", DEFAULT_CTA_Y)))),
+        "color": _parse_color(config.get("color"), DEFAULT_CTA_COLOR),
+        "use_outline": config.get("use_outline", True),
+        "outline_color": _parse_color(config.get("outline_color"), DEFAULT_CTA_OUTLINE_COLOR),
+        "outline_width": min(1.0, max(0.0, float(config.get("outline_width", DEFAULT_CTA_OUTLINE_WIDTH)))),
+    }
+
+
+def wrap_cta_text(text, font_size, max_width, measure):
+    """Break `text` into lines that fit within `max_width` at `font_size`.
+
+    Greedy word wrap: a word is only pushed to the next line, never split —
+    a single word wider than max_width is kept whole on its own line rather
+    than being cut, the same trade-off `fit_font_size` makes for subtitles.
+    Returns `text` unchanged when there is nothing to measure with (no font
+    size, no measurer, or no width to wrap against).
+
+    Pure — `measure(text, size) -> width` is injected, so this is testable
+    without Blender.
+    """
+    if not font_size or not measure or not max_width or not text:
+        return text
+    words = text.split()
+    if not words:
+        return text
+
+    lines = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if measure(candidate, font_size) <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return "\n".join(lines)
+
+
+def add_cta(scene, vse, text, channel, frame_start, frame_end, style, frame_width=None):
+    """Persistent bottom-of-frame call-to-action.
+
+    One static strip covering [frame_start, frame_end) — unlike the
+    subtitles, this text neither moves nor fades: it is a constant reminder
+    under the story, on screen for as long as the intro card is gone.
+    """
+    strip = vse.sequences.new_effect(
+        name="cta",
+        type="TEXT",
+        channel=channel,
+        frame_start=frame_start,
+        frame_end=frame_end,
+    )
+    measure = make_text_measurer(style["font_path"])
+    max_width = frame_width * (1 - 2 * CTA_SIDE_MARGIN) if frame_width else None
+    strip.text = wrap_cta_text(text, style["font_size"], max_width, measure)
+    strip.align_x = "CENTER"
+    strip.align_y = "CENTER"
+    strip.location[1] = style["y_position"]
+    strip.blend_alpha = 1.0
+    font = load_subtitle_font(style["font_path"])
+    apply_text_style(strip, style, font)
+    return strip
 
 
 def fit_font_size(text, font_size, max_width, measure, min_size=MIN_AUTOFIT_FONT_SIZE):
@@ -768,6 +873,7 @@ def apply_payload(scene, vse, payload, assets):
         "audio": _apply_audio_clip,
         "image": _apply_image_clip,
         "subtitles": _apply_subtitles_clip,
+        "text": _apply_text_clip,
     }
     content_clips = [c for c in payload["clips"] if c["role"] == "content"]
     bed_clips = [c for c in payload["clips"] if c["role"] == "bed"]
@@ -832,6 +938,21 @@ def _apply_image_clip(scene, vse, clip, assets, frame_rate):
         scene, vse, path, clip["channel"],
         clip["frame_start"], clip["frame_end"], config,
         scene.render.resolution_y,
+    )
+
+
+def _apply_text_clip(scene, vse, clip, assets, frame_rate):
+    """A `text` clip is always `role: bed` (`templates_v2/default.yaml`'s
+    `cta` track) — it runs to the end of the video without deciding where
+    that end is, same reason the music/background beds are. Its `frame_end`
+    is therefore `scene.frame_end` itself, already re-derived from the real
+    content strips by the time bed clips dispatch (see `apply_payload`'s
+    docstring), never a value carried on the payload."""
+    style = resolve_cta_style(clip.get("style"))
+    add_cta(
+        scene, vse, clip["text"], clip["channel"],
+        clip["frame_start"], scene.frame_end, style,
+        frame_width=scene.render.resolution_x,
     )
 
 
@@ -958,6 +1079,26 @@ def main():
         vse.sequences_all, bed_channels, timing["frame_end"]
     ) + end_padding_frames(timing.get("narration"), frame_rate)
     scene.frame_end = last_frame
+
+    # CTA: a persistent bottom-of-frame reminder from the end of the intro
+    # card to the last frame. Optional and off by default — a template
+    # published before this feature has no `cta` block, and a render must
+    # not grow an extra strip over that. Created only after last_frame is
+    # fixed, and on its own channel, so it never becomes a candidate in
+    # content_end_frame above and there is no circularity in "runs to the
+    # end of a video whose end it does not itself decide".
+    cta_config = timing.get("cta")
+    if cta_config and cta_config.get("text"):
+        add_cta(
+            scene,
+            vse,
+            cta_config["text"],
+            channels.get("cta", DEFAULT_CTA_CHANNEL),
+            card_end,
+            last_frame,
+            resolve_cta_style(cta_config),
+            frame_width=scene.render.resolution_x,
+        )
 
     # After the length is fixed, never before: the repeats are on a bed channel
     # and so are invisible to content_end_frame either way, but laying them first

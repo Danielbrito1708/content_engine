@@ -54,6 +54,55 @@ async def test_get_template_not_found(client):
     assert response.json()["detail"] == "Template not found"
 
 
+async def test_create_template_without_yaml_key_defaults_to_none(client):
+    # yaml_key is optional at creation — a row can exist before the VSEL
+    # template is published; worker.py is what refuses to render it.
+    tmpl_id = await _make_template(client, "no-yaml")
+
+    resp = await client.get(f"/templates/{tmpl_id}")
+    assert resp.json()["yaml_key"] is None
+
+
+async def test_create_template_accepts_a_yaml_key(client):
+    response = await client.post("/templates", json={
+        "name": "VSEL",
+        "blend_key": "templates/vsel.blend",
+        "json_key": "templates/vsel.json",
+        "yaml_key": "templates/vsel.yaml",
+    })
+    assert response.json()["yaml_key"] == "templates/vsel.yaml"
+
+
+# ── PATCH /templates/{id} ───────────────────────────────────
+
+
+async def test_patch_sets_yaml_key_on_an_existing_row(client):
+    tmpl_id = await _make_template(client, "retrofit")
+
+    resp = await client.patch(f"/templates/{tmpl_id}", json={"yaml_key": "templates/retrofit.yaml"})
+
+    assert resp.status_code == 200
+    assert resp.json()["yaml_key"] == "templates/retrofit.yaml"
+    assert resp.json()["id"] == tmpl_id  # same row — no new template created
+
+    get = await client.get(f"/templates/{tmpl_id}")
+    assert get.json()["yaml_key"] == "templates/retrofit.yaml"
+
+
+async def test_patch_leaves_unset_fields_untouched(client):
+    tmpl_id = await _make_template(client, "partial-patch")
+
+    resp = await client.patch(f"/templates/{tmpl_id}", json={"yaml_key": "templates/x.yaml"})
+
+    assert resp.json()["name"] == "partial-patch"
+    assert resp.json()["blend_key"] == "templates/partial-patch.blend"
+
+
+async def test_patch_not_found(client):
+    resp = await client.patch(f"/templates/{uuid.uuid4()}", json={"yaml_key": "x.yaml"})
+    assert resp.status_code == 404
+
+
 # ── GET /templates/{id}/config ───────────────────────────────────
 
 

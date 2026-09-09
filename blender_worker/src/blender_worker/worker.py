@@ -6,12 +6,13 @@ import subprocess
 import tempfile
 import uuid
 
-from sqlalchemy import select
 from structlog import get_logger
 
 from src.blender_worker.db.engine import AsyncSessionLocal
 from src.blender_worker.db.models import Job, JobStatus, Template, Video
-from src.blender_worker.storage.client import download_file, upload_file
+from src.blender_worker.storage.client import download_bytes, download_file, upload_file
+from src.blender_worker.timeline.assemble import resolve_video_timeline
+from src.blender_worker.timeline.loader import load_timeline
 from src.core import settings
 
 log = get_logger(__name__)
@@ -61,38 +62,36 @@ async def _render(job_id: uuid.UUID) -> None:
             video = await session.get(Video, job.video_id)
             template = await session.get(Template, job.template_id)
 
+            if not template.yaml_key:
+                # No v1 fallback, deliberately — see docs/edicao_declarativa.md's
+                # "corte seco" decision (08/09/2026). The legacy template.json
+                # -driven main() still exists in edit_video.py but nothing here
+                # calls it any more; a Template that never got a yaml_key is a
+                # setup problem, not a degradable one, so this fails the job
+                # loudly instead of silently rendering the old layout.
+                raise RuntimeError(
+                    f"Template {template.id} has no yaml_key — the "
+                    f"template.json-driven render path was retired. Publish a "
+                    f"VSEL template.yaml to the bucket and PATCH "
+                    f"/templates/{template.id} with its key before rendering "
+                    f"(see blender_worker/CLAUDE.md, VSEL section)."
+                )
+
             bucket = settings.CONFIG.storage.bucket
+            ffprobe_bin = getattr(settings.CONFIG.blender, "ffprobe_bin", "ffprobe")
+
+            yaml_bytes = await download_bytes(bucket, template.yaml_key)
+            doc = load_timeline(yaml_bytes.decode("utf-8"))
+            flags = {"hook_muted": bool(video.hook_muted)}
+
+            asset_paths, resolved, payload = await resolve_video_timeline(
+                video=video, doc=doc, flags=flags, tmpdir=tmpdir, bucket=bucket, ffprobe_bin=ffprobe_bin,
+            )
 
             template_blend = os.path.join(tmpdir, "template.blend")
-            template_json_path = os.path.join(tmpdir, "template.json")
-            video_path = os.path.join(tmpdir, _filename(video.video_file_key))
-            music_path = os.path.join(tmpdir, _filename(video.music_key))
-            voice_path = os.path.join(tmpdir, _filename(video.voice_key))
-            subtitle_path = os.path.join(tmpdir, _filename(video.subtitle_key))
-            output_path = os.path.join(tmpdir, "output.blend")
-
             await download_file(bucket, template.blend_key, template_blend)
-            await download_file(bucket, template.json_key, template_json_path)
-            await download_file(bucket, video.video_file_key, video_path)
-            await download_file(bucket, video.music_key, music_path)
-            await download_file(bucket, video.voice_key, voice_path)
-            await download_file(bucket, video.subtitle_key, subtitle_path)
 
-            # Intro assets. Both optional: the hook TTS is a degradable step
-            # upstream and the card is composed from it, so a video may legitimately
-            # arrive with neither — it then renders exactly as it did before the
-            # intro existed, instead of failing at the last step of the pipeline.
-            intro_assets = {}
-            for name, key in (("card", video.card_key), ("hook", video.hook_voice_key)):
-                if not key:
-                    continue
-                path = os.path.join(tmpdir, _filename(key))
-                await download_file(bucket, key, path)
-                intro_assets[name] = path
-
-            with open(template_json_path) as f:
-                timing = json.load(f)
-
+            output_path = os.path.join(tmpdir, "output.blend")
             rendered_file = os.path.join(tmpdir, "final.mp4")
             config_path = os.path.join(tmpdir, "job_config.json")
             with open(config_path, "w") as f:
@@ -100,21 +99,17 @@ async def _render(job_id: uuid.UUID) -> None:
                     "job_id": str(job_id),
                     "output_path": output_path,
                     "render_output_path": rendered_file,
-                    "assets": {
-                        "video": video_path,
-                        "music": music_path,
-                        "voice": voice_path,
-                        "subtitles": subtitle_path,
-                        **intro_assets,
-                    },
-                    "hook_muted": video.hook_muted,
-                    "timing": timing,
+                    "assets": asset_paths,
+                    "payload": payload,
                 }, f)
 
             edit_script = os.path.join(SCRIPTS_DIR, "edit_video.py")
             blender_bin = settings.CONFIG.blender.bin
 
-            log.info("render started", job_id=str(job_id), blender=blender_bin)
+            log.info(
+                "render started", job_id=str(job_id), blender=blender_bin,
+                timeline_end=resolved.timeline_end,
+            )
 
             result = await asyncio.to_thread(
                 subprocess.run,
@@ -172,7 +167,3 @@ async def _render(job_id: uuid.UUID) -> None:
         finally:
             await session.commit()
             shutil.rmtree(tmpdir, ignore_errors=True)
-
-
-def _filename(key: str) -> str:
-    return os.path.basename(key)

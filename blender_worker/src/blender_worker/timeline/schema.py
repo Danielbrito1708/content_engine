@@ -122,8 +122,21 @@ class SubtitlesClip(ClipBase):
     style: dict = Field(default_factory=dict)
 
 
+class TextClip(ClipBase):
+    """A static, single-line-or-wrapped text overlay — e.g. the persistent
+    bottom-of-frame CTA (`blender_worker/CLAUDE.md` § "CTA overlay"). Unlike
+    `subtitles`, one clip is one strip: no per-word timeline, no rise, no
+    fade. `style` uses the same `{font_size, y_position, color, outline}`
+    shape `SubtitlesClip.style` does, flattened by `payload.py` the same way."""
+
+    type: Literal["text"]
+    text: str
+    y_position: float = 0.5
+    style: dict = Field(default_factory=dict)
+
+
 Clip = Annotated[
-    Union[VideoClip, AudioClip, ImageClip, SubtitlesClip],
+    Union[VideoClip, AudioClip, ImageClip, SubtitlesClip, TextClip],
     Field(discriminator="type"),
 ]
 

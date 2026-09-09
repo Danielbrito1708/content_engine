@@ -107,6 +107,13 @@ class FakeSequences:
         self.created.append(strip)
         return strip
 
+    def new_effect(self, name, type, channel, frame_start, frame_end):
+        strip = FakeStrip(name, channel, frame_start, frame_final_duration=frame_end - frame_start)
+        strip.effect_type = type
+        strip.location = [0.0, 0.0]
+        self.created.append(strip)
+        return strip
+
 
 class FakeVSE:
     def __init__(self, durations=None):
@@ -290,6 +297,40 @@ def test_apply_subtitles_clip_defaults_hide_before_to_zero(monkeypatch):
     assert calls["kwargs"]["hide_before"] == 0
 
 
+# --- _apply_text_clip -------------------------------------------------------
+
+
+def test_apply_text_clip_forwards_frame_start_and_the_scenes_frame_end(monkeypatch):
+    calls = {}
+
+    def fake_add_cta(scene, vse, text, channel, frame_start, frame_end, style, frame_width=None):
+        calls.update(
+            text=text, channel=channel, frame_start=frame_start,
+            frame_end=frame_end, style=style, frame_width=frame_width,
+        )
+
+    monkeypatch.setattr(edit_video, "add_cta", fake_add_cta)
+
+    scene = FakeScene()
+    scene.frame_end = 2116  # already re-derived by apply_payload by the time bed clips run
+    scene.render.resolution_x = 1080
+    clip = {
+        "type": "text", "channel": 7, "frame_start": 91,
+        "text": "segue o perfil", "style": {"font_size": 50},
+    }
+
+    edit_video._apply_text_clip(scene, FakeVSE(), clip, {}, 30)
+
+    assert calls["text"] == "segue o perfil"
+    assert calls["channel"] == 7
+    assert calls["frame_start"] == 91
+    # Not a value read off the payload — the clip carries no frame_end at all,
+    # since a `role: bed` clip's real end is decided only once frame_end is.
+    assert calls["frame_end"] == 2116
+    assert calls["style"]["font_size"] == 50
+    assert calls["frame_width"] == 1080
+
+
 # --- apply_payload (two-pass dispatch + re-derived frame_end) --------------
 
 
@@ -391,6 +432,13 @@ def test_the_default_template_resolves_and_dispatches_without_a_real_blender(mon
         edit_video, "import_subtitles",
         lambda *a, **kw: subtitle_calls.append((a, kw)) or 0,
     )
+    # Same reason import_subtitles is spied instead of run for real: add_cta
+    # reaches into blf/bpy.data.fonts, which only exist inside Blender.
+    cta_calls = []
+    monkeypatch.setattr(
+        edit_video, "add_cta",
+        lambda *a, **kw: cta_calls.append((a, kw)),
+    )
 
     # Matches `inputs` above — content_end_frame reads voice/hook's real
     # (faked) length exactly like it would a real strip's; card's own length
@@ -436,6 +484,15 @@ def test_the_default_template_resolves_and_dispatches_without_a_real_blender(mon
     assert kwargs["frame_offset"] == resolved.anchors["narration_start"]
     expected_hide_before = resolved.anchors["card_end"] if hook_muted else 1
     assert kwargs["hide_before"] == expected_hide_before
+    # cta (ch7): starts where the card leaves, runs to the real frame_end —
+    # never in `by_channel` since add_cta itself is spied here, not run.
+    assert len(cta_calls) == 1
+    cta_args, _ = cta_calls[0]
+    _, _, cta_text, cta_channel, cta_start, cta_end, _cta_style = cta_args
+    assert cta_text == "me ajude a pagar a faculdade, segue o perfil"
+    assert cta_channel == 7
+    assert cta_start == resolved.anchors["card_end"]
+    assert cta_end == scene.frame_end
 
 
 def test_apply_payload_extends_frame_end_when_the_real_subtitles_outlast_the_voice(monkeypatch):
@@ -467,6 +524,7 @@ def test_apply_payload_extends_frame_end_when_the_real_subtitles_outlast_the_voi
         return 1
 
     monkeypatch.setattr(edit_video, "import_subtitles", fake_import_subtitles)
+    monkeypatch.setattr(edit_video, "add_cta", lambda *a, **kw: None)
 
     vse = FakeVSE(durations={"/tmp/bg.mp4": 300, "/tmp/voice.mp3": 2000, "/tmp/hook.mp3": 78})
     scene = FakeScene()

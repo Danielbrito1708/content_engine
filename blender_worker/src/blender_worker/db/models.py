@@ -50,7 +50,19 @@ class Template(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     blend_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    #: `template.json` — narrowed since the VSEL cutover (08/09/2026) to the
+    #: one thing that never moved into the YAML: `narration.rate`, read by
+    #: the orchestrator via `GET /templates/{id}/config` before any render
+    #: happens. Everything else it used to carry (channels, card, subtitles,
+    #: cta, timing) is now expressed in `yaml_key`.
     json_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    #: The VSEL timeline (`docs/edicao_declarativa.md`), an object in the
+    #: same bucket as `blend_key`/`json_key`. Nullable because the column
+    #: predates every existing row — a template with no `yaml_key` cannot be
+    #: rendered (`worker.py` raises rather than falling back to the retired
+    #: `template.json`-driven `main()`; see `blender_worker/CLAUDE.md` §
+    #: "VSEL — Declarative timeline resolver").
+    yaml_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

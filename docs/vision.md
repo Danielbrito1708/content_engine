@@ -920,6 +920,75 @@ Card e gancho são **independentes e degradáveis**: cada etapa vira `warning` e
 
 ---
 
+## Faixa de apoio fixa no rodapé (`blender_worker`, 08/09/2026)
+
+**Não confundir com o CTA narrado.** O termo "CTA" já é usado neste documento para a pergunta em primeira pessoa que fecha a narração (`classification.cta_per_part`, ver "O texto narrado termina numa pergunta em primeira pessoa") e para a pergunta de votação binária na legenda (`classification.binary_cta`). Esta seção é uma terceira coisa: um texto **fixo**, escrito, sobreposto no rodapé do vídeo do início ao fim do corpo da história — pedindo para seguir o perfil. Os três nunca competem: um é falado, o segundo é a legenda do post, o terceiro é uma faixa visual sobre o vídeo. No código o campo se chama `cta` (bloco `cta` do `template.json`, canal `channels.cta`) porque `blender_worker` não tem outro conceito com esse nome — a colisão de termo existe só entre este documento e o `llm_service`.
+
+**Onde entra e onde sai.** A faixa começa exatamente onde o card de abertura sai da tela (`card_end` — o mesmo instante que `intro_frames()` já calculava para tirar o card e liberar a legenda) e vai até o último frame do vídeo (`scene.frame_end`, já com o respiro de meio segundo). Quando não há card (run sem gancho), `card_end` cai no início do trecho narrado, então a faixa cobre o vídeo quase inteiro; quando há card, ela só aparece depois que ele sai — os dois nunca se sobrepõem, pela mesma razão de leiaute que já separa o card da legenda (mesma altura, mesma régua `y_position`).
+
+**Um strip estático, não um por palavra.** Diferente da legenda (`import_subtitles`, um `TextSequence` por palavra, com subida e fade), a faixa é um único `TextSequence` cobrindo o intervalo inteiro — não se move, não pisca, não anima. É um lembrete constante por baixo da história, não parte da performance da legenda.
+
+**Por que o strip nasce depois de `scene.frame_end` já decidido.** A faixa termina no último frame do vídeo, mas quem decide esse frame é `content_end_frame()`, que olha os strips de conteúdo já criados (voz e legenda) e ignora os *beds* (música, fundo). Se a faixa fosse criada **antes**, ela teria que terminar em um número que ainda não existe — ou, se entrasse na lista de `content_end_frame`, o vídeo passaria a "terminar" na duração da própria faixa, uma dependência circular. A ordem em `main()` resolve isso sem truque: a faixa é montada **depois** de `scene.frame_end = last_frame`, no seu próprio canal (`channels.cta`, default 7, do mesmo jeito que `hook`/`card` defaultam em código porque `template.json` vive no bucket), então nunca é candidata do cálculo que a usa como limite.
+
+**Opcional por construção, como o card e o gancho.** A faixa só aparece quando `template.json` tem um bloco `cta` com `text` preenchido — um template publicado antes desta feature, ou um que deliberadamente não quer a faixa, simplesmente não a tem, e o render sai idêntico ao de antes. Não há flag "ligado/desligado" separada: a presença do texto **é** o interruptor.
+
+**Quebra de linha própria, sem depender de `wrap_width` do Blender.** A legenda nunca precisou disso — é uma palavra por strip — mas a faixa é uma frase inteira, que pode não caber numa linha só. Em vez de depender de uma propriedade de strip que pode não existir em toda versão do Blender, o texto é quebrado em código (`wrap_cta_text`, medido com `blf` — o mesmo rasterizador que a legenda já usa para o auto-fit de palavra longa) e as quebras entram como `\n` literais no `.text` do strip. Puro — mede com uma função injetada — e testável sem Blender, mesma lógica de `fit_font_size`.
+
+**Posição e tipografia são configuráveis, com defaults próprios.** `cta.y_position` (default 0.12 — perto do rodapé, mas acima da faixa de legenda/nome de usuário/música que o próprio TikTok desenha por cima do vídeo) e `cta.font_size` (default 50 — bem menor que a legenda, porque este texto fica na tela o vídeo inteiro e não pode competir por atenção com a narração). Cor, contorno e fonte seguem a mesma resolução e os mesmos defaults (branco, contorno preto) da legenda, incluindo a mesma cadeia de fallback de fonte (Futura Bold → DejaVu). Diferente da legenda, `font_size` aqui **tem** default em código: não existe um render anterior para manter pixel-idêntico, então "deixar do jeito que o Blender entregar" não seria uma escolha neutra.
+
+**Desde 08/09/2026 esta descrição é do mecanismo legado.** Tudo acima (`main()`, canal
+default em código, `template.json`) continua existindo em `edit_video.py` — nada foi apagado
+— mas nada no pipeline chama mais `main()`; ver "VSEL em produção — corte seco" logo abaixo.
+A mesma faixa existe também como clipe `text` numa trilha `role: bed` em
+`templates_v2/default.yaml`, e **é essa segunda forma que qualquer render real usa agora**. As
+regras de negócio são as mesmas nas duas (onde começa, onde termina, por que nasce depois de
+`scene.frame_end`, por que é opcional) — só a forma de configurar mudou, de bloco `cta` no
+JSON para trilha/clipe no YAML.
+
+⚠️ **O texto de apoio ainda não está no ar — agora por dois motivos empilhados.** Primeiro,
+a linha de produção da tabela `templates` não tem `yaml_key` ainda (ver "VSEL em produção"):
+sem ele, `worker.py` recusa o job inteiro, então nenhum vídeo real renderiza até esse passo
+manual acontecer. Segundo, mesmo depois disso, o YAML precisa estar publicado no bucket com o
+texto certo — o `templates_v2/default.yaml` do repositório já o tem
+("me ajude a pagar a faculdade, segue o perfil"), mas, como todo objeto deste bucket, **o
+repositório não é o que roda** até ser republicado. Nenhum dos dois passos está disponível
+para uma sessão sem acesso ao servidor — ver `CLAUDE.md` da raiz.
+
+- Testes: `blender_worker/tests/test_cta.py` (`resolve_cta_style`, `wrap_cta_text` puros; `add_cta` contra fakes de `vse.sequences`/strip, no padrão de `test_intro.py` — cobre o mecanismo legado). `tests/test_timeline_resolver.py`, `test_timeline_payload.py`, `test_apply_payload.py` cobrem o clipe `text`/trilha `cta` do VSEL.
+
+---
+
+## VSEL em produção — corte seco (`blender_worker`, 08/09/2026)
+
+`docs/edicao_declarativa.md` descreve o formato inteiro; esta é a versão curta da decisão de
+negócio, para quem só precisa saber o que mudou e o que ainda falta.
+
+**A montagem do vídeo deixou de ser código fixo interpretando um JSON de parâmetros, e passou
+a ser um YAML que descreve a montagem em si.** `worker.py` — o serviço que efetivamente monta
+todo vídeo publicado — resolve esse YAML (`template.yaml_key`) para todo job real desde essa
+data. O caminho antigo (`main()` lendo `template.json`) continua no código, sem nenhum
+chamador — não foi apagado, só parou de rodar.
+
+**Sem coexistência.** Foi avaliado manter os dois caminhos ativos por uma chave de versão no
+template, e descartado: só existe um template real em produção, então a ramificação nunca
+seria de fato exercitada — só dívida permanente. Em vez disso, um `Template` sem `yaml_key`
+falha o job com um erro explícito, em vez de silenciosamente cair de volta no layout antigo.
+
+**O que sobrevive do `template.json`.** Só o que nunca foi sobre montagem: `narration.rate`,
+que o `orchestrator` lê via `GET /templates/{id}/config` antes do primeiro TTS, cedo demais no
+pipeline para vir de qualquer coisa que dependa do vídeo já estar sendo montado. Todo o resto
+que esse arquivo carregava — canais, card, legenda, cta, música, timing — só existe hoje no
+YAML.
+
+⚠️ **Pendente: a linha de produção da tabela `templates` ainda não tem `yaml_key`, e o YAML
+ainda não está publicado no bucket.** Os dois exigem acesso ao servidor (`docs/servidor.md`) e
+às credenciais do R2, que uma sessão só com acesso ao repositório GitHub não tem. Até isso
+acontecer, **todo render real falha** — não é uma degradação silenciosa como as outras
+listadas neste documento, é uma parada dura e intencional (ver `docs/edicao_declarativa.md` §
+"Sem chave `version`, sem v1 opcional"). Checklist do passo manual em `CLAUDE.md` da raiz.
+
+---
+
 ## Agendamento (tiktok_poster)
 
 - Ritmo: 3 posts por dia, em `preferred_times`.

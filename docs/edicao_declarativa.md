@@ -4,13 +4,16 @@
 YAML declarativo que substitui a montagem fixa de `edit_video.py`. Citado como "o formato"
 ou "VSEL" ao longo do texto; os dois termos são o mesmo objeto.
 
-**Status: nível 1, 2 e 3 de preview implementados** (ver "Fases" abaixo); nada disso está
-ligado ao pipeline de produção ainda. O documento existe para que o formato seja discutido
-antes/junto de existir código, e para que uma sessão futura não precise redescobrir por que
-o desenho é este.
+**Status desde 08/09/2026: ligado em produção — corte seco.** `worker.py`'s `_render` resolve
+o VSEL para todo job real; `main()` (o `template.json`-driven) continua no repositório mas não
+é mais chamado por nada no pipeline. Ver "VSEL ligado a `worker.py` (corte seco, 08/09/2026)"
+mais abaixo para o que isso mudou e o que ainda depende de um passo manual no servidor. Até
+essa data: nível 1, 2 e 3 de preview implementados (ver "Fases" abaixo), nada ligado ao
+pipeline de produção. O documento existe para que o formato seja discutido antes/junto de
+existir código, e para que uma sessão futura não precise redescobrir por que o desenho é este.
 
-Data: 31/08/2026. Escrito contra o estado do repo nessa data — um `template.json` no bucket,
-um `main()` com a timeline cravada em `blender_worker/scripts/edit_video.py`.
+Data original: 31/08/2026. Escrito contra o estado do repo nessa data — um `template.json` no
+bucket, um `main()` com a timeline cravada em `blender_worker/scripts/edit_video.py`.
 
 ---
 
@@ -440,24 +443,120 @@ decisões que ficaram em aberto na primeira versão deste documento:
   `worker.render_slot()` — um preview interativo nunca fica atrás de um render de produção de
   ~12min na fila.
 
-`worker.py` e `POST /jobs` continuam **intocados** nos três níveis.
+`worker.py` e `POST /jobs` continuam **intocados** nos três níveis — até o corte seco de
+08/09/2026, descrito a seguir.
+
+---
+
+## VSEL ligado a `worker.py` (corte seco, 08/09/2026)
+
+**A Fase 3 provou o resolvedor e o executor contra vídeos reais sem arriscar produção — este
+corte é o que gasta essa prova.** `_render` (`worker.py`) resolve o VSEL para todo job real
+agora; `main()` (`template.json`-driven) segue no repositório, mas não tem mais nenhum
+chamador.
+
+### O que mudou
+
+```
+worker._render(job_id)
+  1. template.yaml_key ausente → RuntimeError (job falha, alto e claro — sem fallback pro v1)
+  2. download_bytes(bucket, template.yaml_key) → load_timeline(texto) → TimelineDoc
+  3. flags = {"hook_muted": video.hook_muted}
+  4. timeline.assemble.resolve_video_timeline(video, doc, flags, ...)
+       → download_and_probe_inputs (MinIO + ffprobe, por input do doc.inputs)
+       → resolve_timeline → build_payload
+  5. download do template.blend (blend_key, inalterado)
+  6. job_config.json = {assets, payload, output_path, render_output_path}
+  7. blender -P edit_video.py -- job_config.json
+       → main_declarative() (dispatch por "payload" em vez de "timing", já existia)
+  8. blender -b output.blend -a   (inalterado)
+  9. upload do MP4 + do .blend    (inalterado)
+```
+
+Passos 5, 8 e 9 são exatamente o que `_render` já fazia. O que muda é só como a timeline é
+obtida e resolvida — passos 1 a 4 e 6, que eram "baixar `template.json`, ler o bloco `timing`"
+e viram "baixar o YAML, resolver, montar o payload", reusando **o mesmo código que o preview
+já usava** (`timeline/assemble.py`, extraído de `timeline/preview.py` justamente para isso —
+ver a seção seguinte).
+
+### `timeline/assemble.py` — a peça que passou a ser compartilhada
+
+`assemble_preview` (preview) e `_render` (produção) precisam da mesma sequência —
+baixar os assets que `doc.inputs` declara, sondar duração via `ffprobe`, resolver, montar o
+payload — mas nada mais em comum: cada um mantém seu próprio semáforo (`preview_slot()` vs
+`worker.render_slot()`) e sua própria chamada ao Blender. Misturar os dois destruiria a razão
+de os semáforos serem dois: um preview interativo nunca pode ficar atrás de um render de
+~12min, e um preview isolado. `download_and_probe_inputs` +
+`resolve_video_timeline` (as duas funções públicas do módulo novo) não sabem de semáforo nem
+de subprocesso — só fazem I/O de MinIO/`ffprobe` e devolvem dados. `preview.py` e `worker.py`
+decidem o resto cada um do seu jeito.
+
+### Sem chave `version`, sem v1 opcional
+
+Decidido em 08/09/2026 (ver "Decisões em aberto"): como só existe um template real na
+produção, uma chave de coexistência seria dívida permanente por uma ramificação que nunca
+seria exercitada de verdade. `worker.py` **não tenta** `template.json` quando `yaml_key` está
+ausente — levanta erro. Isso é deliberado: um `Template` sem `yaml_key` é um problema de setup
+(alguém esqueceu de publicar o YAML e apontar a coluna), não um caso degradável como a falta
+de card/hook — errar ruidosamente aqui é melhor que renderizar silenciosamente no layout
+antigo sem ninguém perceber que o template "novo" nunca foi de fato lido.
+
+### `template.json` encolheu, não sumiu
+
+`Template.json_key` continua **obrigatório** — `GET /templates/{id}/config`, que o
+`orchestrator` lê para saber `narration.rate` antes do primeiro TTS, não tem nada a ver com a
+timeline (é velocidade de fala, não montagem) e não migrou para o YAML. Depois do corte, o
+único motivo pra esse objeto existir é servir essa rota; `channels`, `card`, `subtitles`,
+`cta`, `music`, `timing` — tudo que o `template.json` também carregava — deixou de ser lido
+por qualquer coisa depois do corte.
+
+### `Template.yaml_key` e `PATCH /templates/{id}`
+
+Coluna nova, nullable (migration `f6a1b2c3d4e5`, depende de `e5a6b7c8d9e0`) — nullable porque
+chega depois de toda linha existente, incluindo a de produção. `POST /templates` aceita
+`yaml_key` opcional na criação; `PATCH /templates/{id}` (novo) é o que retrofita a linha **já
+existente** de produção sem recriar o template e sem repontar `BLENDER_TEMPLATE_ID` nem as
+foreign keys de `Video.template_id` — só some o campo que faltava.
+
+### ⚠️ O corte é só de código — falta o passo manual no servidor
+
+Publicar `templates_v2/default.yaml` como objeto no bucket R2 e rodar
+`PATCH /templates/{BLENDER_TEMPLATE_ID}` com a chave dele são passos que dependem de acesso ao
+servidor de produção (`docs/servidor.md`) e às credenciais do R2 — nenhum dos dois está
+disponível de uma sessão que só tem acesso ao repositório GitHub. Até esse passo acontecer,
+`template.yaml_key` da linha de produção continua `NULL`, e **todo job real falha** com o erro
+descrito acima em vez de renderizar — não é uma degradação silenciosa como as outras faltas
+documentadas neste repositório, é uma parada dura, de propósito, porque não fazer nada seria
+publicar vídeo algum indefinidamente sem que ninguém percebesse por quê. Ver `CLAUDE.md` da
+raiz para o checklist do passo manual.
+
+- Testes: `tests/test_worker.py` (reescrito — a suíte de integração usa o `templates_v2/
+  default.yaml` real através de `load_timeline`, com `download_bytes`/`download_file`/
+  `probe_duration_seconds`/o subprocess do Blender mockados; inclui o caso "sem `yaml_key`
+  falha o job"), `tests/test_templates.py` (`yaml_key` em `POST`, `PATCH` novo),
+  `tests/test_preview.py` (ajustado para o `download_file`/`probe_duration_seconds` mockados
+  agora viverem em `timeline.assemble`, não em `timeline.preview`).
 
 ---
 
 ## Decisões em aberto
 
-- **Coexistência com o `template.json` v1.** O bucket é compartilhado entre ambientes e a
-  produção depende do objeto atual. Chave `version` decidindo qual interpretador roda, ou
-  corte seco com republicação coordenada? A chave é mais segura e é dívida permanente.
+Decididas em 08/09/2026, para não serem reabertas sem motivo novo:
+
+| Decisão | Escolha |
+|---|---|
+| Coexistência com o `template.json` v1 | **Corte seco.** Só existia um template real, o que tornava a chave `version` dívida permanente por uma coexistência que nunca ia ser exercitada. `worker.py` sempre resolve via VSEL; um `Template` sem `yaml_key` falha o job alto e claro em vez de cair de volta no `main()` legado (que continua no repo, só não é mais chamado). Ver "VSEL ligado a `worker.py`" abaixo |
+| Onde o YAML mora | **Objeto no bucket**, ao lado do `.blend` — `Template.yaml_key`, mesma simetria de `blend_key`/`json_key`. Nullable na migration porque a coluna chega depois de toda linha existente |
+| `text` como tipo de clipe de primeira classe | **Implementado.** Primeiro consumidor: a faixa de apoio no rodapé (`docs/vision.md` § "Faixa de apoio fixa no rodapé"), como uma trilha `role: bed` — roda até `timeline_end` sem decidir onde ele fica, mesma regra do fundo e da música |
+
+Ainda em aberto:
+
 - **Transições entre clipes** (`cross`, `wipe`) — dentro ou fora do vocabulário inicial. Nada
   no vídeo atual usa, e cada tipo novo é código.
-- **Onde o YAML mora** — objeto novo no bucket ao lado do `.blend`, ou coluna na tabela
-  `templates` do `blender_worker`. O bucket mantém a simetria com o que já existe; a coluna
-  evita mais um objeto que pode ficar defasado.
 - **Como o preview é pedido** — flag em `POST /jobs` ou rota própria. Flag reusa a fila e o
   semáforo de render; rota própria evita que preview dispute slot com produção.
-- **`text` como tipo de clipe de primeira classe** — o vocabulário lista `text`, mas o
-  template atual só usa `subtitles`. Um clipe de texto avulso (título, crédito) é trivial de
-  suportar e não tem consumidor ainda.
 - **Amarração com multi-conta** — `accounts.template_id` e variação de formato por conta são
   assunto de `docs/multi_account.md`, deliberadamente fora deste documento.
+- **Remoção do `main()` legado** — corte seco decidiu qual interpretador *roda*, não decidiu
+  apagar código. `main()` e o layout de seis canais fixos continuam em `edit_video.py`,
+  intocados e sem nenhum caller — remover é uma limpeza separada, não pedida ainda.
