@@ -71,6 +71,14 @@ class SeenItem(Base):
     status: Mapped[SeenStatus] = mapped_column(Enum(SeenStatus), nullable=False)
     skip_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pipeline_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    #: Publication account this candidate's run was sent to, mirroring the
+    #: orchestrator's ``PipelineRun.account_id``. ``None`` is the implicit
+    #: default account — the same meaning as on that side. Audit only: the
+    #: round-robin picker itself reads recent history straight from this
+    #: column (see ``scout.py::_submitted_per_account``), never this row in
+    #: isolation. Every row before migration 006 is NULL, same convention as
+    #: every other multi-account column added after the fact.
+    account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     comments: Mapped[list["ItemComment"]] = relationship(

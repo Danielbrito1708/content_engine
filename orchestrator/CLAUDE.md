@@ -175,10 +175,12 @@ explícito continua tendo prioridade). Endpoints `POST /accounts` e `GET /accoun
 (`api/routes/accounts.py`) fazem o CRUD mínimo — sem credencial nenhuma aqui, isso é só no
 `tiktok_poster`.
 
-**Quem escolhe hoje é só o disparo manual**, mesma limitação do `template_id`: o
-`content_scout` nunca preenche `account_id`, então toda descoberta automática continua
-indo para a conta default. Ver `docs/vision.md` → "Contas de publicação — Fase 1 do
-multi-account" e "Decisões em Aberto".
+**Desde 08/09/2026, o `content_scout` também escolhe conta** — rodízio entre contas ativas
+com backpressure por conta, dentro da mesma arquitetura da Fase 1 (sem split de tabelas,
+sem planner). O disparo manual continua podendo escolher explicitamente; a diferença é que
+a descoberta automática deixou de ir sempre para a conta default. Ver
+`content_scout/CLAUDE.md` → "Escolha de conta" e `docs/vision.md` → "Contas de publicação —
+Fase 1 do multi-account".
 
 ⚠️ Requer a migration `010` aplicada.
 

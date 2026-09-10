@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +27,7 @@ async def trigger_run():
 async def list_seen(
     status: SeenStatus | None = None,
     story_tag: str | None = None,
+    account_id: uuid.UUID | None = None,
     limit: int = Query(50, le=200),
     offset: int = 0,
     session: AsyncSession = Depends(get_session),
@@ -33,12 +36,15 @@ async def list_seen(
 
     ``story_tag`` is the calibration handle: listing ``weak_storytelling`` shows
     what the score is punishing, which is the only honest way to decide where
-    ``min_story_score`` belongs.
+    ``min_story_score`` belongs. ``account_id`` is the round-robin handle — the
+    same way to see, per account, what got sent where.
     """
     stmt = select(SeenItem).order_by(SeenItem.created_at.desc()).limit(limit).offset(offset)
     if status is not None:
         stmt = stmt.where(SeenItem.status == status)
     if story_tag is not None:
         stmt = stmt.where(SeenItem.story_tag == story_tag)
+    if account_id is not None:
+        stmt = stmt.where(SeenItem.account_id == account_id)
     result = await session.execute(stmt)
     return result.scalars().all()

@@ -17,7 +17,12 @@ from src.content_scout.clients.llm import (
 )
 from src.content_scout.clients.orchestrator import OrchestratorClient
 from src.content_scout.db.models import ArchiveCursor, SeenItem, SeenStatus
-from src.content_scout.scout import interleave_by_origin, run_cycle
+from src.content_scout.scout import (
+    _submitted_per_account,
+    interleave_by_origin,
+    pick_account,
+    run_cycle,
+)
 from src.content_scout.sources.base import Candidate, Comment, CommentThread
 from src.core import notify as notify_module
 from src.core import settings
@@ -112,9 +117,9 @@ def submissions(monkeypatch):
     """Capture what the scout sends to the orchestrator, with no network."""
     sent = []
 
-    async def fake_create(self, script, metadata):
+    async def fake_create(self, script, metadata, account_id=None):
         run_id = uuid.uuid4()
-        sent.append({"script": script, "metadata": metadata, "run_id": run_id})
+        sent.append({"script": script, "metadata": metadata, "run_id": run_id, "account_id": account_id})
         return run_id
 
     monkeypatch.setattr(OrchestratorClient, "create_pipeline", fake_create)
@@ -126,8 +131,65 @@ def set_active_runs(monkeypatch):
     def _set(count):
         async def fake_count(self, sample=50):
             return count
+
+        async def fake_count_by_account(self, sample=50):
+            return {None: count}
+
         monkeypatch.setattr(OrchestratorClient, "count_active_runs", fake_count)
+        monkeypatch.setattr(OrchestratorClient, "count_active_runs_by_account", fake_count_by_account)
     _set(0)
+    return _set
+
+
+@pytest.fixture
+def set_active_runs_by_account(monkeypatch):
+    """For tests that need an explicit split of in-flight runs across accounts."""
+    def _set(counts: dict):
+        async def fake_by_account(self, sample=50):
+            return dict(counts)
+
+        async def fake_total(self, sample=50):
+            return sum(counts.values())
+
+        monkeypatch.setattr(OrchestratorClient, "count_active_runs_by_account", fake_by_account)
+        monkeypatch.setattr(OrchestratorClient, "count_active_runs", fake_total)
+    return _set
+
+
+@pytest.fixture(autouse=True)
+def accounts_off(monkeypatch):
+    """No extra accounts unless a test asks — mirrors archive_off/story_quality.
+
+    Keeps every pre-existing test (and every new test that doesn't call
+    ``accounts_on``) exercising a single implicit account, which is the
+    behaviour this feature must not change.
+    """
+    async def fake_list(self):
+        return []
+    monkeypatch.setattr(OrchestratorClient, "list_accounts", fake_list)
+
+
+@pytest.fixture
+def accounts_on(monkeypatch):
+    def _set(*account_ids, status="active"):
+        accounts = [{"id": aid, "slug": f"acc-{aid[:8]}", "status": status} for aid in account_ids]
+
+        async def fake_list(self):
+            return accounts
+        monkeypatch.setattr(OrchestratorClient, "list_accounts", fake_list)
+    return _set
+
+
+@pytest.fixture
+def account_budget(monkeypatch):
+    def _set(max_pending_runs_per_account=2, account_usage_window_hours=24):
+        monkeypatch.setattr(
+            settings.CONFIG.scout, "max_pending_runs_per_account", max_pending_runs_per_account
+        )
+        monkeypatch.setattr(
+            settings.CONFIG.scout, "account_usage_window_hours", account_usage_window_hours
+        )
+    _set()
     return _set
 
 
@@ -392,7 +454,7 @@ async def test_failed_submission_is_recorded_and_cycle_continues(
     budget(max_pending_runs=99, max_per_cycle=5)
     calls = []
 
-    async def flaky_create(self, script, metadata):
+    async def flaky_create(self, script, metadata, account_id=None):
         calls.append(metadata["url"])
         if metadata["url"].endswith("t3_bad"):
             raise RuntimeError("orchestrator down")
@@ -1008,138 +1070,24 @@ async def test_seen_endpoint_filters_by_story_tag(
     assert weak[0]["has_hook"] is False
 
 
-# ============================================================== length ceiling
-
-
-@pytest.fixture
-def length_cfg(monkeypatch):
-    def _set(min_chars=600, max_chars=6000):
-        monkeypatch.setattr(settings.CONFIG.filters, "min_chars", min_chars)
-        monkeypatch.setattr(settings.CONFIG.filters, "max_chars", max_chars)
-    _set()
-    return _set
-
-
-async def test_long_candidate_is_judged_before_it_is_dropped(
-    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg, session
+async def test_long_candidate_is_submitted_uncapped(
+    submissions, set_active_runs, budget, story_cfg, story_quality, session
 ):
-    """The point of the whole change: the score is recorded even though the
-    candidate is never produced. Without it, ``seen_items`` says a story was
-    dropped for length but never what it was worth."""
+    """There is no length ceiling any more: a long, well-scored candidate is
+    submitted like any other — the refiner condenses it regardless of size."""
     story_quality.set({"t3_longa": StoryScore(hook=True, score=9, hook_line="ela abriu a porta")})
-    source = FakeSource([_candidate("t3_longa", chars=9000)])
+    source = FakeSource([_candidate("t3_longa", chars=40000)])
 
     report = await run_cycle([source])
 
-    assert report.too_long == 1
-    assert report.filtered == 1
-    assert report.submitted == 0
-    assert submissions == []
+    assert report.submitted_ids == ["t3_longa"]
+    assert len(submissions[0]["script"]) == 40000
 
     row = (await _seen_rows(session))[0]
-    assert row.status == SeenStatus.filtered
-    assert row.skip_reason == "too_long:9000"
+    assert row.status == SeenStatus.submitted
+    assert row.char_count == 40000
     assert row.story_score == 9
     assert row.story_tag == TAG_STRONG
-    assert row.has_hook is True
-    assert row.hook_line == "ela abriu a porta"
-
-
-async def test_long_candidate_is_in_the_scoring_batch(
-    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg
-):
-    """It has to be scored to be recorded with a score — so it goes in the batch.
-
-    The batch is one call whose cost is set by the excerpt, not by the body, so
-    carrying long candidates in it is free.
-    """
-    await run_cycle([FakeSource([_candidate("t3_longa", chars=9000), _candidate("t3_ok")])])
-
-    assert story_quality.calls == [["t3_longa", "t3_ok"]]
-
-
-async def test_long_candidate_is_never_moderated(
-    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg, moderation
-):
-    """Scoring is batched and cheap; moderation is a call per candidate. Something
-    that will never be published must not pay for one."""
-    await run_cycle([FakeSource([_candidate("t3_longa", chars=9000)])])
-
-    assert moderation.calls == []
-
-
-async def test_long_candidate_does_not_consume_budget(
-    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg
-):
-    """It is dropped before the submit loop, so it cannot take a slot — even when
-    its score would have put it at the head of the queue."""
-    budget(max_per_cycle=1)
-    story_quality.set({
-        "t3_longa": StoryScore(hook=True, score=10),
-        "t3_ok": StoryScore(hook=True, score=7),
-    })
-    source = FakeSource([_candidate("t3_longa", chars=9000), _candidate("t3_ok")])
-
-    report = await run_cycle([source])
-
-    assert report.submitted_ids == ["t3_ok"]
-    assert report.too_long == 1
-
-
-async def test_long_candidate_is_not_reconsidered_next_cycle(
-    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg
-):
-    """Recorded means burned: re-judging it every cycle would pay the batch cost
-    forever for a candidate the ceiling already answered."""
-    source = FakeSource([_candidate("t3_longa", chars=9000)])
-    await run_cycle([source])
-
-    second = await run_cycle([source])
-
-    assert second.already_seen == 1
-    assert second.too_long == 0
-
-
-async def test_long_candidate_is_kept_when_the_ceiling_is_raised(
-    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg
-):
-    """The ceiling is config, so raising it is what turns these rows into videos."""
-    length_cfg(max_chars=40000)
-
-    report = await run_cycle([FakeSource([_candidate("t3_longa", chars=9000)])])
-
-    assert report.too_long == 0
-    assert report.submitted_ids == ["t3_longa"]
-
-
-async def test_unscored_long_candidate_is_still_recorded(
-    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg, session
-):
-    """An ``llm_service`` outage leaves the story columns null — the length
-    rejection is deterministic and does not depend on the judgement."""
-    report = await run_cycle([FakeSource([_candidate("t3_longa", chars=9000)])])
-
-    assert report.too_long == 1
-
-    row = (await _seen_rows(session))[0]
-    assert row.skip_reason == "too_long:9000"
-    assert row.story_score is None
-    assert row.story_tag is None
-
-
-async def test_ceiling_is_not_paid_when_the_queue_is_full(
-    submissions, set_active_runs, budget, story_cfg, story_quality, length_cfg, session
-):
-    """A full queue publishes nothing, so it must not spend a judgement — and a
-    candidate recorded unjudged would be burned without ever being scored."""
-    set_active_runs(5)
-
-    report = await run_cycle([FakeSource([_candidate("t3_longa", chars=9000)])])
-
-    assert report.skipped_no_capacity is True
-    assert report.too_long == 0
-    assert story_quality.calls == []
-    assert await _seen_rows(session) == []
 
 
 # ============================================================== archive sweep
@@ -1388,6 +1336,147 @@ async def test_fingerprint_is_stored_for_rejected_rows_too(
     rows = await _seen_rows(session)
     assert rows[0].status == SeenStatus.filtered
     assert rows[0].content_fingerprint is not None
+
+
+# ── contas de publicação (round-robin) ──────────────────────────────
+
+def test_pick_account_prefers_least_used():
+    assert pick_account(["a", "b"], {"a": 3, "b": 1}) == "b"
+
+
+def test_pick_account_ties_break_toward_default_account():
+    assert pick_account([None, "a"], {}) is None
+    assert pick_account(["a", None], {"a": 0, None: 0}) is None
+
+
+async def test_submitted_per_account_ignores_history_outside_the_window(session):
+    """The fix that makes round-robin safe to turn on.
+
+    Every row before this feature existed has ``account_id = NULL`` — if the
+    tie-break counted all of history, a brand-new account would win every tie
+    for as long as it takes its count to catch the default account's, which
+    could be weeks. Bounding to a recent window is what keeps a new account
+    from starving the default one on day one.
+    """
+    old = datetime.now(timezone.utc) - timedelta(hours=48)
+    recent = datetime.now(timezone.utc) - timedelta(hours=1)
+    session.add_all([
+        SeenItem(
+            source="reddit", external_id=f"old_{i}", origin="r/x", title="t", url="u",
+            status=SeenStatus.submitted, account_id=None, created_at=old,
+        )
+        for i in range(50)
+    ])
+    session.add(SeenItem(
+        source="reddit", external_id="recent_1", origin="r/x", title="t", url="u",
+        status=SeenStatus.submitted, account_id=None, created_at=recent,
+    ))
+    await session.commit()
+
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    usage = await _submitted_per_account(session, since)
+
+    assert usage == {None: 1}
+
+
+async def test_single_account_is_unaffected_by_the_feature(
+    submissions, set_active_runs, budget, session
+):
+    """`accounts_off` (autouse) means no extra account exists — regression pin."""
+    await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert submissions[0]["account_id"] is None
+    rows = await _seen_rows(session)
+    assert rows[0].account_id is None
+
+
+async def test_two_accounts_alternate_within_a_cycle(
+    submissions, set_active_runs, budget, accounts_on, account_budget
+):
+    acc_a = str(uuid.uuid4())
+    accounts_on(acc_a)
+
+    await run_cycle([FakeSource([_candidate("t3_a"), _candidate("t3_b")])])
+
+    assert [s["account_id"] for s in submissions] == [None, acc_a]
+
+
+async def test_per_account_cap_stops_loop_while_global_budget_remains(
+    submissions, set_active_runs_by_account, budget, accounts_on, account_budget, moderation
+):
+    acc_a = str(uuid.uuid4())
+    accounts_on(acc_a)
+    set_active_runs_by_account({None: 1, acc_a: 1})
+    account_budget(max_pending_runs_per_account=1)
+    budget(max_pending_runs=99, max_per_cycle=5)
+
+    report = await run_cycle([FakeSource([_candidate("t3_a"), _candidate("t3_b")])])
+
+    assert report.submitted == 0
+    assert report.skipped_no_account_capacity is True
+    assert report.skipped_no_capacity is False
+    # The eligibility check is the cheapest rejection in the loop and must run
+    # before moderation (an LLM call) — proven here by it never being called.
+    assert moderation.calls == []
+    assert submissions == []
+
+
+async def test_seen_item_persists_account_id(
+    submissions, set_active_runs, budget, accounts_on, account_budget, session
+):
+    acc_a = str(uuid.uuid4())
+    accounts_on(acc_a)
+
+    await run_cycle([FakeSource([_candidate("t3_a"), _candidate("t3_b")])])
+
+    rows = await _seen_rows(session)
+    assert rows[0].account_id is None
+    assert rows[1].account_id == uuid.UUID(acc_a)
+
+
+async def test_accounts_filtered_by_status(
+    submissions, set_active_runs, budget, accounts_on, account_budget
+):
+    acc_a = str(uuid.uuid4())
+    accounts_on(acc_a, status="paused")
+
+    await run_cycle([FakeSource([_candidate("t3_a"), _candidate("t3_b")])])
+
+    assert all(s["account_id"] is None for s in submissions)
+
+
+async def test_list_accounts_failure_falls_back_to_default_account_only(
+    submissions, set_active_runs, budget, monkeypatch
+):
+    async def fake_list_fails(self):
+        raise RuntimeError("orchestrator unreachable")
+    monkeypatch.setattr(OrchestratorClient, "list_accounts", fake_list_fails)
+
+    report = await run_cycle([FakeSource([_candidate("t3_a")])])
+
+    assert report.submitted == 1
+    assert submissions[0]["account_id"] is None
+
+
+async def test_seen_endpoint_exposes_account_id(
+    client, submissions, set_active_runs, budget, accounts_on, account_budget, monkeypatch
+):
+    acc_a = str(uuid.uuid4())
+    accounts_on(acc_a)
+    monkeypatch.setattr(
+        "src.content_scout.scout.build_sources",
+        lambda: [FakeSource([_candidate("t3_a"), _candidate("t3_b")])],
+    )
+
+    await client.post("/scout/run")
+    body = (await client.get("/scout/seen")).json()
+
+    by_id = {i["external_id"]: i["account_id"] for i in body}
+    assert by_id["t3_a"] is None
+    assert by_id["t3_b"] == acc_a
+
+    filtered = (await client.get("/scout/seen", params={"account_id": acc_a})).json()
+    assert [i["external_id"] for i in filtered] == ["t3_b"]
 
 
 # ── notificação de operação ──────────────────────────────────────────

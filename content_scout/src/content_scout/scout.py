@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from itertools import zip_longest
@@ -17,7 +18,7 @@ from src.content_scout.clients.llm import (
 from src.content_scout.clients.orchestrator import OrchestratorClient
 from src.content_scout.db.engine import AsyncSessionLocal
 from src.content_scout.db.models import ArchiveCursor, ItemComment, SeenItem, SeenStatus
-from src.content_scout.filters import content_fingerprint, evaluate, exceeds_length
+from src.content_scout.filters import content_fingerprint, evaluate
 from src.content_scout.sources.base import (
     ArchiveCapableSource,
     Candidate,
@@ -60,9 +61,9 @@ class ScoutReport:
     archive_wrapped: bool = False
     #: Candidates dropped because the same story was already seen under another id.
     duplicate_story: int = 0
-    #: Candidates judged and recorded with their score, then dropped for being too
-    #: long to produce. Counted in ``filtered`` as well — this is the breakdown.
-    too_long: int = 0
+    #: True when every eligible account had hit max_pending_runs_per_account —
+    #: distinct from skipped_no_capacity, which is the global ceiling.
+    skipped_no_account_capacity: bool = False
 
 
 # One cycle at a time, process-wide. The periodic loop fires a cycle on startup,
@@ -148,6 +149,25 @@ def interleave_by_origin(
     return ordered
 
 
+def pick_account(eligible: list[str | None], usage: dict[str | None, int]) -> str | None:
+    """Least-used eligible account, ties broken toward the default account.
+
+    Same shape as ``interleave_by_origin``'s tie-break (usage count, then a
+    stable key), adapted for an Optional key: ``a or ""`` stands in for
+    ``None`` in the comparison only — a real account id is a UUID string and
+    is never empty, so ``None`` sorts first on a tie without ever colliding
+    with one.
+
+    Unlike origin interleaving, this does not reorder candidates — it decides,
+    for a candidate that is already about to be submitted, which account's
+    queue it lands in. ``usage`` is deliberately a *recent* window (see
+    ``_submitted_per_account``), not all-time history: an all-time count would
+    hand every tie to a newly added account for as long as it takes its total
+    to catch up with an account that has been running for months.
+    """
+    return min(eligible, key=lambda a: (usage.get(a, 0), a or ""))
+
+
 def rank_by_story(
     candidates: list[Candidate],
     scores: dict[str, StoryScore],
@@ -194,6 +214,27 @@ async def _submitted_per_origin(session) -> dict[str, int]:
         .group_by(SeenItem.origin)
     )
     return {origin: count for origin, count in result.all()}
+
+
+async def _submitted_per_account(session, since: datetime) -> dict[str | None, int]:
+    """How many candidates each account has had published, in the last ``since``.
+
+    Bounded to a recent window, unlike ``_submitted_per_origin``'s all-time
+    count — see ``pick_account``. Every row before this feature shipped has
+    ``account_id = NULL`` (it went to the default account before round-robin
+    existed), so an all-time query would make the default account look like it
+    has published hundreds more than a brand-new account forever, not just
+    today. Keys come back as ``str | None`` — the same currency ``account_ids``
+    and ``active_by_account`` use in ``_run_cycle`` — even though the column is
+    a UUID: converting once here is what keeps the rest of the cycle from
+    mixing ``uuid.UUID`` and ``str`` keys for the same account.
+    """
+    result = await session.execute(
+        select(SeenItem.account_id, func.count())
+        .where(SeenItem.status == SeenStatus.submitted, SeenItem.created_at >= since)
+        .group_by(SeenItem.account_id)
+    )
+    return {(str(account_id) if account_id is not None else None): count for account_id, count in result.all()}
 
 
 async def _fetch_thread(
@@ -367,10 +408,11 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
     smaller pile.
 
     Rejections are staged by what they cost, cheapest first: the length floor and
-    repost dedup are free and run over everything; the length ceiling runs after
-    the batched score, so a story too long to produce is still judged on the way
-    out; moderation is a call per candidate and runs only on what is about to be
-    published.
+    repost dedup are free and run over everything; moderation is a call per
+    candidate and runs only on what is about to be published. There is no length
+    ceiling — the refiner condenses every candidate down to the same 10-40s
+    video regardless of how long the raw post is, so a long story is never
+    rejected for being long.
     """
     report = ScoutReport()
     # `is None`, not truthiness: an explicitly empty list means "no sources", and
@@ -438,7 +480,8 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                 continue
             fresh.append(candidate)
 
-        report.active_runs = await orchestrator.count_active_runs()
+        active_by_account = await orchestrator.count_active_runs_by_account()
+        report.active_runs = sum(active_by_account.values())
         capacity = scout_cfg.max_pending_runs - report.active_runs
         if capacity <= 0:
             report.skipped_no_capacity = True
@@ -455,6 +498,24 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
         budget = min(capacity, scout_cfg.max_per_cycle)
         moderation = ModerationClient()
         usage = await _submitted_per_origin(session)
+
+        # Which accounts can receive a run this cycle. `None` (the implicit
+        # default account) is always in the list; a failure here degrades to
+        # exactly that — today's only behaviour — rather than stalling the
+        # cycle over a service that isn't even required for publishing.
+        try:
+            accounts = await orchestrator.list_accounts()
+        except Exception as exc:  # noqa: BLE001 — degrades to the default-only account
+            log.warning("scout_list_accounts_failed", error=str(exc))
+            accounts = []
+        account_ids: list[str | None] = [None] + [
+            a["id"] for a in accounts if a.get("status") == "active"
+        ]
+        account_usage_since = datetime.now(timezone.utc) - timedelta(
+            hours=scout_cfg.account_usage_window_hours
+        )
+        usage_by_account = await _submitted_per_account(session, account_usage_since)
+        max_pending_per_account = scout_cfg.max_pending_runs_per_account
 
         # Story quality runs over *every* fresh candidate, not just the ones about
         # to be published — it is what decides which those are, so scoring only
@@ -484,51 +545,9 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
             )
             report.with_villain = sum(1 for score in story_scores.values() if score.villain)
 
-        # The length ceiling, applied only now that every candidate has been
-        # judged. It used to run with the cheap filters, which meant a story was
-        # discarded before anyone asked whether it was any good — and what it
-        # discarded was disproportionately the good stuff. Measured live over 45
-        # posts (14/08/2026): 11 were past the cap, and *none of them scored
-        # below 6*, while every candidate that scored 5 or less was under it.
-        # Four of the eight candidates that scored 9 were past it. The subs where
-        # the genre lives reward long writing, so cutting on length first was
-        # cutting on quality backwards. The cap still decides what gets produced;
-        # it no longer decides what gets *looked at*, so
-        # `GET /scout/seen?status=filtered` now carries the score of what was
-        # passed on instead of losing it silently.
-        #
-        # Rejecting here rather than in the submit loop keeps a too-long candidate
-        # from ever reaching moderation, which costs a model call for something
-        # that was never going to be published.
-        publishable: list[Candidate] = []
-        for candidate in fresh:
-            reason = exceeds_length(candidate, filter_cfg.max_chars)
-            if reason is None:
-                publishable.append(candidate)
-                continue
-            story = story_scores.get(candidate.external_id)
-            report.filtered += 1
-            report.too_long += 1
-            await _record(
-                session,
-                _seen_row(
-                    candidate,
-                    SeenStatus.filtered,
-                    skip_reason=reason,
-                    story=story,
-                    min_story_score=scout_cfg.min_story_score,
-                ),
-            )
-            log.info(
-                "scout_rejected_too_long",
-                external_id=candidate.external_id,
-                char_count=candidate.char_count,
-                story_score=story.score if story is not None else None,
-            )
-
         ordered = interleave_by_origin(
             rank_by_story(
-                publishable,
+                fresh,
                 story_scores,
                 scout_cfg.min_story_score,
                 scout_cfg.min_outrage_score,
@@ -545,6 +564,30 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
         for candidate in ordered:
             if report.submitted >= budget:
                 break
+
+            # Cheapest rejection in this loop — an in-memory dict scan — so it
+            # runs before moderation (an LLM call) and comment enrichment (a
+            # rate-limited request), same principle as everything else here.
+            # With a single account (`len(account_ids) == 1`, today's every
+            # deployment) this check never runs, by construction, regardless of
+            # `max_pending_runs_per_account` — behaviour stays identical to
+            # before this feature existed.
+            eligible = (
+                [a for a in account_ids if active_by_account.get(a, 0) < max_pending_per_account]
+                if len(account_ids) > 1
+                else account_ids
+            )
+            if not eligible:
+                report.skipped_no_account_capacity = True
+                log.info("scout_no_account_capacity", accounts=len(account_ids))
+                notify(
+                    "Contas sem capacidade — ciclo encerrado",
+                    level="debug",
+                    icon="🚦",
+                    contas=len(account_ids),
+                )
+                break
+            picked_account = pick_account(eligible, usage_by_account)
 
             story = story_scores.get(candidate.external_id)
 
@@ -608,7 +651,7 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
 
             try:
                 run_id = await orchestrator.create_pipeline(
-                    script=candidate.text, metadata=metadata
+                    script=candidate.text, metadata=metadata, account_id=picked_account
                 )
             except Exception as exc:  # noqa: BLE001 — one bad submit must not end the cycle
                 log.warning("scout_submit_failed", external_id=candidate.external_id, error=str(exc))
@@ -622,12 +665,18 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                         max_comments=scout_cfg.max_comments_stored,
                         story=story,
                         min_story_score=scout_cfg.min_story_score,
+                        account_id=picked_account,
                     ),
                 )
                 continue
 
             report.submitted += 1
             report.submitted_ids.append(candidate.external_id)
+            # Kept current for the rest of this cycle: the next candidate's
+            # eligibility/tie-break has to see this submission, not just what
+            # the orchestrator/audit trail looked like when the cycle started.
+            active_by_account[picked_account] = active_by_account.get(picked_account, 0) + 1
+            usage_by_account[picked_account] = usage_by_account.get(picked_account, 0) + 1
             # Committed immediately, while the run id is in hand: anything that
             # fails later in this cycle must not be able to erase the record of a
             # story that is already in the pipeline.
@@ -641,6 +690,7 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
                     max_comments=scout_cfg.max_comments_stored,
                     story=story,
                     min_story_score=scout_cfg.min_story_score,
+                    account_id=picked_account,
                 ),
             )
             log.info(
@@ -669,7 +719,7 @@ async def _run_cycle(sources: list[Source] | None = None) -> ScoutReport:
 def _seen_row(candidate: Candidate, status: SeenStatus, skip_reason: str | None = None,
               pipeline_run_id=None, thread: CommentThread | None = None,
               max_comments: int = 0, story: StoryScore | None = None,
-              min_story_score: int = 0) -> SeenItem:
+              min_story_score: int = 0, account_id: str | None = None) -> SeenItem:
     """Build the audit row, with comment enrichment when it was gathered.
 
     ``comment_count`` stays ``None`` for candidates that were never enriched —
@@ -707,6 +757,7 @@ def _seen_row(candidate: Candidate, status: SeenStatus, skip_reason: str | None 
         status=status,
         skip_reason=skip_reason,
         pipeline_run_id=pipeline_run_id,
+        account_id=uuid.UUID(account_id) if account_id is not None else None,
         comments=[
             ItemComment(
                 external_id=c.external_id,
@@ -745,7 +796,6 @@ async def scout_loop() -> None:
                 archive_fetched=report.archive_fetched,
                 archive_wrapped=report.archive_wrapped,
                 duplicate_story=report.duplicate_story,
-                too_long=report.too_long,
                 no_capacity=report.skipped_no_capacity,
                 moderation_unavailable=report.moderation_unavailable,
                 story_quality_unavailable=report.story_quality_unavailable,
@@ -762,7 +812,6 @@ async def scout_loop() -> None:
                 filtrados=report.filtered,
                 enviados=report.submitted,
                 fracos=report.weak_storytelling,
-                muito_longos=report.too_long,
             )
             # Batimento do scout, separado do `alive` do orchestrador: os dois
             # laços morrem por motivos diferentes, e um scout parado significa

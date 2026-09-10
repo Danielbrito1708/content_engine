@@ -256,11 +256,21 @@ Tabela `accounts` no orchestrador, `account_credentials` (cifrada) num banco nov
 `stories`/`renders`/`publications`: o modelo atual continua, com uma coluna a mais. Detalhes
 de implementação em `docs/vision.md` → "Contas de publicação — Fase 1 do multi-account".
 
-**O que ficou de fora de propósito, por decisão deste ciclo:** o `content_scout` ainda não
-escolhe conta — toda descoberta automática publica na conta default, e a conta extra só
-recebe run por disparo manual (`account_id` no `POST /pipeline`). Round-robin com
-backpressure por conta (ver "Do pipeline ao planner", abaixo) é o próximo passo natural,
-revisitável quando fizer sentido operar mais de uma conta em produção simultaneamente.
+**Atualização de 08/09/2026: o `content_scout` agora escolhe conta.** A lacuna abaixo foi
+medida em produção — `redditors-inc`, cadastrada em 06/09, ficou dois dias sem receber um
+único run, porque nada preenchia `account_id` automaticamente. Round-robin com backpressure
+por conta (rascunhado abaixo) foi implementado dentro da mesma arquitetura da Fase 1 — sem
+split de tabelas, sem planner. Detalhes em `content_scout/CLAUDE.md` → "Escolha de conta" e
+`docs/vision.md` → "Contas de publicação — Fase 1 do multi-account". O texto original desta
+seção segue abaixo como registro do raciocínio que levou à implementação:
+
+**O que tinha ficado de fora de propósito, por decisão do ciclo anterior:** o `content_scout`
+ainda não escolhia conta — toda descoberta automática publicava na conta default, e a conta
+extra só recebia run por disparo manual (`account_id` no `POST /pipeline`). Round-robin com
+backpressure por conta (ver "Do pipeline ao planner", abaixo) era o próximo passo natural,
+revisitável quando fizesse sentido operar mais de uma conta em produção simultaneamente.
+**A caixa de entrada manual (`inbox.py`) continua fora do rodízio, de propósito** — quem
+já escolheu o vídeo ali foi uma pessoa.
 
 ⚠️ **A correção abaixo, sobre o `content_scout` não rodar migration no boot, estava
 desatualizada já antes desta Fase 1** — conferido no código em 06/09/2026, o `Dockerfile`
