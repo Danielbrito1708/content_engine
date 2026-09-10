@@ -454,7 +454,7 @@ async def test_failed_submission_is_recorded_and_cycle_continues(
     budget(max_pending_runs=99, max_per_cycle=5)
     calls = []
 
-    async def flaky_create(self, script, metadata):
+    async def flaky_create(self, script, metadata, account_id=None):
         calls.append(metadata["url"])
         if metadata["url"].endswith("t3_bad"):
             raise RuntimeError("orchestrator down")
