@@ -16,6 +16,7 @@ content_engine/
     aquecimento.md          ← proposta: rampa de publicação + rotina manual para conta nova/parada
     edicao_declarativa.md   ← VSEL: timeline em YAML editável no lugar da montagem fixa do main()
     comentarios.md          ← proposta: seis frentes para aumentar volume de comentários
+    sessoes/                ← um resumo por sessão do Claude Code (histórico, não estado atual)
   orchestrator/             ← coordenação do pipeline (FastAPI + DB próprio)
   blender_worker/           ← montagem VSE + renderização (FastAPI + Blender 4.2)
   llm_service/              ← refinamento e classificação de roteiros
